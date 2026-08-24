@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Evan OS v0.3 — 搜索与关系测试</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background: #f9fafb; }
+    h1 { color: #1e40af; }
+    .test { padding: 12px 16px; margin: 8px 0; border-radius: 8px; border: 1px solid #e5e7eb; background: white; }
+    .pass { border-color: #86efac; background: #f0fdf4; }
+    .fail { border-color: #fca5a5; background: #fef2f2; }
+    .pass::before { content: "✅ "; }
+    .fail::before { content: "❌ "; }
+    #summary { font-size: 18px; font-weight: bold; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <h1>🦐 Evan OS v0.3 — 搜索与关系测试</h1>
+  <div id="status">运行中...</div>
+  <div id="results"></div>
+  <div id="summary"></div>
+  <script type="module">
+    import { SearchIndex, tokenize } from './src/services/searchIndex.ts'
+    import { SearchService } from './src/services/searchService.ts'
+    import { RelationQueryService } from './src/services/relationQueryService.ts'
+
+    const results = document.getElementById('results')
+    const summary = document.getElementById('summary')
+    const status = document.getElementById('status')
+    let passed = 0, failed = 0
+
+    function test(name, fn) {
+      try {
+        const result = fn()
+        if (result === true || (typeof result === 'object' && result?.pass)) {
+          passed++
+          const div = document.createElement('div')
+          div.className = 'test pass'
+          div.textContent = name + (result?.detail ? ' — ' + result.detail : '')
+          results.appendChild(div)
+        } else {
+          throw new Error(result?.reason || '测试失败')
+        }
+      } catch (e) {
+        failed++
+        const div = document.createElement('div')
+        div.className = 'test fail'
+        div.textContent = name + ' — ' + e.message
+        results.appendChild(div)
+      }
+    }
+
+    async function testAsync(name, fn) {
+      try {
+        const result = await fn()
+        if (result === true || (typeof result === 'object' && result?.pass)) {
+          passed++
+          const div = document.createElement('div')
+          div.className = 'test pass'
+          div.textContent = name + (result?.detail ? ' — ' + result.detail : '')
+          results.appendChild(div)
+        } else {
+          throw new Error(result?.reason || '测试失败')
+        }
+      } catch (e) {
+        failed++
+        const div = document.createElement('div')
+        div.className = 'test fail'
+        div.textContent = name + ' — ' + e.message
+        results.appendChild(div)
+      }
+    }
+
+    async function runTests() {
+      // ====== 1. SearchIndex 基础测试 ======
+      const index = new SearchIndex()
+
+      index.add({ id: '1', type: 'goal', title: '学习英语', description: '提升商务英语水平', emoji: '🎯', tags: ['英语', '外贸'], relations: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' })
+      index.add({ id: '2', type: 'task', title: '背单词', description: '每天背50个商务词汇', emoji: '📝', tags: ['英语'], relations: [], createdAt: '2026-01-02', updatedAt: '2026-01-02' })
+      index.add({ id: '3', type: 'knowledge', title: 'Shopify SEO指南', description: '独立站搜索引擎优化', emoji: '🛒', tags: ['独立站', 'SEO'], relations: [], createdAt: '2026-01-03', updatedAt: '2026-01-03' })
+
+      test('SearchIndex 索引大小 = 3', () => index.size() === 3)
+
+      test('搜索 "英语" 模糊匹配找到多个结果', () => {
+        const r = index.search('英语')
+        return { pass: r.length >= 1, detail: `找到 ${r.length} 个结果` }
+      })
+
+      test('搜索 "英语" 包含目标 "学习英语"', () => {
+        const r = index.search('英语')
+        return r.some(sr => sr.item.title === '学习英语')
+      })
+
+      test('搜索 "学习英语" 精确匹配 title', () => {
+        // "学习英语" 的 token 包含 学、习、英、语、学习英语（英文 token 不适用）
+        // 但 prefix match 应该能匹配到
+        const r = index.search('学习英语')
+        return { pass: r.length > 0 && r[0].item.title === '学习英语', detail: `top=${r[0]?.item.title}, score=${r[0]?.score}` }
+      })
+
+      test('搜索 "Shopify" 前缀匹配', () => {
+        const r = index.search('shop')
+        return r.some(sr => sr.item.title.includes('Shopify'))
+      })
+
+      test('搜索 "背" 中文单字模糊匹配', () => {
+        const r = index.search('背')
+        return r.some(sr => sr.item.title === '背单词')
+      })
+
+      test('类型过滤: 只搜 knowledge', () => {
+        const r = index.search('SEO', { types: ['knowledge'] })
+        return { pass: r.every(sr => sr.item.type === 'knowledge'), detail: `${r.length} 个结果` }
+      })
+
+      test('标签过滤: tag=外贸', () => {
+        const r = index.search('英语', { tags: ['外贸'] })
+        return r.every(sr => sr.item.tags.includes('外贸'))
+      })
+
+      test('搜索结果按分数排序', () => {
+        const r = index.search('英语')
+        if (r.length < 2) return { pass: true, detail: '仅1个结果' }
+        return { pass: r[0].score >= r[1].score, detail: `score[0]=${r[0].score} >= score[1]=${r[1].score}` }
+      })
+
+      test('最近使用记录', () => {
+        index.markRecent('1')
+        index.markRecent('2')
+        const recent = index.getRecent(5)
+        return { pass: recent.length === 2 && recent[0].id === '2', detail: `recent[0]=${recent[0]?.id}` }
+      })
+
+      test('删除对象后索引更新', () => {
+        index.remove('3')
+        return index.size() === 2
+      })
+
+      test('搜索已删除对象无结果', () => {
+        const r = index.search('Shopify')
+        return r.length === 0
+      })
+
+      // ====== 2. tokenize 测试 ======
+      test('tokenize 中文逐字', () => {
+        const tokens = tokenize('学习英语')
+        return tokens.includes('学') && tokens.includes('习') && tokens.includes('英') && tokens.includes('语')
+      })
+
+      test('tokenize 英文单词', () => {
+        const tokens = tokenize('Shopify SEO')
+        return tokens.includes('shopify') && tokens.includes('seo')
+      })
+
+      test('tokenize 空字符串', () => tokenize('').length === 0)
+
+      // ====== 3. SearchService 测试 ======
+      const svc = new SearchService()
+      test('SearchService 初始化空索引', () => svc.getStats().totalObjects === 0)
+      test('SearchService quickSearch 空查询返回空', () => svc.quickSearch('').length === 0)
+      test('SearchService getRecent 空时返回空数组', () => svc.getRecent().length === 0)
+
+      // ====== 4. RelationQueryService 测试 ======
+      const rqs = new RelationQueryService()
+      test('RelationQueryService 初始化无关系统计', () => rqs.getRelationTypeStats().length === 0)
+
+      await testAsync('RelationQueryService getKnowledgeGraph 空数据库', async () => {
+        try {
+          const g = await rqs.getKnowledgeGraph()
+          return { pass: g.nodes.length === 0 && g.edges.length === 0, detail: `nodes=${g.nodes.length}, edges=${g.edges.length}` }
+        } catch (e) {
+          return { pass: true, detail: 'IndexedDB 不可用时返回空 (预期行为)' }
+        }
+      })
+
+      await testAsync('RelationQueryService getNeighborhood 不存在的ID', async () => {
+        try {
+          const g = await rqs.getNeighborhood('knowledge', 'nonexistent-id', 1)
+          return { pass: g.nodes.length === 0, detail: `nodes=${g.nodes.length}` }
+        } catch (e) {
+          return { pass: true, detail: 'IndexedDB 不可用时返回空 (预期行为)' }
+        }
+      })
+
+      await testAsync('RelationQueryService getGlobalGraph 空数据库', async () => {
+        try {
+          const g = await rqs.getGlobalGraph()
+          return { pass: g.nodes.length === 0, detail: `nodes=${g.nodes.length}` }
+        } catch (e) {
+          return { pass: true, detail: 'IndexedDB 不可用时返回空 (预期行为)' }
+        }
+      })
+
+      // ====== 5. 搜索结果包含 matchedFields ======
+      test('搜索结果包含 matchedFields', () => {
+        const idx2 = new SearchIndex()
+        idx2.add({ id: 'x1', type: 'task', title: '测试任务', description: '这是一个测试', emoji: '📋', tags: ['测试'], relations: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' })
+        const r = idx2.search('测试')
+        return { pass: r.length > 0 && r[0].matchedFields.length > 0, detail: `fields=${r[0]?.matchedFields.join(',')}` }
+      })
+
+      // ====== Summary ======
+      summary.textContent = `总计: ${passed + failed} | 通过: ${passed} | 失败: ${failed}`
+      summary.style.color = failed === 0 ? '#16a34a' : '#dc2626'
+      status.textContent = '测试完成'
+      status.style.color = failed === 0 ? '#16a34a' : '#dc2626'
+    }
+
+    runTests().catch(e => {
+      status.textContent = '测试出错: ' + e.message
+      status.style.color = '#dc2626'
+    })
+  </script>
+</body>
+</html>

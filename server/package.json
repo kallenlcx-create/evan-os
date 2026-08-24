@@ -1,0 +1,12 @@
+{
+  "name": "evan-sync-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "mysql2": "^3.11.0"
+  }
+}

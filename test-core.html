@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Evan OS v0.2 测试</title>
+</head>
+<body>
+<div id="results">运行中...</div>
+<script type="module">
+import { db } from './src/db.ts'
+import { createProject } from './src/repositories/projectRepository.ts'
+import { createTask } from './src/repositories/taskRepository.ts'
+import { createRelation, getTasksForProject, deleteRelation } from './src/repositories/relationRepository.ts'
+import { createKnowledge, addReference, getBacklinks } from './src/repositories/knowledgeRepository.ts'
+import { createCustomer, createOpportunity, createOrder } from './src/repositories/customerRepository.ts'
+import { getIncomingRelations } from './src/repositories/relationRepository.ts'
+import { getTimeline } from './src/repositories/eventRepository.ts'
+import { getObject } from './src/repositories/objectRepository.ts'
+import { captureInbox } from './src/repositories/inboxRepository.ts'
+
+let pass = 0, fail = 0
+const lines = []
+function assert(name, cond) {
+  if (cond) { pass++; lines.push(`✅ ${name}`) }
+  else { fail++; lines.push(`❌ ${name}`) }
+}
+
+try {
+  // 清空
+  await Promise.all([
+    db.goals.clear(), db.projects.clear(), db.tasks.clear(),
+    db.knowledge.clear(), db.customers.clear(), db.opportunities.clear(),
+    db.orders.clear(), db.communications.clear(),
+    db.relations.clear(), db.events.clear(), db.inbox.clear()
+  ])
+
+  // 1. 创建 Project
+  const p = await createProject({ title: '测试项目', emoji: '🧪' })
+  assert('1. 创建 Project', p.ok && p.value.title === '测试项目')
+
+  // 2. 创建 Task
+  const t = await createTask({ title: '测试任务', emoji: '✅' })
+  assert('2. 创建 Task', t.ok && t.value.title === '测试任务')
+
+  // 3. Task→Project 关系
+  const r = await createRelation('task', t.value.id, 'project', p.value.id, 'belongs_to')
+  assert('3. Task→Project belongs_to', r.ok)
+
+  // 4. 删除关系
+  const d = await deleteRelation(r.value.id)
+  assert('4. 删除关系', d.ok)
+  await createRelation('task', t.value.id, 'project', p.value.id, 'belongs_to')
+
+  // 5. 查询 Project Tasks
+  const pt = await getTasksForProject(p.value.id)
+  assert('5. 查询 Project Tasks', pt.length === 1)
+
+  // 6. 创建 Knowledge
+  const k = await createKnowledge({ title: 'React Hooks', content: 'useState', category: 'frontend' })
+  assert('6. 创建 Knowledge', k.ok)
+
+  // 7. Knowledge 引用
+  const k2 = await createKnowledge({ title: 'Custom Hooks', content: 'custom', category: 'frontend' })
+  const ref = await addReference(k2.value.id, k.value.id)
+  assert('7. Knowledge references', ref.ok)
+
+  // 8. backlinks
+  const bl = await getBacklinks(k.value.id)
+  assert('8. 查询 backlinks', bl.length === 1 && bl[0].title === 'Custom Hooks')
+
+  // 9. 创建 Customer
+  const c = await createCustomer({ title: '测试客户', company: 'Test Co', stage: 'lead' })
+  assert('9. 创建 Customer', c.ok && c.value.type === 'customer')
+
+  // 10. 创建 Opportunity
+  const o = await createOpportunity({ title: '测试商机', value: 10000, customerId: c.value.id })
+  assert('10. 创建 Opportunity', o.ok)
+
+  // 11. Customer←Opportunity 关系
+  const cor = await getIncomingRelations('customer', c.value.id)
+  assert('11. Customer←Opportunity 关系', cor.length >= 1)
+
+  // 12. 创建 Order
+  const od = await createOrder({ title: '测试订单', orderNumber: 'ORD-001', amount: 5000, customerId: c.value.id })
+  assert('12. 创建 Order', od.ok && od.value.type === 'order')
+
+  // 13. Event 产生
+  const ev = await getTimeline('project', p.value.id)
+  assert('13. Event 产生', ev.length >= 1)
+
+  // 14. 数据持久化
+  const rl = await getObject('project', p.value.id)
+  assert('14. 数据持久化', rl && rl.title === '测试项目')
+
+  // 15. Customer 不在 goals 表
+  const gc = await db.goals.count()
+  const cc = await db.customers.count()
+  assert('15. Customer 不在 goals 表', cc > 0 && gc === 0)
+
+  // 16. Inbox
+  const ib = await captureInbox('测试收集', 'quick_note')
+  assert('16. Inbox 收集', ib.ok)
+
+} catch(e) {
+  lines.push(`❌ 异常: ${e.message}`)
+  fail++
+}
+
+lines.push(`\n📊 结果: ${pass} 通过, ${fail} 失败`)
+document.getElementById('results').innerHTML = lines.join('<br>')
+</script>
+</body>
+</html>
