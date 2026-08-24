@@ -1,396 +1,412 @@
-import { useState, useEffect } from 'react'
-import { useStore } from '../store'
-import { Plus, Globe, ShoppingCart, Bot, Settings as SettingsIcon, ChevronRight, Trash2, Mail, FileText, CheckCircle, Clock, TrendingUp } from 'lucide-react'
+// ====== WorkPage — 外贸与独立站工作台（v1.1 合并版）======
+// 整合原 Work.tsx（客户/询盘/SOP/模板）与 BusinessPage（管道/独立站）
+// 数据统一走 IndexedDB；首次挂载自动迁移旧 localStorage 数据
 
-type TabKey = 'customers' | 'inquiries' | 'sop' | 'templates'
+import { useState, useEffect, useCallback } from 'react'
+import { Plus, Globe, TrendingUp, Copy, Check, Users, FileText, Settings as SettingsIcon, Mail, Package } from 'lucide-react'
+import { db } from '../db'
+import {
+  getAllTradeDeals, createTradeDeal, advanceTradeStage,
+  groupByStage, pipelineValue,
+} from '../repositories/tradeRepository'
+import {
+  getAllCustomers, createCustomer,
+} from '../repositories/customerRepository'
+import {
+  getAllProducts, getRecentMetrics, analyzeMetrics, getAllSeoKeywords,
+} from '../repositories/siteRepository'
+import { createObject } from '../repositories/objectRepository'
+import { createKnowledge } from '../repositories/knowledgeRepository'
+import type { TradeDeal, TradeStage } from '../types'
 
-interface Customer {
-  id: string
-  name: string
-  country: string
-  contact: string
-  status: 'lead' | 'active' | 'vip' | 'inactive'
-  notes: string
-  createdAt: string
-}
+// ---------- 旧数据迁移（localStorage → IndexedDB，一次性） ----------
 
-interface Inquiry {
-  id: string
-  customerName: string
-  product: string
-  status: 'new' | 'quoted' | 'negotiating' | 'won' | 'lost'
-  amount?: number
-  date: string
-  notes: string
-}
+const MIGRATED_KEY = 'evan-os-work-migrated-v1'
 
-interface SopItem {
-  id: string
-  title: string
-  steps: string[]
-  category: string
-}
-
-interface Template {
-  id: string
-  title: string
-  category: string
-  content: string
-}
-
-const LS_KEY = 'evan-os-work-data'
-
-function loadData(): { customers: Customer[]; inquiries: Inquiry[]; sops: SopItem[]; templates: Template[] } {
+async function migrateLegacyData(): Promise<void> {
+  if (localStorage.getItem(MIGRATED_KEY)) return
   try {
-    const raw = localStorage.getItem(LS_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  // 种子数据
-  return {
-    customers: [
-      { id: 'c1', name: 'John Smith', country: '美国', contact: 'john@smithco.com', status: 'vip', notes: '老客户，主要采购电子产品', createdAt: new Date().toISOString() },
-      { id: 'c2', name: 'Maria Garcia', country: '西班牙', contact: 'maria@garcia.es', status: 'active', notes: '新客户，对家居用品感兴趣', createdAt: new Date().toISOString() },
-    ],
-    inquiries: [
-      { id: 'i1', customerName: 'John Smith', product: '蓝牙耳机 x500', status: 'negotiating', amount: 12500, date: new Date().toISOString().slice(0, 10), notes: '客户要求定制包装' },
-      { id: 'i2', customerName: 'Maria Garcia', product: '竹制餐具套装 x200', status: 'new', date: new Date().toISOString().slice(0, 10), notes: '首次询盘，需报价' },
-    ],
-    sops: [
-      { id: 's1', title: '询盘处理流程', category: '外贸', steps: ['收到询盘，24小时内回复', '确认产品规格、数量、目标价', '制作报价单（PI）', '跟进客户反馈', '成交后录入订单系统'] },
-      { id: 's2', title: '独立站上新流程', category: '独立站', steps: ['选品调研（竞品+趋势）', '拍摄/制作产品图', '编写 SEO 标题和描述', '上传产品并检查页面', '设置广告投放计划'] },
-    ],
-    templates: [
-      { id: 't1', title: '询盘回复模板', category: '外贸', content: 'Dear [Name],\n\nThank you for your inquiry about [Product].\n\nWe are pleased to offer you the following:\n- Product: [Product]\n- Quantity: [Qty]\n- Unit Price: [Price] FOB Shanghai\n- Lead Time: [Days] days\n- Payment Terms: T/T 30% deposit\n\nPlease find the attached quotation for details. Looking forward to your reply.\n\nBest regards,\n[Your Name]' },
-      { id: 't2', title: '跟进邮件模板', category: '外贸', content: 'Dear [Name],\n\nHope you are doing well.\n\nI am following up on the quotation sent on [Date]. Have you had a chance to review it? Please let me know if you have any questions or need any adjustments.\n\nLooking forward to hearing from you.\n\nBest regards,\n[Your Name]' },
-      { id: 't3', title: '产品描述模板', category: '独立站', content: 'Product Title: [SEO关键词 + 产品名]\n\nFeatures:\n• [卖点1]\n• [卖点2]\n• [卖点3]\n\nSpecifications:\n- Material: [材质]\n- Size: [尺寸]\n- Weight: [重量]\n\nPackage Includes:\n- [内容物]\n\nPerfect for [使用场景]. Order now and enjoy fast shipping!' },
-    ],
-  }
+    const raw = localStorage.getItem('evan-os-work-data')
+    if (raw) {
+      const d = JSON.parse(raw)
+      const stageMap: Record<string, TradeStage> = {
+        new: 'inquiry', quoted: 'quotation', negotiating: 'negotiation',
+        won: 'payment', lost: 'lost',
+      }
+      for (const c of d.customers ?? []) {
+        const stageMapC: Record<string, 'lead' | 'contacted' | 'won' | 'lost'> = {
+          lead: 'lead', active: 'contacted', vip: 'won', inactive: 'lost',
+        }
+        await createCustomer({
+          title: c.name, company: c.name, contactName: c.contact,
+          country: c.country, stage: stageMapC[c.status] ?? 'lead', notes: c.notes,
+        })
+      }
+      for (const i of d.inquiries ?? []) {
+        const deal = await createTradeDeal({
+          title: i.product || i.customerName,
+          value: i.amount,
+          inquirySource: '迁移',
+          tags: ['迁移'],
+        })
+        if (deal.ok) {
+          const target = stageMap[i.status]
+          if (target && target !== 'inquiry') await advanceTradeStage(deal.value.id, target)
+        }
+      }
+      for (const s of d.sops ?? []) {
+        await createObject('process', {
+          title: s.title, category: s.category,
+          steps: (s.steps ?? []).map((t: string, idx: number) => ({
+            id: `s${idx}`, order: idx, title: t, description: '', checklist: [],
+          })),
+        })
+      }
+      for (const t of d.templates ?? []) {
+        await createKnowledge({
+          title: t.title, content: t.content,
+          category: 'template', tags: ['模板', t.category].filter(Boolean),
+        })
+      }
+    }
+  } catch { /* 迁移失败不阻塞 */ }
+  localStorage.setItem(MIGRATED_KEY, '1')
 }
 
-function saveData(data: any) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch { /* ignore */ }
-}
+// ---------- 常量 ----------
 
-const statusColors: Record<string, string> = {
-  lead: 'bg-blue-100 text-blue-600',
-  active: 'bg-green-100 text-green-600',
-  vip: 'bg-purple-100 text-purple-600',
-  inactive: 'bg-gray-100 text-gray-500',
-  new: 'bg-orange-100 text-orange-600',
-  quoted: 'bg-blue-100 text-blue-600',
-  negotiating: 'bg-yellow-100 text-yellow-600',
-  won: 'bg-green-100 text-green-600',
-  lost: 'bg-red-100 text-red-600',
-}
+type TabKey = 'pipeline' | 'customers' | 'sops' | 'templates' | 'site'
 
-const statusLabels: Record<string, string> = {
-  lead: '潜在客户', active: '活跃客户', vip: 'VIP', inactive: ' inactive',
-  new: '新建', quoted: '已报价', negotiating: '谈判中', won: '已成交', lost: '已流失',
-}
-
-const tabs: { key: TabKey; label: string; icon: any }[] = [
-  { key: 'customers', label: '👥 客户管理', icon: Globe },
-  { key: 'inquiries', label: '📋 询盘跟进', icon: FileText },
-  { key: 'sop', label: '📝 工作流程', icon: SettingsIcon },
-  { key: 'templates', label: '✉️ 邮件模板', icon: Mail },
+const tabs: { key: TabKey; label: string; icon: typeof Globe }[] = [
+  { key: 'pipeline', label: '管道', icon: TrendingUp },
+  { key: 'customers', label: '客户', icon: Users },
+  { key: 'sops', label: 'SOP', icon: SettingsIcon },
+  { key: 'templates', label: '模板', icon: Mail },
+  { key: 'site', label: '独立站', icon: Globe },
 ]
 
+const stageLabels: Record<TradeStage, string> = {
+  inquiry: '询盘', quotation: '报价', negotiation: '谈判', payment: '付款',
+  production: '生产', shipping: '发货', after_sales: '售后', repurchase: '复购', lost: '流失',
+}
+const stageOrder: TradeStage[] = [
+  'inquiry', 'quotation', 'negotiation', 'payment',
+  'production', 'shipping', 'after_sales', 'repurchase', 'lost',
+]
+const nextStageMap: Partial<Record<TradeStage, TradeStage>> = {
+  inquiry: 'quotation', quotation: 'negotiation', negotiation: 'payment',
+  payment: 'production', production: 'shipping', shipping: 'after_sales',
+  after_sales: 'repurchase',
+}
+
+const inputClass = 'w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200'
+
 export default function WorkPage() {
-  const [data, setData] = useState(loadData())
-  const [activeTab, setActiveTab] = useState<TabKey>('customers')
-  const [showForm, setShowForm] = useState(false)
+  const [tab, setTab] = useState<TabKey>('pipeline')
+  const [deals, setDeals] = useState<TradeDeal[]>([])
+  const [customers, setCustomers] = useState<Awaited<ReturnType<typeof getAllCustomers>>>([])
+  const [metrics, setMetrics] = useState<ReturnType<typeof analyzeMetrics> | null>(null)
+  const [productCount, setProductCount] = useState({ total: 0, active: 0 })
+  const [keywords, setKeywords] = useState<{ keyword: string; position?: number }[]>([])
+  const [sops, setSops] = useState<any[]>([])
+  const [templates, setTemplates] = useState<any[]>([])
+  const [copiedId, setCopiedId] = useState('')
 
-  useEffect(() => { saveData(data) }, [data])
+  const refresh = useCallback(async () => {
+    setDeals(await getAllTradeDeals())
+    setCustomers(await getAllCustomers())
+    const recent = await getRecentMetrics(7)
+    setMetrics(analyzeMetrics(recent, 7))
+    const products = await getAllProducts()
+    setProductCount({ total: products.length, active: products.filter(p => p.status === 'active').length })
+    setKeywords((await getAllSeoKeywords()).slice(0, 6))
+    const allProcesses = await db.processes.toArray()
+    setSops(allProcesses.filter(p => !p.archived).slice(0, 20))
+    const allK = await db.knowledge.toArray()
+    setTemplates(allK.filter(k => k.category === 'template' && !k.archived).slice(0, 20))
+  }, [])
 
-  // ====== 表单状态 ======
+  useEffect(() => {
+    migrateLegacyData().then(refresh)
+  }, [refresh])
+
+  // ---------- 动作 ----------
+  const handleAdvance = async (deal: TradeDeal) => {
+    const next = nextStageMap[deal.stage]
+    if (next) { await advanceTradeStage(deal.id, next); refresh() }
+  }
+
   const [newCustomer, setNewCustomer] = useState({ name: '', country: '', contact: '', notes: '' })
-  const [newInquiry, setNewInquiry] = useState({ customerName: '', product: '', amount: '', notes: '' })
-  const [newSop, setNewSop] = useState({ title: '', category: '', steps: '' })
-  const [newTemplate, setNewTemplate] = useState({ title: '', category: '', content: '' })
-
-  const addCustomer = () => {
+  const handleAddCustomer = async () => {
     if (!newCustomer.name.trim()) return
-    const c: Customer = { id: Date.now().toString(), name: newCustomer.name, country: newCustomer.country, contact: newCustomer.contact, status: 'lead', notes: newCustomer.notes, createdAt: new Date().toISOString() }
-    setData(d => ({ ...d, customers: [...d.customers, c] }))
-    setNewCustomer({ name: '', country: '', contact: '', notes: '' }); setShowForm(false)
-  }
-  const addInquiry = () => {
-    if (!newInquiry.customerName.trim()) return
-    const i: Inquiry = { id: Date.now().toString(), customerName: newInquiry.customerName, product: newInquiry.product, status: 'new', amount: newInquiry.amount ? Number(newInquiry.amount) : undefined, date: new Date().toISOString().slice(0, 10), notes: newInquiry.notes }
-    setData(d => ({ ...d, inquiries: [...d.inquiries, i] }))
-    setNewInquiry({ customerName: '', product: '', amount: '', notes: '' }); setShowForm(false)
-  }
-  const addSop = () => {
-    if (!newSop.title.trim()) return
-    const s: SopItem = { id: Date.now().toString(), title: newSop.title, category: newSop.category || '通用', steps: newSop.steps.split('\n').filter(s => s.trim()) }
-    setData(d => ({ ...d, sops: [...d.sops, s] }))
-    setNewSop({ title: '', category: '', steps: '' }); setShowForm(false)
-  }
-  const addTemplate = () => {
-    if (!newTemplate.title.trim()) return
-    const t: Template = { id: Date.now().toString(), title: newTemplate.title, category: newTemplate.category || '通用', content: newTemplate.content }
-    setData(d => ({ ...d, templates: [...d.templates, t] }))
-    setNewTemplate({ title: '', category: '', content: '' }); setShowForm(false)
+    await createCustomer({
+      title: newCustomer.name.trim(), company: newCustomer.name.trim(),
+      contactName: newCustomer.contact, country: newCustomer.country,
+      stage: 'lead', notes: newCustomer.notes,
+    })
+    setNewCustomer({ name: '', country: '', contact: '', notes: '' })
+    refresh()
   }
 
-  const deleteItem = (tab: TabKey, id: string) => {
-    if (tab === 'customers') setData(d => ({ ...d, customers: d.customers.filter(c => c.id !== id) }))
-    if (tab === 'inquiries') setData(d => ({ ...d, inquiries: d.inquiries.filter(i => i.id !== id) }))
-    if (tab === 'sop') setData(d => ({ ...d, sops: d.sops.filter(s => s.id !== id) }))
-    if (tab === 'templates') setData(d => ({ ...d, templates: d.templates.filter(t => t.id !== id) }))
+  const [newSop, setNewSop] = useState({ title: '', category: '外贸', stepsText: '' })
+  const handleAddSop = async () => {
+    if (!newSop.title.trim() || !newSop.stepsText.trim()) return
+    await createObject('process', {
+      title: newSop.title.trim(), category: newSop.category,
+      steps: newSop.stepsText.split('\n').filter(Boolean).map((t, idx) => ({
+        id: `s${idx}`, order: idx, title: t.trim(), description: '', checklist: [],
+      })),
+    })
+    setNewSop({ title: '', category: '外贸', stepsText: '' })
+    refresh()
   }
 
-  const updateInquiryStatus = (id: string, status: Inquiry['status']) => {
-    setData(d => ({ ...d, inquiries: d.inquiries.map(i => i.id === id ? { ...i, status } : i) }))
-  }
-  const updateCustomerStatus = (id: string, status: Customer['status']) => {
-    setData(d => ({ ...d, customers: d.customers.map(c => c.id === id ? { ...c, status } : c) }))
+  const [newTpl, setNewTpl] = useState({ title: '', category: '外贸', content: '' })
+  const handleAddTemplate = async () => {
+    if (!newTpl.title.trim() || !newTpl.content.trim()) return
+    await createKnowledge({
+      title: newTpl.title.trim(), content: newTpl.content,
+      category: 'template', tags: ['模板', newTpl.category],
+    })
+    setNewTpl({ title: '', category: '外贸', content: '' })
+    refresh()
   }
 
-  const copyTemplate = (content: string) => {
-    navigator.clipboard?.writeText(content).then(() => {
-      // 简单反馈
+  const copyTemplate = (t: any) => {
+    navigator.clipboard?.writeText(t.content).then(() => {
+      setCopiedId(t.id)
+      setTimeout(() => setCopiedId(''), 1500)
     }).catch(() => {})
   }
 
-  const inputClass = 'w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200'
+  const handleNewInquiry = async () => {
+    const title = prompt('商机标题（如：LED 灯带 5000pcs 询盘）：')
+    if (!title?.trim()) return
+    const valueStr = prompt('预估金额 USD（可留空）：') ?? ''
+    await createTradeDeal({ title: title.trim(), value: valueStr ? Number(valueStr) : undefined, inquirySource: '手动录入', tags: ['外贸'] })
+    refresh()
+  }
+
+  const grouped = groupByStage(deals)
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800">💼 工作</h1>
-          <p className="text-sm text-gray-400 mt-0.5">外贸业务 · 独立站运营 · 工作流程</p>
+    <div className="p-4 md:p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Globe size={22} className="text-emerald-500" />
+          <h1 className="text-xl font-bold text-gray-800">工作台</h1>
+          <span className="text-xs text-gray-400">外贸 + 独立站</span>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
-        >
-          <Plus size={16} /> 新增
+        <button onClick={handleNewInquiry} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg text-xs font-medium hover:bg-emerald-600">
+          <Plus size={14} /> 新建询盘
         </button>
       </div>
+      <p className="text-xs text-gray-400 mb-4">
+        客户 → 商机 → 报价 → 订单 → 沟通 → 售后 → 复购。跟进沉淀在沟通记录，阶段流转全程留痕。
+      </p>
 
-      {/* Tab 切换 */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {tabs.map(tab => (
+      {/* Tabs */}
+      <div className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
+        {tabs.map(t => (
           <button
-            key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setShowForm(false) }}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
-              activeTab === tab.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
+              tab === t.key ? 'border-emerald-500 text-emerald-600 font-medium' : 'border-transparent text-gray-400 hover:text-gray-600'
             }`}
           >
-            <tab.icon size={14} />
-            {tab.label}
+            <t.icon size={14} /> {t.label}
           </button>
         ))}
       </div>
 
-      {/* 表单 */}
-      {showForm && (
-        <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
-          {activeTab === 'customers' && (
-            <>
-              <h3 className="text-sm font-semibold text-gray-700">新增客户</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input value={newCustomer.name} onChange={e => setNewCustomer({ ...newCustomer, name: e.target.value })} placeholder="客户名称" className={inputClass} autoFocus />
-                <input value={newCustomer.country} onChange={e => setNewCustomer({ ...newCustomer, country: e.target.value })} placeholder="国家/地区" className={inputClass} />
-                <input value={newCustomer.contact} onChange={e => setNewCustomer({ ...newCustomer, contact: e.target.value })} placeholder="联系方式（邮箱/WhatsApp）" className={inputClass} />
-              </div>
-              <textarea value={newCustomer.notes} onChange={e => setNewCustomer({ ...newCustomer, notes: e.target.value })} placeholder="备注..." rows={2} className={inputClass} />
-              <button onClick={addCustomer} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加客户</button>
-            </>
-          )}
-          {activeTab === 'inquiries' && (
-            <>
-              <h3 className="text-sm font-semibold text-gray-700">新增询盘</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input value={newInquiry.customerName} onChange={e => setNewInquiry({ ...newInquiry, customerName: e.target.value })} placeholder="客户名称" className={inputClass} autoFocus />
-                <input value={newInquiry.product} onChange={e => setNewInquiry({ ...newInquiry, product: e.target.value })} placeholder="产品 + 数量" className={inputClass} />
-                <input value={newInquiry.amount} onChange={e => setNewInquiry({ ...newInquiry, amount: e.target.value })} placeholder="预估金额（USD）" type="number" className={inputClass} />
-              </div>
-              <textarea value={newInquiry.notes} onChange={e => setNewInquiry({ ...newInquiry, notes: e.target.value })} placeholder="备注..." rows={2} className={inputClass} />
-              <button onClick={addInquiry} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加询盘</button>
-            </>
-          )}
-          {activeTab === 'sop' && (
-            <>
-              <h3 className="text-sm font-semibold text-gray-700">新增工作流程（SOP）</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input value={newSop.title} onChange={e => setNewSop({ ...newSop, title: e.target.value })} placeholder="流程名称" className={inputClass} autoFocus />
-                <input value={newSop.category} onChange={e => setNewSop({ ...newSop, category: e.target.value })} placeholder="分类（外贸/独立站/通用）" className={inputClass} />
-              </div>
-              <textarea value={newSop.steps} onChange={e => setNewSop({ ...newSop, steps: e.target.value })} placeholder="每行一个步骤..." rows={5} className={inputClass} />
-              <button onClick={addSop} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加流程</button>
-            </>
-          )}
-          {activeTab === 'templates' && (
-            <>
-              <h3 className="text-sm font-semibold text-gray-700">新增模板</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input value={newTemplate.title} onChange={e => setNewTemplate({ ...newTemplate, title: e.target.value })} placeholder="模板名称" className={inputClass} autoFocus />
-                <input value={newTemplate.category} onChange={e => setNewTemplate({ ...newTemplate, category: e.target.value })} placeholder="分类（外贸/独立站/通用）" className={inputClass} />
-              </div>
-              <textarea value={newTemplate.content} onChange={e => setNewTemplate({ ...newTemplate, content: e.target.value })} placeholder="模板内容...（用 [变量] 标记可替换部分）" rows={8} className={inputClass} />
-              <button onClick={addTemplate} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加模板</button>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* 客户管理 */}
-      {activeTab === 'customers' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data.customers.map(c => (
-            <div key={c.id} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 group">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
-                    {c.name[0]?.toUpperCase()}
+      {/* ====== 管道 ====== */}
+      {tab === 'pipeline' && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-400">管道价值 <b className="text-gray-600">${pipelineValue(deals).toLocaleString()}</b></span>
+            <span className="text-xs text-gray-400">悬停卡片可推进阶段</span>
+          </div>
+          <div className="grid grid-cols-3 lg:grid-cols-9 gap-1.5 overflow-x-auto pb-2">
+            {stageOrder.map(stage => {
+              const items = grouped[stage] ?? []
+              const isLost = stage === 'lost'
+              return (
+                <div key={stage} className={`rounded-xl border p-2 min-h-[100px] ${isLost ? 'bg-red-50/50 border-red-100' : 'bg-white border-gray-200'}`}>
+                  <div className={`text-[10px] font-medium mb-1.5 ${isLost ? 'text-red-400' : 'text-gray-400'}`}>
+                    {stageLabels[stage]} {items.length > 0 && `(${items.length})`}
                   </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-800 text-sm">{c.name}</h3>
-                    <p className="text-xs text-gray-400">🌍 {c.country}</p>
+                  <div className="space-y-1">
+                    {items.slice(0, 4).map(d => (
+                      <div key={d.id} className="bg-gray-50 border border-gray-100 rounded-lg p-1.5 group relative" title={d.title}>
+                        <div className="text-[10px] text-gray-700 truncate">{d.title}</div>
+                        {d.value != null && <div className="text-[9px] text-gray-400">${d.value}</div>}
+                        {!isLost && nextStageMap[d.stage] && (
+                          <button
+                            onClick={() => handleAdvance(d)}
+                            className="absolute inset-0 bg-emerald-500/90 text-white text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            推进 →
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {items.length > 4 && <div className="text-[9px] text-gray-300">+{items.length - 4}…</div>}
                   </div>
                 </div>
-                <button onClick={() => deleteItem('customers', c.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
-                  <Trash2 size={14} />
-                </button>
-              </div>
-              <div className="space-y-1.5 text-xs">
-                {c.contact && <p className="text-gray-500">📧 {c.contact}</p>}
-                {c.notes && <p className="text-gray-400">{c.notes}</p>}
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <select
-                  value={c.status}
-                  onChange={e => updateCustomerStatus(c.id, e.target.value as Customer['status'])}
-                  className={`text-[10px] px-2 py-1 rounded-full border-0 outline-none cursor-pointer ${statusColors[c.status]}`}
-                >
-                  <option value="lead">潜在客户</option>
-                  <option value="active">活跃客户</option>
-                  <option value="vip">VIP</option>
-                  <option value="inactive">inactive</option>
-                </select>
-              </div>
-            </div>
-          ))}
-          {data.customers.length === 0 && (
-            <div className="col-span-full text-center py-12 text-gray-400 text-sm">暂无客户，点击「新增」添加第一个客户</div>
+              )
+            })}
+          </div>
+          {deals.length === 0 && (
+            <p className="text-xs text-gray-400 text-center py-8">暂无商机 —— 点右上角「新建询盘」开始</p>
           )}
         </div>
       )}
 
-      {/* 询盘跟进 */}
-      {activeTab === 'inquiries' && (
-        <div className="space-y-3">
-          {/* 统计条 */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {(['new', 'quoted', 'negotiating', 'won', 'lost'] as const).map(s => (
-              <div key={s} className="bg-white rounded-xl p-3 border border-gray-100 text-center">
-                <div className={`text-2xl font-bold ${statusColors[s].split(' ')[1]}`}>{data.inquiries.filter(i => i.status === s).length}</div>
-                <div className="text-[10px] text-gray-400 mt-0.5">{statusLabels[s]}</div>
-              </div>
-            ))}
+      {/* ====== 客户 ====== */}
+      {tab === 'customers' && (
+        <div className="space-y-4">
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 grid grid-cols-1 sm:grid-cols-4 gap-2">
+            <input value={newCustomer.name} onChange={e => setNewCustomer({ ...newCustomer, name: e.target.value })} placeholder="客户名/公司" className={inputClass} />
+            <input value={newCustomer.country} onChange={e => setNewCustomer({ ...newCustomer, country: e.target.value })} placeholder="国家/地区" className={inputClass} />
+            <input value={newCustomer.contact} onChange={e => setNewCustomer({ ...newCustomer, contact: e.target.value })} placeholder="联系方式（邮箱/WhatsApp）" className={inputClass} />
+            <button onClick={handleAddCustomer} className="flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600">
+              <Plus size={14} /> 添加客户
+            </button>
           </div>
-          {/* 询盘列表 */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            {data.inquiries.map((i, idx) => (
-              <div key={i.id} className={`flex items-center gap-4 p-4 group hover:bg-gray-50 transition-colors ${idx > 0 ? 'border-t border-gray-50' : ''}`}>
-                <div className="flex-1 min-w-0">
+          {customers.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-8">暂无客户</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {customers.map(c => (
+                <div key={c.id} className="bg-white border border-gray-200 rounded-xl p-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-800 truncate">{c.title}</span>
+                    <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-[10px]">{c.stage}</span>
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1 flex flex-wrap gap-x-3">
+                    {c.email && <span>✉️ {c.email}</span>}
+                    {c.country && <span>📍 {c.country}</span>}
+                  </div>
+                  {c.notes && <p className="text-[11px] text-gray-400 mt-1 line-clamp-1">{c.notes}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ====== SOP ====== */}
+      {tab === 'sops' && (
+        <div className="space-y-4">
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input value={newSop.title} onChange={e => setNewSop({ ...newSop, title: e.target.value })} placeholder="SOP 标题" className={inputClass} />
+              <select value={newSop.category} onChange={e => setNewSop({ ...newSop, category: e.target.value })} className={inputClass}>
+                <option>外贸</option><option>独立站</option><option>通用</option>
+              </select>
+            </div>
+            <textarea value={newSop.stepsText} onChange={e => setNewSop({ ...newSop, stepsText: e.target.value })} rows={3} placeholder="每个步骤一行" className={inputClass} />
+            <button onClick={handleAddSop} className="flex items-center gap-1 px-3 py-1.5 bg-blue-500 text-white rounded-lg text-xs hover:bg-blue-600">
+              <Plus size={13} /> 添加 SOP
+            </button>
+          </div>
+          {sops.length === 0 ? <p className="text-xs text-gray-400 text-center py-8">暂无 SOP</p> : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {sops.map(s => (
+                <div key={s.id} className="bg-white border border-gray-200 rounded-xl p-3">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-gray-800">{i.customerName}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${statusColors[i.status]}`}>{statusLabels[i.status]}</span>
+                    <span className="text-sm font-medium text-gray-800">{s.title}</span>
+                    <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-[10px]">{s.category}</span>
                   </div>
-                  <p className="text-xs text-gray-500">{i.product}</p>
-                  {i.notes && <p className="text-[11px] text-gray-400 mt-0.5">{i.notes}</p>}
+                  <ol className="text-[11px] text-gray-500 list-decimal ml-4 space-y-0.5">
+                    {(s.steps ?? []).slice(0, 5).map((st: any) => <li key={st.id ?? st.order}>{st.title}</li>)}
+                  </ol>
                 </div>
-                {i.amount && (
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-gray-700">${i.amount.toLocaleString()}</div>
-                    <div className="text-[10px] text-gray-400">{i.date}</div>
-                  </div>
-                )}
-                <select
-                  value={i.status}
-                  onChange={e => updateInquiryStatus(i.id, e.target.value as Inquiry['status'])}
-                  className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white opacity-0 group-hover:opacity-100 transition-opacity outline-none"
-                >
-                  <option value="new">新建</option>
-                  <option value="quoted">已报价</option>
-                  <option value="negotiating">谈判中</option>
-                  <option value="won">已成交</option>
-                  <option value="lost">已流失</option>
-                </select>
-                <button onClick={() => deleteItem('inquiries', i.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-            {data.inquiries.length === 0 && (
-              <div className="p-12 text-center text-gray-400 text-sm">暂无询盘记录</div>
-            )}
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ====== 模板 ====== */}
+      {tab === 'templates' && (
+        <div className="space-y-4">
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input value={newTpl.title} onChange={e => setNewTpl({ ...newTpl, title: e.target.value })} placeholder="模板标题" className={inputClass} />
+              <select value={newTpl.category} onChange={e => setNewTpl({ ...newTpl, category: e.target.value })} className={inputClass}>
+                <option>外贸</option><option>独立站</option><option>通用</option>
+              </select>
+            </div>
+            <textarea value={newTpl.content} onChange={e => setNewTpl({ ...newTpl, content: e.target.value })} rows={3} placeholder="模板内容（支持占位符 [Name] [Product]）" className={inputClass} />
+            <button onClick={handleAddTemplate} className="flex items-center gap-1 px-3 py-1.5 bg-blue-500 text-white rounded-lg text-xs hover:bg-blue-600">
+              <Plus size={13} /> 添加模板
+            </button>
           </div>
-        </div>
-      )}
-
-      {/* 工作流程 SOP */}
-      {activeTab === 'sop' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.sops.map(sop => (
-            <div key={sop.id} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 group">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">{sop.category}</span>
-                  <h3 className="font-semibold text-gray-800 text-sm">{sop.title}</h3>
+          {templates.length === 0 ? <p className="text-xs text-gray-400 text-center py-8">暂无模板</p> : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {templates.map(t => (
+                <div key={t.id} className="bg-white border border-gray-200 rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-medium text-gray-800 truncate">{t.title}</span>
+                    <button onClick={() => copyTemplate(t)} className="ml-auto p-1 text-gray-300 hover:text-blue-500" title="复制">
+                      {copiedId === t.id ? <Check size={13} className="text-green-500" /> : <Copy size={13} />}
+                    </button>
+                  </div>
+                  <pre className="text-[10px] text-gray-400 bg-gray-50 rounded-lg p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">{t.content}</pre>
                 </div>
-                <button onClick={() => deleteItem('sop', sop.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
-                  <Trash2 size={14} />
-                </button>
-              </div>
-              <ol className="space-y-2">
-                {sop.steps.map((step, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-gray-600">
-                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gray-100 flex items-center justify-center text-[10px] font-bold text-gray-500">{i + 1}</span>
-                    <span className="pt-0.5">{step}</span>
-                  </li>
-                ))}
-              </ol>
+              ))}
             </div>
-          ))}
-          {data.sops.length === 0 && (
-            <div className="col-span-full text-center py-12 text-gray-400 text-sm">暂无工作流程</div>
           )}
         </div>
       )}
 
-      {/* 邮件模板 */}
-      {activeTab === 'templates' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.templates.map(t => (
-            <div key={t.id} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 group">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-600">{t.category}</span>
-                  <h3 className="font-semibold text-gray-800 text-sm">{t.title}</h3>
+      {/* ====== 独立站 ====== */}
+      {tab === 'site' && (
+        <div className="space-y-4">
+          {(!metrics || metrics.days === 0) ? (
+            <div className="bg-white border border-gray-200 rounded-2xl p-8 text-center">
+              <Package size={28} className="mx-auto text-gray-200 mb-2" />
+              <p className="text-xs text-gray-400">暂无站点数据 —— 到「外部集成」页运行 Shopify 同步</p>
+            </div>
+          ) : metrics && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <MetricCard label="访客" value={metrics.totalVisitors.toLocaleString()} sub={`${metrics.days} 天合计`} />
+                <MetricCard label="转化率" value={`${metrics.avgConversionRate}%`} sub={`${metrics.totalOrders} 单`} />
+                <MetricCard label="收入" value={`$${metrics.totalRevenue.toLocaleString()}`} sub={metrics.roas > 0 ? `ROAS ${metrics.roas}` : ''} highlight={metrics.roas >= 3} />
+                <MetricCard label="广告花费" value={`$${metrics.totalAdSpend.toLocaleString()}`} sub={`复购率 ${metrics.avgRepeatOrderRate}%`} />
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="bg-white border border-gray-200 rounded-2xl p-4">
+                  <h3 className="text-xs font-bold text-gray-700 mb-2">产品目录（{productCount.total}）</h3>
+                  <p className="text-[11px] text-gray-500">在售 {productCount.active} 个</p>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => copyTemplate(t.content)} className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50 transition-colors">
-                    复制
-                  </button>
-                  <button onClick={() => deleteItem('templates', t.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
-                    <Trash2 size={14} />
-                  </button>
+                <div className="bg-white border border-gray-200 rounded-2xl p-4">
+                  <h3 className="text-xs font-bold text-gray-700 mb-2">SEO 关键词</h3>
+                  {keywords.length === 0 ? <p className="text-[11px] text-gray-400">暂无</p> : keywords.map(k => (
+                    <div key={k.keyword} className="flex justify-between text-[11px] text-gray-600 py-0.5">
+                      <span className="truncate">{k.keyword}</span>
+                      <span className={((k.position ?? 99) <= 10) ? 'text-green-600' : 'text-gray-400'}>#{k.position ?? '-'}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <pre className="text-xs text-gray-500 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 max-h-48 overflow-y-auto font-mono leading-relaxed">{t.content}</pre>
-            </div>
-          ))}
-          {data.templates.length === 0 && (
-            <div className="col-span-full text-center py-12 text-gray-400 text-sm">暂无模板</div>
+            </>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function MetricCard({ label, value, sub, highlight }: { label: string; value: string; sub?: string; highlight?: boolean }) {
+  return (
+    <div className={`border rounded-2xl p-3 ${highlight ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}>
+      <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
+      <div className={`text-base font-bold ${highlight ? 'text-green-700' : 'text-gray-800'}`}>{value}</div>
+      {sub && <div className="text-[10px] text-gray-400">{sub}</div>}
     </div>
   )
 }

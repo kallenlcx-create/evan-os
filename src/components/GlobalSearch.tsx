@@ -23,8 +23,8 @@ const typeRoute: Record<string, string> = {
   review: '/actions', process: '/knowledge',
   customer: '/work', opportunity: '/work', order: '/work', communication: '/work',
   // v1.1 扩展源
-  memory: '/memory', tradeDeal: '/business', siteProduct: '/business',
-  seoKeyword: '/business', habit: '/life', dailyLog: '/journal',
+  memory: '/memory', tradeDeal: '/work', siteProduct: '/work',
+  seoKeyword: '/work', habit: '/life', dailyLog: '/journal',
   notification: '/sync',
 }
 

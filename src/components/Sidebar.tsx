@@ -1,50 +1,96 @@
-﻿import { NavLink, useNavigate } from 'react-router-dom'
+﻿import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   Home, Target, Briefcase, FolderKanban, CalendarCheck,
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
   ChevronLeft, ChevronRight, Plus, Settings, BarChart3, Eye, Zap,
-  Plug, TrendingUp, FlaskConical, Database, CloudUpload
+  Plug, TrendingUp, FlaskConical, Database, CloudUpload,
+  ChevronDown, Layers
 } from 'lucide-react'
+import { useState } from 'react'
 import { useStore } from '../store'
 
-const menuItems = [
-  { path: '/', icon: Home, label: '首页', emoji: '🏠' },
-  { path: '/goals', icon: Target, label: '目标', emoji: '🎯' },
-  { path: '/work', icon: Briefcase, label: '工作', emoji: '💼' },
-  { path: '/projects', icon: FolderKanban, label: '项目', emoji: '🚀' },
-  { path: '/actions', icon: CalendarCheck, label: '行动', emoji: '📅' },
-  { path: '/growth', icon: GraduationCap, label: '成长', emoji: '📚' },
-  { path: '/knowledge', icon: Brain, label: '知识与思考', emoji: '🧠' },
-  { path: '/memory', icon: Brain, label: 'AI 记忆', emoji: '💾' },
-  { path: '/inspector', icon: Eye, label: 'Context Inspector', emoji: '🧩' },
-  { path: '/life', icon: Heart, label: '生活', emoji: '🌿' },
-  { path: '/ai', icon: Bot, label: 'AI 中心', emoji: '🤖' },
-  { path: '/agents', icon: Bot, label: 'Agents', emoji: '🧑‍🚀' },
-  { path: '/workflows', icon: Zap, label: '自动化', emoji: '⚡' },
-  { path: '/integrations', icon: Plug, label: '外部集成', emoji: '🔌' },
-  { path: '/business', icon: TrendingUp, label: '业务', emoji: '📈' },
-  { path: '/ai-lab', icon: FlaskConical, label: 'AI 实验室', emoji: '🧪' },
-  { path: '/system', icon: Database, label: '系统架构', emoji: '🗄️' },
-  { path: '/sync', icon: CloudUpload, label: '云同步', emoji: '☁️' },
-  { path: '/stats', icon: BarChart3, label: '统计分析', emoji: '📊' },
+// ====== 全部导航项 ======
+const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
+  '/': { icon: Home, label: '首页', emoji: '🏠' },
+  '/goals': { icon: Target, label: '目标', emoji: '🎯' },
+  '/work': { icon: Briefcase, label: '工作台', emoji: '💼' },
+  '/projects': { icon: FolderKanban, label: '项目', emoji: '🚀' },
+  '/actions': { icon: CalendarCheck, label: '行动', emoji: '📅' },
+  '/growth': { icon: GraduationCap, label: '成长', emoji: '📚' },
+  '/knowledge': { icon: Brain, label: '知识与思考', emoji: '🧠' },
+  '/memory': { icon: Brain, label: 'AI 记忆', emoji: '💾' },
+  '/inspector': { icon: Eye, label: 'Context Inspector', emoji: '🧩' },
+  '/life': { icon: Heart, label: '生活', emoji: '🌿' },
+  '/ai': { icon: Bot, label: 'AI 中心', emoji: '🤖' },
+  '/agents': { icon: Bot, label: 'Agents', emoji: '🧑‍🚀' },
+  '/workflows': { icon: Zap, label: '自动化', emoji: '⚡' },
+  '/integrations': { icon: Plug, label: '外部集成', emoji: '🔌' },
+  '/business': { icon: TrendingUp, label: '业务', emoji: '📈' },
+  '/ai-lab': { icon: FlaskConical, label: 'AI 实验室', emoji: '🧪' },
+  '/system': { icon: Database, label: '系统架构', emoji: '🗄️' },
+  '/sync': { icon: CloudUpload, label: '云同步', emoji: '☁️' },
+  '/stats': { icon: BarChart3, label: '统计分析', emoji: '📊' },
+  '/settings': { icon: Settings, label: '设置', emoji: '⚙️' },
+}
+
+// ====== 分组定义 ======
+const GROUPS: { key: string; label: string; paths: string[] }[] = [
+  { key: 'core', label: '概览', paths: ['/', '/goals', '/actions', '/life'] },
+  { key: 'work', label: '工作', paths: ['/work', '/projects'] },
+  { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/ai-lab'] },
+  { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
+  { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/stats', '/system', '/settings'] },
 ]
 
-const bottomItems = [
-  { action: 'inbox', icon: Inbox, label: '全局收集', emoji: '📥' },
-  { action: 'search', icon: Search, label: '全局搜索', emoji: '🔍' },
-  { action: 'settings', icon: Settings, label: '设置', emoji: '⚙️' },
-  { action: 'notifications', icon: Bell, label: '通知', emoji: '🔔' },
-]
+const GROUP_LS_KEY = 'evan-os-nav-collapsed'
+
+function loadCollapsed(): string[] {
+  try {
+    const raw = localStorage.getItem(GROUP_LS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return []
+}
 
 export default function Sidebar() {
   const { app, toggleSidebar, setMobileNav, setNotificationPanel, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
   const navigate = useNavigate()
+  const location = useLocation()
   const unreadCount = getUnreadNotifications().length
 
-  // 移动端：抽屉开合；桌面端：保持原有固定/折叠行为
   const mobileOpen = app.mobileNavOpen
-
   const closeMobile = () => setMobileNav(false)
+
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>(loadCollapsed)
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups(prev => {
+      const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+      localStorage.setItem(GROUP_LS_KEY, JSON.stringify(next))
+      return next
+    })
+  }
+
+  const renderLink = (path: string) => {
+    const item = ITEMS[path]
+    if (!item) return null
+    return (
+      <NavLink
+        key={path}
+        to={path}
+        onClick={closeMobile}
+        className={({ isActive }) =>
+          `flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 transition-colors ${
+            isActive
+              ? 'bg-blue-50 text-blue-700 font-medium'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          } ${app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''}`
+        }
+      >
+        <span className="text-lg flex-shrink-0">{item.emoji}</span>
+        {!app.sidebarCollapsed && <span className="text-sm">{item.label}</span>}
+      </NavLink>
+    )
+  }
 
   return (
     <>
@@ -71,7 +117,6 @@ export default function Sidebar() {
         {app.sidebarCollapsed && (
           <span className="text-lg mx-auto">🧠</span>
         )}
-        {/* 移动端关闭按钮 */}
         <button
           onClick={closeMobile}
           className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 md:hidden"
@@ -81,25 +126,31 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {/* Main Menu */}
+      {/* 分组菜单 */}
       <nav className="flex-1 overflow-y-auto py-2 px-2">
-        {menuItems.map(item => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            onClick={closeMobile}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 transition-colors ${
-                isActive
-                  ? 'bg-blue-50 text-blue-700 font-medium'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              } ${app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''}`
-            }
-          >
-            <span className="text-lg flex-shrink-0">{item.emoji}</span>
-            {!app.sidebarCollapsed && <span className="text-sm">{item.label}</span>}
-          </NavLink>
-        ))}
+        {GROUPS.map(group => {
+          const collapsed = collapsedGroups.includes(group.key)
+          // 折叠时：若当前路由在本组内，自动视为展开（保持可见）
+          const activeInside = group.paths.some(p => location.pathname === p || (p !== '/' && location.pathname.startsWith(p)))
+          const showItems = !collapsed || activeInside
+          return (
+            <div key={group.key} className="mb-1.5">
+              {!app.sidebarCollapsed ? (
+                <button
+                  onClick={() => toggleGroup(group.key)}
+                  className="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] font-medium text-gray-400 uppercase tracking-wider hover:text-gray-600"
+                >
+                  <Layers size={10} />
+                  {group.label}
+                  <ChevronDown size={11} className={`ml-auto transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                </button>
+              ) : (
+                <div className="border-t border-gray-100 my-1 mx-2" />
+              )}
+              {showItems && group.paths.map(renderLink)}
+            </div>
+          )
+        })}
       </nav>
 
       {/* Bottom Global Tools */}
@@ -114,29 +165,30 @@ export default function Sidebar() {
           {!app.sidebarCollapsed && <span className="text-sm">快速捕获</span>}
         </button>
 
-        {bottomItems.map(item => (
-          <button
-            key={item.action}
-            onClick={() => {
-              closeMobile()
-              if (item.action === 'inbox') toggleQuickCapture()
-              if (item.action === 'search') toggleGlobalSearch()
-              if (item.action === 'settings') navigate('/settings')
-              if (item.action === 'notifications') setNotificationPanel(true)
-            }}
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors relative ${
-              app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''
-            }`}
-          >
-            <span className="text-lg flex-shrink-0">{item.emoji}</span>
-            {!app.sidebarCollapsed && <span className="text-sm">{item.label}</span>}
-            {item.action === 'notifications' && unreadCount > 0 && (
-              <span className="absolute top-1 right-1 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
-                {unreadCount}
-              </span>
-            )}
-          </button>
-        ))}
+        <button
+          onClick={() => { closeMobile(); toggleGlobalSearch() }}
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors ${
+            app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''
+          }`}
+        >
+          <Search size={18} className="flex-shrink-0" />
+          {!app.sidebarCollapsed && <span className="text-sm">全局搜索</span>}
+        </button>
+
+        <button
+          onClick={() => { closeMobile(); setNotificationPanel(true) }}
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors relative ${
+            app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''
+          }`}
+        >
+          <Bell size={18} className="flex-shrink-0" />
+          {!app.sidebarCollapsed && <span className="text-sm">通知</span>}
+          {unreadCount > 0 && (
+            <span className="absolute top-1 right-1 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
+              {unreadCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Toggle（仅桌面端显示） */}

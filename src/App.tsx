@@ -15,7 +15,6 @@ import ContextInspector from './pages/ContextInspector'
 import AgentsPage from './pages/AgentsPage'
 import WorkflowsPage from './pages/WorkflowsPage'
 import IntegrationsPage from './pages/IntegrationsPage'
-import BusinessPage from './pages/BusinessPage'
 import AiLabPage from './pages/AiLabPage'
 import SystemPage from './pages/SystemPage'
 import SyncPage from './pages/SyncPage'
@@ -41,7 +40,6 @@ export default function App() {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="workflows" element={<WorkflowsPage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
-          <Route path="business" element={<BusinessPage />} />
           <Route path="ai-lab" element={<AiLabPage />} />
           <Route path="system" element={<SystemPage />} />
           <Route path="sync" element={<SyncPage />} />
