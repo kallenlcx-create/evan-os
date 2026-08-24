@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { searchService, type SearchScope } from '../services/searchService'
-import type { ObjectType } from '../types'
+import type { SearchKind } from '../types'
 
 const typeLabel: Record<string, string> = {
   goal: '目标', domain: '领域', project: '项目', task: '任务',
@@ -22,9 +22,13 @@ const typeRoute: Record<string, string> = {
   research: '/knowledge', experiment: '/knowledge', decision: '/knowledge',
   review: '/actions', process: '/knowledge',
   customer: '/work', opportunity: '/work', order: '/work', communication: '/work',
+  // v1.1 扩展源
+  memory: '/memory', tradeDeal: '/business', siteProduct: '/business',
+  seoKeyword: '/business', habit: '/life', dailyLog: '/journal',
+  notification: '/sync',
 }
 
-const allTypes: { type: ObjectType; label: string }[] = [
+const allTypes: { type: SearchKind; label: string }[] = [
   { type: 'goal', label: '目标' },
   { type: 'project', label: '项目' },
   { type: 'task', label: '任务' },
@@ -33,6 +37,14 @@ const allTypes: { type: ObjectType; label: string }[] = [
   { type: 'inspiration', label: '灵感' },
   { type: 'question', label: '问题' },
   { type: 'decision', label: '决策' },
+  // v1.1 扩展源
+  { type: 'memory', label: 'AI 记忆' },
+  { type: 'tradeDeal', label: '外贸商机' },
+  { type: 'siteProduct', label: '站点产品' },
+  { type: 'seoKeyword', label: 'SEO' },
+  { type: 'habit', label: '习惯' },
+  { type: 'dailyLog', label: '日志' },
+  { type: 'notification', label: '通知' },
 ]
 
 const matchTypeBadge: Record<string, { label: string; color: string }> = {
@@ -48,7 +60,7 @@ export default function GlobalSearch() {
   const [recent, setRecent] = useState<ReturnType<typeof searchService.getRecent>>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [showFilters, setShowFilters] = useState(false)
-  const [selectedTypes, setSelectedTypes] = useState<Set<ObjectType>>(new Set())
+  const [selectedTypes, setSelectedTypes] = useState<Set<SearchKind>>(new Set())
   const [scope, setScope] = useState<SearchScope>('all')
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
@@ -96,7 +108,7 @@ export default function GlobalSearch() {
     navigate(route)
   }
 
-  const toggleType = (type: ObjectType) => {
+  const toggleType = (type: SearchKind) => {
     setSelectedTypes(prev => {
       const next = new Set(prev)
       if (next.has(type)) next.delete(type)

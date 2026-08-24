@@ -4,15 +4,16 @@ import { useEffect } from 'react'
 import Sidebar from './Sidebar'
 import GlobalSearch from './GlobalSearch'
 import QuickCapture from './QuickCapture'
+import NotificationCenter from './NotificationCenter'
 import { PageErrorBoundary } from './ErrorBoundary'
 import { useStore } from '../store'
 
 export default function Layout() {
-  const { app, toggleSidebar, setMobileNav, toggleGlobalSearch, toggleQuickCapture } = useStore()
+  const { app, toggleSidebar, setMobileNav, setNotificationPanel, toggleGlobalSearch, toggleQuickCapture, backupNeeded, runBackupNow, snoozeBackupReminder } = useStore()
   const location = useLocation()
 
   // 路由变化时收起移动端抽屉（兜底，导航点击时已处理）
-  useEffect(() => { setMobileNav(false) }, [location.pathname, setMobileNav])
+  useEffect(() => { setMobileNav(false); setNotificationPanel(false) }, [location.pathname, setMobileNav, setNotificationPanel])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -90,6 +91,17 @@ export default function Layout() {
           </button>
         </header>
 
+        {/* 备份提醒横幅 */}
+        {backupNeeded && (
+          <div className="px-4 md:px-6 pt-3">
+            <div className="max-w-7xl flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-700">
+              <span>🛡️ 已经超过 7 天没有备份数据了</span>
+              <button onClick={runBackupNow} className="ml-auto px-2.5 py-1 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600">立即备份</button>
+              <button onClick={snoozeBackupReminder} className="px-2 py-1 text-amber-500 hover:text-amber-700">稍后</button>
+            </div>
+          </div>
+        )}
+
         {/* 主内容区 */}
         <main className="p-4 md:p-6 max-w-7xl">
           <PageErrorBoundary key={location.pathname}>
@@ -99,6 +111,7 @@ export default function Layout() {
       </div>
       <GlobalSearch />
       <QuickCapture />
+      <NotificationCenter />
     </div>
   )
 }

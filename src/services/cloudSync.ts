@@ -141,10 +141,20 @@ export interface SyncSummary {
 
 class CloudSyncService {
   private transport: SyncTransport = httpTransport
+  private autoTimer: ReturnType<typeof setInterval> | null = null
+  private lastAutoSyncAt = 0
 
   /** 测试注入 Mock 传输层 */
   setTransport(t: SyncTransport): void {
     this.transport = t
+  }
+
+  /** 设置自动同步开关（持久化到配置） */
+  async setAutoSync(on: boolean): Promise<void> {
+    const cfg = await getSyncConfig()
+    if (!cfg) throw new Error('请先配置同步服务器')
+    await saveConfig({ ...cfg, autoSync: on })
+    if (on) this.startAutoSync()
   }
 
   async configure(serverUrl: string, username: string): Promise<void> {
@@ -197,6 +207,26 @@ class CloudSyncService {
   /**
    * 执行一次完整同步：推 → 推墓碑 → 拉 → LWW 应用
    */
+  /**
+   * 启动自动同步循环（应用启动时调用，幂等）。
+   * 策略：已登录且 autoSync 开启时，前台每 5 分钟 + 回到前台立即同步一次。
+   */
+  startAutoSync(): void {
+    if (this.autoTimer) return
+    const tick = async () => {
+      try {
+        const cfg = await getSyncConfig()
+        if (!cfg?.autoSync || !cfg.token) return
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+        if (Date.now() - this.lastAutoSyncAt < 60_000) return // 防抖
+        this.lastAutoSyncAt = Date.now()
+        await this.syncNow()
+      } catch { /* 静默失败，不打扰用户 */ }
+    }
+    this.autoTimer = setInterval(tick, 5 * 60_000)
+    void tick()
+  }
+
   async syncNow(): Promise<SyncSummary> {
     const cfg = await requireConfig()
     if (!cfg.token) throw new Error('尚未登录，请先在同步页登录')

@@ -3,7 +3,7 @@
 // 支持：关键词、对象类型、标签、状态、时间、关系、关联对象
 // 支持：搜索结果排序、最近使用、精确匹配、模糊匹配
 
-import type { AnyObject, ObjectType, RelationRecord, EventRecord } from '../types'
+import type { AnyObject, SearchKind, ObjectType, RelationRecord, EventRecord } from '../types'
 import { SearchIndex, type SearchResult, type IndexedItem } from './searchIndex'
 import { db } from '../db'
 import { getAllRelations } from '../repositories/relationRepository'
@@ -12,7 +12,7 @@ import { getAllEvents, getTimeline } from '../repositories/eventRepository'
 // ====== 搜索过滤器 ======
 
 export interface SearchFilters {
-  types?: ObjectType[]              // 对象类型过滤
+  types?: SearchKind[]              // 对象类型过滤
   tags?: string[]                   // 标签过滤
   status?: string                   // 状态过滤（如 done, in_progress）
   dateFrom?: string                 // 创建时间起始
@@ -54,35 +54,106 @@ export class SearchService {
 
   // ====== 从数据库加载数据并重建索引 ======
   async load(): Promise<void> {
-    // 加载所有对象
-    const tables: { type: ObjectType; table: string }[] = [
-      { type: 'goal', table: 'goals' },
-      { type: 'project', table: 'projects' },
-      { type: 'task', table: 'tasks' },
-      { type: 'customer', table: 'customers' },
-      { type: 'opportunity', table: 'opportunities' },
-      { type: 'order', table: 'orders' },
-      { type: 'communication', table: 'communications' },
-      { type: 'knowledge', table: 'knowledge' },
-      { type: 'inspiration', table: 'inspirations' },
-      { type: 'question', table: 'questions' },
-      { type: 'research', table: 'research' },
-      { type: 'experiment', table: 'experiments' },
-      { type: 'decision', table: 'decisions' },
-      { type: 'review', table: 'reviews' },
-      { type: 'process', table: 'processes' },
+    // 数据源清单：核心对象直接索引；扩展源经 mapRow 归一化为可索引形状
+    const SOURCES: {
+      kind: SearchKind
+      table: string
+      map?: (r: Record<string, any>) => Record<string, any>
+    }[] = [
+      { kind: 'goal', table: 'goals' },
+      { kind: 'domain', table: 'domains' },
+      { kind: 'project', table: 'projects' },
+      { kind: 'task', table: 'tasks' },
+      { kind: 'customer', table: 'customers' },
+      { kind: 'opportunity', table: 'opportunities' },
+      { kind: 'order', table: 'orders' },
+      { kind: 'communication', table: 'communications' },
+      { kind: 'knowledge', table: 'knowledge' },
+      { kind: 'inspiration', table: 'inspirations' },
+      { kind: 'question', table: 'questions' },
+      { kind: 'research', table: 'research' },
+      { kind: 'experiment', table: 'experiments' },
+      { kind: 'decision', table: 'decisions' },
+      { kind: 'review', table: 'reviews' },
+      { kind: 'process', table: 'processes' },
+      // ---- v1.1 扩展源 ----
+      {
+        kind: 'memory', table: 'memories',
+        map: r => ({
+          ...r,
+          title: r.summary || String(r.content ?? '').slice(0, 24),
+          description: String(r.content ?? ''),
+          emoji: '🧠',
+        }),
+      },
+      {
+        kind: 'tradeDeal', table: 'tradeDeals',
+        map: r => ({
+          ...r,
+          type: 'tradeDeal',
+          description: `${r.stage ?? ''}${r.value ? ` · $${r.value}` : ''}${r.inquirySource ? ` · ${r.inquirySource}` : ''}`,
+          emoji: '💼',
+          status: r.stage,
+        }),
+      },
+      {
+        kind: 'siteProduct', table: 'siteProducts',
+        map: r => ({
+          ...r,
+          type: 'siteProduct',
+          description: `${r.vendor ?? ''}${r.price ? ` · $${r.price}` : ''}`,
+          emoji: '🛍️',
+        }),
+      },
+      {
+        kind: 'seoKeyword', table: 'seoKeywords',
+        map: r => ({
+          id: r.id, type: 'seoKeyword',
+          title: r.keyword ?? '关键词',
+          description: `排名 #${r.position ?? '-'} · 流量 ${r.volume ?? '-'}`,
+          emoji: '🔍', tags: ['seo'],
+          createdAt: r.checkedAt, updatedAt: r.checkedAt,
+        }),
+      },
+      {
+        kind: 'habit', table: 'habits',
+        map: r => ({ ...r, type: 'habit', description: `连续 ${r.streak ?? 0} 天`, emoji: '✅' }),
+      },
+      {
+        kind: 'dailyLog', table: 'dailyLogs',
+        map: r => ({
+          id: r.id, type: 'dailyLog',
+          title: `日志 ${r.date}`,
+          description: String(r.content ?? '').slice(0, 80),
+          emoji: '📔', tags: [],
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'notification', table: 'notifications',
+        map: r => ({
+          id: r.id, type: 'notification',
+          title: r.title ?? '通知',
+          description: String(r.message ?? ''),
+          emoji: '🔔', tags: [],
+          status: r.read ? 'read' : 'unread',
+          createdAt: r.createdAt, updatedAt: r.createdAt,
+        }),
+      },
     ]
 
-    const objects: AnyObject[] = []
-    for (const { table } of tables) {
+    const objects: Record<string, any>[] = []
+    for (const src of SOURCES) {
       try {
-        const items = await (db as any)[table].toArray()
-        objects.push(...items)
-      } catch { /* skip */ }
+        const items: Record<string, any>[] = await (db as any)[src.table].toArray()
+        for (const item of items) {
+          objects.push(src.map ? src.map(item) : item)
+        }
+      } catch { /* 表缺失时跳过 */ }
     }
 
-    this.allObjects = objects
-    this.index.rebuild(objects)
+    this.allObjects = objects as unknown as AnyObject[]
+    this.index.rebuild(objects as unknown as AnyObject[])
 
     // 加载关系和事件
     try {
@@ -107,7 +178,7 @@ export class SearchService {
     }
   }
 
-  removeObject(id: string, type: ObjectType): void {
+  removeObject(id: string, type: SearchKind): void {
     this.index.remove(id)
     this.allObjects = this.allObjects.filter(o => o.id !== id)
   }
@@ -223,7 +294,7 @@ export class SearchService {
   }
 
   // ====== 快速对象搜索（同步，用于 UI 即时反馈）======
-  quickSearch(query: string, types?: ObjectType[]): SearchResult[] {
+  quickSearch(query: string, types?: SearchKind[]): SearchResult[] {
     return this.index.search(query, { types, limit: 20 })
   }
 

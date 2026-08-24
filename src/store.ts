@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { db, TABLES, exportDatabase, importDatabase, autoBackup } from './db'
+import { db, TABLES, exportDatabase, importDatabase, autoBackup, rotateBackupSnapshot } from './db'
 import type {
   Goal, Project, Task, Customer, Opportunity, Order, Communication,
   Knowledge, Inspiration, Question, Research, Experiment, Decision, Review, Process,
@@ -10,6 +10,11 @@ import { loadAllObjects } from './repositories/objectRepository'
 import { uid, now } from './repositories/result'
 import { searchService } from './services/searchService'
 import { relationQueryService } from './services/relationQueryService'
+
+/** 备份提醒间隔 / 滚动快照间隔 / 贪睡时长 */
+const BACKUP_REMIND_MS = 7 * 86400000
+const BACKUP_SNAPSHOT_MS = 7 * 86400000
+const BACKUP_SNOOZE_MS = 7 * 86400000
 
 // ====== Store 接口 ======
 export interface EvanStore {
@@ -43,6 +48,8 @@ export interface EvanStore {
 
   // UI 状态
   app: AppState
+  /** 距上次备份超过 7 天（提醒横幅用） */
+  backupNeeded: boolean
 
   // 初始化
   initFromDB: () => Promise<void>
@@ -50,6 +57,10 @@ export interface EvanStore {
   // UI 操作
   toggleSidebar: () => void
   setMobileNav: (open: boolean) => void
+  toggleNotificationPanel: () => void
+  setNotificationPanel: (open: boolean) => void
+  runBackupNow: () => Promise<void>
+  snoozeBackupReminder: () => void
   toggleGlobalSearch: () => void
   toggleQuickCapture: () => void
 
@@ -295,7 +306,10 @@ export const useStore = create<EvanStore>()((set, get) => ({
   habits: [], inbox: [], learningPaths: [], agents: [],
   notifications: [], dailyLogs: [], pomodoroSessions: [],
 
-  app: { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false, mobileNavOpen: false },
+  app: { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false, mobileNavOpen: false, notificationPanelOpen: false },
+
+  /** 距上次备份超过 7 天时提醒 */
+  backupNeeded: false,
 
   // ====== 从 IndexedDB 加载（通过 Repository）======
   initFromDB: async () => {
@@ -331,6 +345,23 @@ export const useStore = create<EvanStore>()((set, get) => ({
           } catch (err) {
             console.warn('[EvanOS] 读取 UI 状态失败:', err)
           }
+
+          // 备份提醒 + 每周滚动快照（存于 appState，用于误操作恢复）
+          try {
+            const lastRec = (await db.appState.get('backup:lastAt')) as any
+            const lastAt = Number(lastRec?.value ?? 0)
+            const snoozeRec = (await db.appState.get('backup:snooze')) as any
+            const snoozedUntil = Number(snoozeRec?.value ?? 0)
+            if (Date.now() - lastAt > BACKUP_REMIND_MS && Date.now() > snoozedUntil) {
+              state.backupNeeded = true
+            }
+            if (Date.now() - lastAt > BACKUP_SNAPSHOT_MS) {
+              await rotateBackupSnapshot()
+              await db.appState.put({ key: 'backup:lastAt', value: Date.now() })
+            }
+          } catch (err) {
+            console.warn('[EvanOS] 备份快照失败:', err)
+          }
         })(),
         new Promise(resolve => setTimeout(resolve, 4000)),
       ])
@@ -342,7 +373,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
     Object.keys(TABLES).forEach(name => {
       if (!state[name]) state[name] = (seed as any)[name] || []
     })
-    if (!state.app) state.app = { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false }
+    if (!state.app) state.app = { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false, mobileNavOpen: false, notificationPanelOpen: false }
 
     set(state)
     set({ loaded: true })
@@ -365,6 +396,22 @@ export const useStore = create<EvanStore>()((set, get) => ({
   setMobileNav: (open: boolean) => {
     // mobileNavOpen 为瞬态状态，不持久化
     set({ app: { ...get().app, mobileNavOpen: open } })
+  },
+  toggleNotificationPanel: () => {
+    set({ app: { ...get().app, notificationPanelOpen: !get().app.notificationPanelOpen } })
+  },
+  setNotificationPanel: (open: boolean) => {
+    set({ app: { ...get().app, notificationPanelOpen: open } })
+  },
+  runBackupNow: async () => {
+    await autoBackup() // 下载 JSON
+    await rotateBackupSnapshot() // 滚动快照
+    await db.appState.put({ key: 'backup:lastAt', value: Date.now() })
+    set({ backupNeeded: false })
+  },
+  snoozeBackupReminder: () => {
+    db.appState.put({ key: 'backup:snooze', value: Date.now() + BACKUP_SNOOZE_MS }).catch(() => {})
+    set({ backupNeeded: false })
   },
   toggleGlobalSearch: () => {
     const next = { ...get().app, globalSearchOpen: !get().app.globalSearchOpen }

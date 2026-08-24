@@ -2,13 +2,13 @@
 // 对所有可搜索对象建立关键词倒排索引，支持精确匹配和模糊匹配
 // 不使用向量数据库，纯结构化搜索
 
-import type { AnyObject, ObjectType, BaseObject } from '../types'
+import type { AnyObject, SearchKind, BaseObject } from '../types'
 
 // ====== 类型定义 ======
 
 export interface IndexedItem {
   id: string
-  type: ObjectType
+  type: SearchKind
   title: string
   description: string
   emoji: string
@@ -85,7 +85,7 @@ export class SearchIndex {
   private descIndex: PostingList = new Map()        // description 倒排索引
   private tagIndex: PostingList = new Map()         // tags 倒排索引
   private extraIndex: PostingList = new Map()       // 额外字段倒排索引
-  private typeIndex: Map<ObjectType, Set<string>> = new Map()  // 类型索引
+  private typeIndex: Map<SearchKind, Set<string>> = new Map()  // 类型索引
   private recentIds: string[] = []                  // 最近访问
   private readonly MAX_RECENT = 20
 
@@ -162,7 +162,7 @@ export class SearchIndex {
   }
 
   // ====== 获取按类型过滤的项 ======
-  getByType(type: ObjectType): IndexedItem[] {
+  getByType(type: SearchKind): IndexedItem[] {
     const ids = this.typeIndex.get(type)
     if (!ids) return []
     return Array.from(ids).map(id => this.items.get(id)).filter(Boolean) as IndexedItem[]
@@ -172,7 +172,7 @@ export class SearchIndex {
   search(
     query: string,
     options?: {
-      types?: ObjectType[]
+      types?: SearchKind[]
       tags?: string[]
       limit?: number
     }

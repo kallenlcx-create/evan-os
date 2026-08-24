@@ -160,5 +160,27 @@ assert('B17. getRecent 返回最近访问', searchService.getRecent(1)[0]?.id ==
 searchService.removeObject('st1', 'task')
 assert('B18. removeObject 后不再命中', searchService.quickSearch('联调').length === 0)
 
+// ====== C. v1.1 扩展数据源 ======
+console.log('— 扩展数据源 —')
+
+await db.memories.put({
+  id: 'mem-x', type: 'memory', status: 'active', content: '用户偏好深色界面主题',
+  source: { type: 'ai_suggestion', actorType: 'agent', occurredAt: new Date().toISOString() },
+  confidence: 0.8, importance: 0.6, tags: ['界面'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), useCount: 0,
+})
+await db.tradeDeals.put({
+  id: 'deal-x', title: 'LED 询盘 5000pcs', customerId: '', stage: 'quotation',
+  stageHistory: [], value: 8000, currency: 'USD', tags: ['外贸'],
+  createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+})
+await searchService.load()
+
+const memHit = searchService.quickSearch('深色界面')
+assert('C1. 记忆可被统一搜索命中', memHit.some(r => r.item.type === 'memory' && r.item.id === 'mem-x'))
+const dealHit = searchService.quickSearch('LED 询盘')
+assert('C2. 外贸商机可被统一搜索命中', dealHit.some(r => r.item.type === 'tradeDeal' && r.item.id === 'deal-x'))
+const memFiltered = searchService.quickSearch('深色', ['memory'])
+assert('C3. 类型过滤支持新种类', memFiltered.length === 1 && memFiltered[0].item.type === 'memory')
+
 console.log(`\n📊 结果: ${pass} 通过, ${fail} 失败\n`)
 process.exit(fail > 0 ? 1 : 0)

@@ -417,7 +417,18 @@ export interface AppState {
   globalSearchOpen: boolean
   quickCaptureOpen: boolean
   mobileNavOpen: boolean
+  notificationPanelOpen: boolean
 }
+
+/** 统一搜索覆盖的对象种类（核心对象 + v1.1 扩展源） */
+export type SearchKind = ObjectType
+  | 'memory'
+  | 'tradeDeal'
+  | 'siteProduct'
+  | 'seoKeyword'
+  | 'habit'
+  | 'dailyLog'
+  | 'notification'
 
 // ====== Memory System（v0.4）======
 // Memory ≠ Knowledge：
@@ -940,4 +951,6 @@ export interface CloudSyncConfig {
   lastPushAt?: string
   lastPullCursor?: string
   lastSyncAt?: string
+  /** 自动同步：应用启动时 + 每 5 分钟（前台时） */
+  autoSync?: boolean
 }

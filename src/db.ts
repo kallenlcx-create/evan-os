@@ -43,7 +43,7 @@ export class EvanOSDatabase extends Dexie {
   agents!: Table<AgentConfig, string>
   notifications!: Table<Notification, string>
   dailyLogs!: Table<DailyLog, string>
-  appState!: Table<AppState, string>
+  appState!: Table<any, string> // 混合用途：UI 状态 + 云同步配置 + 备份快照
   // v3 新增
   customers!: Table<Customer, string>
   opportunities!: Table<Opportunity, string>
@@ -558,11 +558,33 @@ export async function autoBackup() {
   const blob = new Blob([json], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  const date = new Date().toISOString().slice(0, 10)
   a.href = url
+  const date = new Date().toISOString().slice(0, 10)
   a.download = `evan-os-backup-${date}.json`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+// ====== 滚动快照（存于 appState，误操作后可恢复最近 3 份）======
+export async function rotateBackupSnapshot(): Promise<string> {
+  const json = await exportDatabase()
+  const ts = new Date().toISOString()
+  // 顺移：prev2 ← prev ← latest ← 新快照
+  const prev = await db.appState.get('backup:latest')
+  const prev2 = await db.appState.get('backup:prev')
+  if (prev) await db.appState.put({ ...prev, key: 'backup:prev' })
+  if (prev2) await db.appState.put({ ...prev2, key: 'backup:prev2' })
+  await db.appState.put({ key: 'backup:latest', at: ts, json })
+  return ts
+}
+
+export async function listBackupSnapshots(): Promise<{ key: string; at?: string }[]> {
+  const out: { key: string; at?: string }[] = []
+  for (const key of ['backup:latest', 'backup:prev', 'backup:prev2']) {
+    const rec = (await db.appState.get(key)) as any
+    if (rec) out.push({ key, at: rec.at })
+  }
+  return out
 }

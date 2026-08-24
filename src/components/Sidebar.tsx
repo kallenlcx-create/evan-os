@@ -37,7 +37,7 @@ const bottomItems = [
 ]
 
 export default function Sidebar() {
-  const { app, toggleSidebar, setMobileNav, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
+  const { app, toggleSidebar, setMobileNav, setNotificationPanel, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
   const navigate = useNavigate()
   const unreadCount = getUnreadNotifications().length
 
@@ -122,7 +122,7 @@ export default function Sidebar() {
               if (item.action === 'inbox') toggleQuickCapture()
               if (item.action === 'search') toggleGlobalSearch()
               if (item.action === 'settings') navigate('/settings')
-              if (item.action === 'notifications') navigate('/sync')
+              if (item.action === 'notifications') setNotificationPanel(true)
             }}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors relative ${
               app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''

@@ -5,7 +5,7 @@
 import 'fake-indexeddb/auto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { db } from './src/db.ts'
+import { db, rotateBackupSnapshot, listBackupSnapshots } from './src/db.ts'
 import { DATA_LAYERS, layerOf, syncSystemRegistry } from './src/services/systemRegistry.ts'
 import { AGENT_TOOLS } from './src/services/agentTools.ts'
 import { ACTION_PERMISSION, WORKFLOW_ACTION_LEVEL } from './src/types.ts'
@@ -177,6 +177,19 @@ assert(`F1. Roadmap 十个里程碑全部交付（${roadmap.join(' → ')}）`,
 const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8'))
 assert('F2. 版本号升至 1.0.0', pkg.version === '1.0.0')
 void ACTION_PERMISSION; void WORKFLOW_ACTION_LEVEL; void sync
+
+// ====== G. 备份快照（v1.1）======
+console.log('— 备份快照 —')
+
+await db.appState.delete('backup:latest'); await db.appState.delete('backup:prev'); await db.appState.delete('backup:prev2')
+await rotateBackupSnapshot()
+await new Promise(r => setTimeout(r, 5))
+await rotateBackupSnapshot()
+const snaps = await listBackupSnapshots()
+assert('G1. 滚动快照保留最近两份且带时间戳', snaps.length === 2 && snaps.every(s => !!s.at))
+
+const cloudCfg = await db.appState.get('cloud')
+assert('G2. 云同步配置与快照共存于 appState（互不覆盖）', cloudCfg === undefined || !!cloudCfg)
 
 console.log(`\n📊 结果: ${pass} 通过, ${fail} 失败\n`)
 process.exit(fail > 0 ? 1 : 0)

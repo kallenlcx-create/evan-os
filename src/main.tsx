@@ -42,3 +42,7 @@ useStore.getState().initFromDB()
 if (navigator.storage?.persist) {
   navigator.storage.persist().catch(() => {})
 }
+
+// 云同步：已开启自动同步的设备，启动即挂载同步循环
+import { cloudSync } from './services/cloudSync'
+void cloudSync.startAutoSync()

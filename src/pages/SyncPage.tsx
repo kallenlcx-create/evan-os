@@ -145,16 +145,34 @@ export default function SyncPage() {
             <LogIn size={14} /> {busy === 'login' ? '登录中…' : '登录 / 注册'}
           </button>
         ) : (
-          <div className="flex gap-2">
-            <button onClick={handleSync} disabled={busy === 'sync'}
-              className="flex items-center gap-1.5 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50">
-              <RefreshCw size={14} className={busy === 'sync' ? 'animate-spin' : ''} />
-              {busy === 'sync' ? '同步中…' : '立即同步'}
-            </button>
-            <button onClick={handleLogout}
-              className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 text-gray-600 rounded-xl text-sm hover:bg-gray-200">
-              <LogOut size={14} /> 退出登录
-            </button>
+          <div className="space-y-3">
+            {/* 自动同步开关 */}
+            <label className="flex items-center justify-between bg-gray-50 border border-gray-100 rounded-xl px-3 py-2.5 cursor-pointer">
+              <div>
+                <div className="text-xs font-medium text-gray-700">自动同步</div>
+                <div className="text-[10px] text-gray-400">应用启动时 + 前台每 5 分钟自动执行</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={!!cfg?.autoSync}
+                onChange={async e => {
+                  try { await cloudSync.setAutoSync(e.target.checked) } catch (err) { setMessage({ ok: false, text: String(err).slice(0, 120) }) }
+                  refresh()
+                }}
+                className="w-4 h-4 accent-green-500"
+              />
+            </label>
+            <div className="flex gap-2">
+              <button onClick={handleSync} disabled={busy === 'sync'}
+                className="flex items-center gap-1.5 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50">
+                <RefreshCw size={14} className={busy === 'sync' ? 'animate-spin' : ''} />
+                {busy === 'sync' ? '同步中…' : '立即同步'}
+              </button>
+              <button onClick={handleLogout}
+                className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 text-gray-600 rounded-xl text-sm hover:bg-gray-200">
+                <LogOut size={14} /> 退出登录
+              </button>
+            </div>
           </div>
         )}
       </div>
