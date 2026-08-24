@@ -37,16 +37,32 @@ const bottomItems = [
 ]
 
 export default function Sidebar() {
-  const { app, toggleSidebar, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
+  const { app, toggleSidebar, setMobileNav, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
   const navigate = useNavigate()
   const unreadCount = getUnreadNotifications().length
 
+  // 移动端：抽屉开合；桌面端：保持原有固定/折叠行为
+  const mobileOpen = app.mobileNavOpen
+
+  const closeMobile = () => setMobileNav(false)
+
   return (
-    <aside
-      className={`fixed left-0 top-0 h-full bg-white border-r border-gray-200 flex flex-col z-30 transition-all duration-200 ${
-        app.sidebarCollapsed ? 'w-[60px]' : 'w-[220px]'
-      }`}
-    >
+    <>
+      {/* 移动端遮罩 */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-30 md:hidden"
+          onClick={closeMobile}
+        />
+      )}
+
+      <aside
+        className={`fixed left-0 top-0 h-full bg-white border-r border-gray-200 flex flex-col z-40
+          w-[240px] transition-transform duration-200 ease-out
+          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
+          md:translate-x-0 md:transition-all
+          ${app.sidebarCollapsed ? 'md:w-[60px]' : 'md:w-[220px]'}`}
+      >
       {/* Logo */}
       <div className="h-12 flex items-center px-3 border-b border-gray-100 shrink-0">
         {!app.sidebarCollapsed && (
@@ -55,6 +71,14 @@ export default function Sidebar() {
         {app.sidebarCollapsed && (
           <span className="text-lg mx-auto">🧠</span>
         )}
+        {/* 移动端关闭按钮 */}
+        <button
+          onClick={closeMobile}
+          className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 md:hidden"
+          title="关闭菜单"
+        >
+          ✕
+        </button>
       </div>
 
       {/* Main Menu */}
@@ -63,12 +87,13 @@ export default function Sidebar() {
           <NavLink
             key={item.path}
             to={item.path}
+            onClick={closeMobile}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 transition-colors ${
                 isActive
                   ? 'bg-blue-50 text-blue-700 font-medium'
                   : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              } ${app.sidebarCollapsed ? 'justify-center px-2' : ''}`
+              } ${app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''}`
             }
           >
             <span className="text-lg flex-shrink-0">{item.emoji}</span>
@@ -80,9 +105,9 @@ export default function Sidebar() {
       {/* Bottom Global Tools */}
       <div className="border-t border-gray-100 py-2 px-2">
         <button
-          onClick={toggleQuickCapture}
+          onClick={() => { closeMobile(); toggleQuickCapture() }}
           className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors ${
-            app.sidebarCollapsed ? 'justify-center px-2' : ''
+            app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''
           }`}
         >
           <Plus size={18} className="flex-shrink-0" />
@@ -93,13 +118,14 @@ export default function Sidebar() {
           <button
             key={item.action}
             onClick={() => {
+              closeMobile()
               if (item.action === 'inbox') toggleQuickCapture()
               if (item.action === 'search') toggleGlobalSearch()
               if (item.action === 'settings') navigate('/settings')
-              if (item.action === 'notifications') toggleGlobalSearch()
+              if (item.action === 'notifications') navigate('/sync')
             }}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors relative ${
-              app.sidebarCollapsed ? 'justify-center px-2' : ''
+              app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''
             }`}
           >
             <span className="text-lg flex-shrink-0">{item.emoji}</span>
@@ -113,13 +139,14 @@ export default function Sidebar() {
         ))}
       </div>
 
-      {/* Toggle */}
+      {/* Toggle（仅桌面端显示） */}
       <button
         onClick={toggleSidebar}
-        className="h-10 flex items-center justify-center border-t border-gray-100 text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+        className="hidden md:flex h-10 items-center justify-center border-t border-gray-100 text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
       >
         {app.sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
       </button>
     </aside>
+    </>
   )
 }

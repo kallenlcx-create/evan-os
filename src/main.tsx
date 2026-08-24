@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import './index.css'
 
 // 预加载数据库，等数据就绪后再渲染
@@ -28,7 +29,11 @@ function Root() {
 
 const container = document.getElementById('root')!
 const root = createRoot(container)
-root.render(<Root />)
+root.render(
+  <ErrorBoundary level="root">
+    <Root />
+  </ErrorBoundary>
+)
 
 // 初始化数据库
 useStore.getState().initFromDB()

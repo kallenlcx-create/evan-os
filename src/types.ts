@@ -416,6 +416,7 @@ export interface AppState {
   sidebarCollapsed: boolean
   globalSearchOpen: boolean
   quickCaptureOpen: boolean
+  mobileNavOpen: boolean
 }
 
 // ====== Memory System（v0.4）======

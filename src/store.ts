@@ -49,6 +49,7 @@ export interface EvanStore {
 
   // UI 操作
   toggleSidebar: () => void
+  setMobileNav: (open: boolean) => void
   toggleGlobalSearch: () => void
   toggleQuickCapture: () => void
 
@@ -294,7 +295,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
   habits: [], inbox: [], learningPaths: [], agents: [],
   notifications: [], dailyLogs: [], pomodoroSessions: [],
 
-  app: { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false },
+  app: { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false, mobileNavOpen: false },
 
   // ====== 从 IndexedDB 加载（通过 Repository）======
   initFromDB: async () => {
@@ -360,6 +361,10 @@ export const useStore = create<EvanStore>()((set, get) => ({
     const next = { ...get().app, sidebarCollapsed: !get().app.sidebarCollapsed }
     set({ app: next })
     db.appState.put(next, 'app').catch(() => {})
+  },
+  setMobileNav: (open: boolean) => {
+    // mobileNavOpen 为瞬态状态，不持久化
+    set({ app: { ...get().app, mobileNavOpen: open } })
   },
   toggleGlobalSearch: () => {
     const next = { ...get().app, globalSearchOpen: !get().app.globalSearchOpen }
