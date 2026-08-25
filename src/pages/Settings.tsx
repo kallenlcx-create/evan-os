@@ -315,6 +315,30 @@ export default function SettingsPage() {
                   </button>
                 )}
               </label>
+              <div className="mt-3">
+                <div className="text-[10px] text-gray-400 mb-1.5">每周工作日（非工作日不提醒、首页显示休息）</div>
+                <div className="flex gap-1.5">
+                  {['日', '一', '二', '三', '四', '五', '六'].map((d, idx) => {
+                    const on = (workHours as any).workdays?.includes(idx) ?? (idx >= 1 && idx <= 5)
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          const wd = new Set<number>((workHours as any).workdays ?? [1, 2, 3, 4, 5])
+                          if (wd.has(idx)) wd.delete(idx); else wd.add(idx)
+                          const next = { ...workHours, workdays: [...wd].sort((a, b) => a - b) } as any
+                          setWorkHoursState(next)
+                          localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
+                          window.dispatchEvent(new Event('evan-work-hours'))
+                        }}
+                        className={`w-8 h-8 rounded-full text-[11px] border transition-colors ${on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-400 border-gray-200 hover:border-gray-300'}`}
+                      >
+                        {d}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             </div>
 
             <div className="pt-4 border-t border-gray-100">

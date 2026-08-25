@@ -8,6 +8,7 @@ import type { Task } from '../types'
 
 const tabs = [
   { key: 'today', label: '📅 今日', icon: Calendar },
+  { key: 'calendar', label: '🗓️ 日历', icon: Calendar },
   { key: 'quadrant', label: '📊 四象限', icon: Grid3X3 },
   { key: 'pomodoro', label: '🍅 番茄钟', icon: Timer },
   { key: 'recurring', label: '🔄 重复事项', icon: RotateCw },
@@ -28,6 +29,7 @@ export default function ActionsPage() {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('today')
   const [newTask, setNewTask] = useState('')
+  const [calMonth, setCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
 
   // 复盘表单状态
   const [showReviewForm, setShowReviewForm] = useState(false)
@@ -74,6 +76,66 @@ export default function ActionsPage() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'calendar': {
+        const year = calMonth.getFullYear()
+        const month = calMonth.getMonth()
+        const firstDow = (new Date(year, month, 1).getDay() + 6) % 7 // 周一=0
+        const daysInMonth = new Date(year, month + 1, 0).getDate()
+        const cells: (string | null)[] = Array(firstDow).fill(null)
+        for (let d = 1; d <= daysInMonth; d++) {
+          cells.push(`${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`)
+        }
+        const todayKey = new Date().toISOString().slice(0, 10)
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <button onClick={() => setCalMonth(new Date(year, month - 1, 1))} className="px-3 py-1.5 bg-gray-100 rounded-lg text-xs hover:bg-gray-200">← 上月</button>
+              <span className="text-sm font-semibold text-gray-700">{year} 年 {month + 1} 月</span>
+              <button onClick={() => setCalMonth(new Date(year, month + 1, 1))} className="px-3 py-1.5 bg-gray-100 rounded-lg text-xs hover:bg-gray-200">下月 →</button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-gray-400">
+              {['一', '二', '三', '四', '五', '六', '日'].map(d => <div key={d} className="py-1">{d}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((ds, i) => ds === null ? <div key={`e${i}`} /> : (() => {
+                const dayItems = tasks.filter(t => t.dueDate === ds && t.status !== 'cancelled')
+                const isToday = ds === todayKey
+                return (
+                  <div key={ds} className={`min-h-[76px] rounded-lg border p-1 ${isToday ? 'border-blue-400 bg-blue-50/40' : 'border-gray-100 bg-white'}`}>
+                    <div className={`text-[10px] mb-0.5 ${isToday ? 'text-blue-600 font-bold' : 'text-gray-400'}`}>
+                      {Number(ds.slice(-2))}
+                    </div>
+                    <div className="space-y-0.5">
+                      {dayItems.map(it => (
+                        <button
+                          key={it.id}
+                          onClick={() => toggleTaskStatus(it.id)}
+                          title={`${it.title}（点击切换完成）`}
+                          className={`block w-full text-left text-[9px] px-1 py-0.5 rounded truncate ${it.status === 'done' ? 'bg-green-100 text-green-600 line-through' : 'bg-blue-100 text-blue-700'}`}
+                        >
+                          {it.title}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const title = prompt(`${ds} 添加特殊事项：`)
+                        if (title?.trim()) await addTask({ title: title.trim(), dueDate: ds })
+                      }}
+                      className="w-full text-[9px] text-gray-300 hover:text-blue-500 mt-0.5"
+                    >
+                      ＋
+                    </button>
+                  </div>
+                )
+              })())}
+            </div>
+            <p className="text-[10px] text-gray-300">
+              点日期格内「＋」添加特殊事项（到该日期才会出现在首页「今日事项」）；点事项条目切换完成状态。
+            </p>
+          </div>
+        )
+      }
       case 'today':
         return (
           <div className="space-y-4">

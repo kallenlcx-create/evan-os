@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox, Trash2 } from 'lucide-react'
@@ -58,12 +58,24 @@ function StatusStrip() {
 const WORK_HOURS_KEY = 'evan-os-work-hours'
 const DEFAULT_WORK_HOURS = { startAM: '09:00', endAM: '12:00', startPM: '13:30', endPM: '18:00' }
 
+function readWorkHours() {
+  try { return { ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) } }
+  catch { return { ...DEFAULT_WORK_HOURS } }
+}
+/** 是否处于工作时间（工作日 + 时段区间内） */
+function isWorkNow(): boolean {
+  const h = readWorkHours()
+  const d = new Date()
+  const workdays: number[] = (h as any).workdays ?? [1, 2, 3, 4, 5]
+  if (!workdays.includes(d.getDay())) return false
+  const cur = d.getHours() * 60 + d.getMinutes()
+  const toMin = (s: string) => { const [a, b] = s.split(':').map(Number); return a * 60 + b }
+  return cur >= toMin(h.startAM) && cur <= toMin(h.endPM)
+}
+
 function ClockWork() {
   const [now, setNow] = useState(new Date())
-  const [hours, setHours] = useState(() => {
-    try { return { ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) } }
-    catch { return DEFAULT_WORK_HOURS }
-  })
+  const [hours, setHours] = useState(readWorkHours)
   const notifiedRef = useRef('')
 
   useEffect(() => {
@@ -87,12 +99,13 @@ function ClockWork() {
   ]
 
   const todayAt = (s: string) => { const [h, m] = s.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d }
-  const isWeekend = now.getDay() === 0 || now.getDay() === 6
+  const workdays: number[] = (hours as any).workdays ?? [1, 2, 3, 4, 5]
+  const isOffDay = !workdays.includes(now.getDay())
   const sAM = todayAt(hours.startAM), eAM = todayAt(hours.endAM), sPM = todayAt(hours.startPM), ePM = todayAt(hours.endPM)
 
   let target: Date | null = null
   let label = '已下班 🎉'
-  if (isWeekend) { label = '周末休息 🎉' }
+  if (isOffDay) { label = '今天休息 🎉' }
   else if (now < sAM) { target = sAM; label = '距离上班' }
   else if (now < eAM) { target = eAM; label = '距离上午下班' }
   else if (now < sPM) { target = sPM; label = '距离下午上班' }
@@ -109,14 +122,14 @@ function ClockWork() {
 
   // 跨过下班/上班节点 → 桌面通知（每天每节点一次）
   useEffect(() => {
-    if (isWeekend || !target || now < target) return
+    if (isOffDay || !target || now < target) return
     const key = `${label}:${now.toDateString()}`
     if (notifiedRef.current === key) return
     notifiedRef.current = key
     if (localStorage.getItem('evan-os-offwork-notify') !== '0' && 'Notification' in window && Notification.permission === 'granted') {
       try { new Notification('Evan OS', { body: `${label} — 时间到！` }) } catch { /* ignore */ }
     }
-  }, [now, target, label, isWeekend])
+  }, [now, target, label, isOffDay])
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -138,7 +151,7 @@ function ClockWork() {
       </div>
       <div className="col-span-2 bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <div className="text-[10px] text-gray-400 mb-1">💼 工作状态</div>
-        {isWeekend || label.includes('已下班') ? (
+        {isOffDay || label.includes('已下班') ? (
           <div className="text-xl font-bold text-emerald-500">{label}</div>
         ) : (
           <>
@@ -156,17 +169,100 @@ function ClockWork() {
 }
 
 export default function HomePage() {
-  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, addHabit, updateHabit, deleteHabit, markNotificationRead, setNotificationPanel, updateObject, deleteObject } = useStore()
+  const { projects, habits, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, addHabit, updateHabit, deleteHabit, updateObject, deleteObject } = useStore()
   const navigate = useNavigate()
+  const todayStr = new Date().toISOString().slice(0, 10)
   const [newTask, setNewTask] = useState('')
-  const [showHabitForm, setShowHabitForm] = useState(false)
-  const [newHabit, setNewHabit] = useState({ title: '', emoji: '✅' })
   const [reviewDoneToday, setReviewDoneToday] = useState(false)
   const [inboxPending, setInboxPending] = useState(0)
-  const todayTasks = getTodayTasks()
-  const unreadNotifs = getUnreadNotifications()
+  const [itemDate, setItemDate] = useState(todayStr)
+  const todayItems = tasks.filter(t => (t.dueDate ?? '') === itemDate && t.status !== 'cancelled')
 
-  const todayStr = new Date().toISOString().slice(0, 10)
+  // 补水（上午 2 杯 + 下午 2 杯，按天记录）
+  const [water, setWater] = useState(() => {
+    try { const r = JSON.parse(localStorage.getItem('evan-os-water') || 'null'); if (r?.date === todayStr) return r } catch { /* ignore */ }
+    return { date: todayStr, am: [false, false], pm: [false, false] }
+  })
+  const toggleCup = (period: 'am' | 'pm', idx: number) => {
+    const next = { ...water, date: todayStr, [period]: (water as any)[period].map((v: boolean, i: number) => i === idx ? !v : v) }
+    setWater(next)
+    localStorage.setItem('evan-os-water', JSON.stringify(next))
+  }
+
+  // 久坐提醒（50 分钟一次，仅工作时间）
+  const [sedentaryMin, setSedentaryMin] = useState(0)
+  useEffect(() => {
+    const tick = () => {
+      const last = Number(localStorage.getItem('evan-os-sedentary-last') || Date.now())
+      setSedentaryMin(Math.floor((Date.now() - last) / 60000))
+      if (isWorkNow() && Date.now() - last >= 50 * 60000) {
+        localStorage.setItem('evan-os-sedentary-last', String(Date.now()))
+        if ('Notification' in window && Notification.permission === 'granted') {
+          try { new Notification('Evan OS', { body: '久坐 50 分钟啦，起来接杯水活动一下 💧' }) } catch { /* ignore */ }
+        }
+      }
+    }
+    tick()
+    const t = setInterval(tick, 30_000)
+    return () => clearInterval(t)
+  }, [])
+  const resetSedentary = () => {
+    localStorage.setItem('evan-os-sedentary-last', String(Date.now()))
+    setSedentaryMin(0)
+  }
+
+  // 天气
+  const [weather, setWeather] = useState<{ temp: number; desc: string; emoji: string; city: string } | null>(null)
+  const [weatherError, setWeatherError] = useState('')
+  const loadWeather = useCallback(async (cityOverride?: string) => {
+    setWeatherError('')
+    try {
+      const savedCity = cityOverride ?? localStorage.getItem('evan-os-weather-city') ?? ''
+      const cacheRaw = localStorage.getItem('evan-os-weather')
+      if (!cityOverride && cacheRaw) {
+        const cached = JSON.parse(cacheRaw)
+        if (Date.now() - cached.at < 3600_000 && cached.city === savedCity) { setWeather(cached); return }
+      }
+      let lat = 39.9042, lon = 116.4074, city = '北京'
+      if (savedCity) {
+        city = savedCity
+        const geo = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(savedCity)}&count=1&language=zh`).then(r => r.json()).catch(() => null)
+        if (geo?.results?.[0]) { lat = geo.results[0].latitude; lon = geo.results[0].longitude }
+      } else if (navigator.geolocation) {
+        const pos = await new Promise<GeolocationPosition>((res, rej) =>
+          navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000 })
+        ).catch(() => null)
+        if (pos) { lat = pos.coords.latitude; lon = pos.coords.longitude; city = '当前位置' }
+      }
+      const w = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`).then(r => r.json())
+      const code: number = w.current_weather?.weathercode ?? 0
+      const table: [number[], string, string][] = [
+        [[0], '晴', '☀️'],
+        [[1, 2, 3], '多云', '⛅'],
+        [[45, 48], '雾', '🌫️'],
+        [[51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82], '雨', '🌧️'],
+        [[71, 73, 75, 77, 85, 86], '雪', '🌨️'],
+        [[95, 96, 99], '雷雨', '⛈️'],
+      ]
+      const hit = table.find(([codes]) => codes.includes(code))
+      const data = {
+        temp: Math.round(w.current_weather?.temperature ?? 0),
+        desc: hit?.[1] ?? '—',
+        emoji: hit?.[2] ?? '🌡️',
+        city,
+      }
+      setWeather(data)
+      localStorage.setItem('evan-os-weather', JSON.stringify({ at: Date.now(), ...data }))
+    } catch {
+      setWeatherError('天气获取失败（检查网络或定位权限）')
+    }
+  }, [])
+  const changeCity = () => {
+    const c = prompt('输入城市名（如：上海）')
+    if (c?.trim()) { localStorage.setItem('evan-os-weather-city', c.trim()); loadWeather(c.trim()) }
+  }
+  useEffect(() => { loadWeather() }, [loadWeather])
+
   const todayLog = getDailyLog(todayStr)
   const todayPomo = getTodayPomodoroStats()
 
@@ -183,7 +279,7 @@ export default function HomePage() {
 
   const handleAddTask = () => {
     if (!newTask.trim()) return
-    addTask({ title: newTask.trim() })
+    addTask({ title: newTask.trim(), dueDate: itemDate })
     setNewTask('')
   }
 
@@ -213,26 +309,33 @@ export default function HomePage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 左列：今日重点 + 待办 */}
         <div className="lg:col-span-2 space-y-6">
-          {/* 今日重点 */}
+          {/* 今日事项 */}
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                <span>📋</span> 今日重点
+                <span>📋</span> 今日事项
               </h2>
               <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
-                {todayTasks.filter(t => t.status === 'done').length}/{todayTasks.length} 完成
+                {todayItems.filter(t => t.status === 'done').length}/{todayItems.length} 完成
               </span>
             </div>
 
-            {/* 添加任务 */}
-            <div className="flex gap-2 mb-4">
+            {/* 添加事项（可指定日期，到当天才显示） */}
+            <div className="flex gap-2 mb-4 flex-wrap">
               <input
                 type="text"
                 value={newTask}
                 onChange={e => setNewTask(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleAddTask()}
-                placeholder="添加今日任务..."
-                className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-300 transition-all"
+                placeholder="添加事项..."
+                className="flex-1 min-w-[140px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-300 transition-all"
+              />
+              <input
+                type="date"
+                value={itemDate}
+                onChange={e => setItemDate(e.target.value)}
+                title="事项日期（到该日期才会出现在首页）"
+                className="px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-500"
               />
               <button
                 onClick={handleAddTask}
@@ -244,29 +347,30 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* 任务列表 */}
+            {/* 事项列表 */}
             <div className="space-y-1">
-              {todayTasks.length === 0 && (
+              {todayItems.length === 0 && (
                 <div className="text-center py-8 text-gray-400 text-sm">
-                  🎉 今天没有待办事项，享受轻松的一天！
+                  🎉 {itemDate === todayStr ? '今天没有安排事项，享受轻松的一天！' : '该日期暂无事项'}
                 </div>
               )}
-              {todayTasks.map(task => (
+              {todayItems.map(task => (
                 <TaskItem
                   key={task.id}
                   task={task}
                   onToggle={() => toggleTaskStatus(task.id)}
                   onEdit={() => {
-                    const title = prompt('修改任务', task.title ?? ''); if (title === null || !title.trim()) return
+                    const title = prompt('修改事项', task.title ?? ''); if (title === null || !title.trim()) return
                     updateObject('task', task.id, { title: title.trim() })
                   }}
                   onDelete={() => {
-                    if (!confirm(`删除任务「${task.title}」？`)) return
+                    if (!confirm(`删除事项「${task.title}」？`)) return
                     deleteObject('task', task.id)
                   }}
                 />
               ))}
             </div>
+            <p className="text-[10px] text-gray-300 mt-3">💡 切换日期可预设未来事项，到当天才会出现在这里；也可在「行动 → 日历」中按月规划</p>
           </div>
 
           {/* 进行中的项目 */}
@@ -305,35 +409,30 @@ export default function HomePage() {
 
         {/* 右列：重要提醒 + 习惯 + AI 建议 */}
         <div className="space-y-6">
-          {/* 重要提醒 */}
+          {/* 天气 */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-4">
-              <span>🔔</span> 重要提醒
-            </h2>
-            {unreadNotifs.length === 0 ? (
-              <div className="text-center py-4 text-gray-400 text-sm">暂无新提醒</div>
-            ) : (
-              <div className="space-y-2">
-                {unreadNotifs.slice(0, 5).map(n => (
-                  <button
-                    key={n.id}
-                    onClick={() => { markNotificationRead(n.id); setNotificationPanel(true) }}
-                    className="w-full text-left flex items-start gap-2 p-2 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
-                  >
-                    <AlertCircle size={16} className="text-orange-500 mt-0.5 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-800">{n.title}</div>
-                      <div className="text-xs text-gray-500 line-clamp-1">{n.message}</div>
-                    </div>
-                  </button>
-                ))}
-                {unreadNotifs.length > 5 && (
-                  <button onClick={() => setNotificationPanel(true)} className="text-[11px] text-gray-400 hover:text-gray-600">
-                    还有 {unreadNotifs.length - 5} 条 → 打开通知中心
-                  </button>
-                )}
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <span>🌤️</span> 天气
+              </h2>
+              <button onClick={() => loadWeather()} className="text-[10px] text-gray-300 hover:text-gray-500">刷新</button>
+            </div>
+            {weather ? (
+              <div className="flex items-center gap-3">
+                <span className="text-4xl">{weather.emoji}</span>
+                <div>
+                  <div className="text-2xl font-bold text-gray-800">{weather.temp}°C</div>
+                  <div className="text-xs text-gray-400">{weather.desc} · {weather.city}</div>
+                </div>
               </div>
+            ) : weatherError ? (
+              <p className="text-xs text-gray-400">{weatherError}</p>
+            ) : (
+              <p className="text-xs text-gray-400">获取中…</p>
             )}
+            <button onClick={changeCity} className="mt-3 text-[10px] text-gray-300 hover:text-gray-500">
+              📍 {weather?.city === '当前位置' ? '设置城市名' : '更换城市'}
+            </button>
           </div>
 
           {/* 今日习惯 */}
@@ -361,88 +460,53 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* 今日习惯 */}
+          {/* 补水 & 久坐提醒 */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                <span>✅</span> 今日习惯
-              </h2>
-              <button
-                onClick={() => setShowHabitForm(f => !f)}
-                className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
-              >
-                <Plus size={12} /> 添加习惯
-              </button>
-            </div>
+            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-4">
+              <span>💧</span> 补水 & 久坐
+            </h2>
 
-            {showHabitForm && (
-              <div className="flex gap-2 mb-3">
-                <input
-                  value={newHabit.emoji}
-                  onChange={e => setNewHabit({ ...newHabit, emoji: e.target.value })}
-                  placeholder="😀"
-                  className="w-12 text-center text-sm border border-gray-200 rounded-lg py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                />
-                <input
-                  value={newHabit.title}
-                  onChange={e => setNewHabit({ ...newHabit, title: e.target.value })}
-                  onKeyDown={e => e.key === 'Enter' && newHabit.title.trim() && addHabit(newHabit).then(() => { setNewHabit({ title: '', emoji: '' }); setShowHabitForm(false) })}
-                  placeholder="习惯名称，如：每天读书 30 分钟"
-                  className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                />
-                <button
-                  onClick={() => { if (!newHabit.title.trim()) return; addHabit(newHabit).then(() => { setNewHabit({ title: '', emoji: '' }); setShowHabitForm(false) }) }}
-                  className="px-3 py-1.5 bg-green-500 text-white rounded-lg text-xs hover:bg-green-600"
-                >
-                  添加
-                </button>
-              </div>
+            {isWorkNow() ? (
+              <>
+                <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2 px-1">
+                  <span>上午 ×2</span>
+                  <span>下午 ×2</span>
+                </div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex gap-2">
+                    {(water as any).am.map((v: boolean, i: number) => (
+                      <button key={`am${i}`} onClick={() => toggleCup('am', i)}
+                        title={`上午第 ${i + 1} 杯`}
+                        className={`w-10 h-10 rounded-full text-base transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                        💧
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    {(water as any).pm.map((v: boolean, i: number) => (
+                      <button key={`pm${i}`} onClick={() => toggleCup('pm', i)}
+                        title={`下午第 ${i + 1} 杯`}
+                        className={`w-10 h-10 rounded-full text-base transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                        💧
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-300 text-right">
+                  今日 {(water as any).am.filter(Boolean).length + (water as any).pm.filter(Boolean).length} / 4 杯
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">当前非工作时间，提醒已暂停</p>
             )}
 
-            <div className="space-y-2">
-              {habits.length === 0 && (
-                <div className="text-center py-4 text-gray-400 text-sm">
-                  还没有习惯 —— 点上方「添加习惯」创建第一个
-                </div>
-              )}
-              {habits.map(h => {
-                const done = h.completedDates.includes(todayStr)
-                return (
-                  <div key={h.id} className={`group flex items-center gap-2 p-2 rounded-lg ${done ? 'bg-green-50' : 'bg-gray-50'}`}>
-                    <span className="text-lg">{h.emoji}</span>
-                    <span className={`text-sm flex-1 ${done ? 'text-green-700 line-through' : 'text-gray-700'}`}>
-                      {h.title}
-                    </span>
-                    <button
-                      onClick={() => {
-                        const title = prompt('修改习惯名称', h.title ?? ''); if (title === null || !title.trim()) return
-                        updateHabit(h.id, { title: title.trim() })
-                      }}
-                      className="p-1 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="编辑"
-                    >
-                      <PenLine size={13} />
-                    </button>
-                    <button
-                      onClick={() => { if (confirm(`删除习惯「${h.title}」？打卡记录将一并删除`)) deleteHabit(h.id) }}
-                      className="p-1 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="删除"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                    <button
-                      onClick={() => toggleHabit(h.id, todayStr)}
-                      title={done ? '取消打卡' : '打卡'}
-                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition-colors ${
-                        done ? 'bg-green-500 text-white' : 'border-2 border-gray-300 text-gray-300 hover:border-green-400 hover:text-green-400'
-                      }`}
-                    >
-                      {done ? <Check size={14} /> : '打卡'}
-                    </button>
-                  </div>
-                )
-              })}
+            <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs">
+              <span className="text-gray-500">🪑 久坐 {sedentaryMin} 分钟</span>
+              <button onClick={resetSedentary} className="px-2 py-1 bg-gray-100 rounded-lg text-[10px] text-gray-500 hover:bg-gray-200">
+                刚活动过
+              </button>
             </div>
+            <p className="text-[10px] text-gray-300 mt-1.5">工作时间外不提醒 · 久坐每 50 分钟桌面弹窗</p>
           </div>
 
           {/* AI 建议（基于真实状态动态生成） */}
@@ -462,7 +526,7 @@ export default function HomePage() {
                 if (learningPaths.length === 0) {
                   tips.push({ emoji: '📚', title: '设置学习目标', desc: '在成长模块创建你的第一个学习路径', path: '/growth' })
                 }
-                const openTasks = todayTasks.filter(t => t.status !== 'done').length
+                const openTasks = todayItems.filter(t => t.status !== 'done').length
                 if (openTasks > 0) {
                   tips.push({ emoji: '⏰', title: `还有 ${openTasks} 个今日任务`, desc: '完成它们，然后好好休息', path: '/actions' })
                 }
