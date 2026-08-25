@@ -29,6 +29,7 @@ const tableLabels: Record<string, string> = {
 export default function SystemPage() {
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [syncInfo, setSyncInfo] = useState('')
+  const [cleanupInfo, setCleanupInfo] = useState('')
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
@@ -112,8 +113,22 @@ export default function SystemPage() {
 
       {/* 同步状态 */}
       <div className="bg-white border border-gray-200 rounded-2xl p-4">
-        <h3 className="text-sm font-bold text-gray-700 mb-2">注册中心同步</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-bold text-gray-700">注册中心同步</h3>
+          <button
+            onClick={async () => {
+              const { cleanupOldRecords } = await import('../db')
+              const r = await cleanupOldRecords(90)
+              setCleanupInfo(`已清理 90 天前的历史：events ${r.events} · agentRuns ${r.agentRuns} · workflowRuns ${r.workflowRuns} · 审批 ${r.approvals} · 墓碑 ${r.deletions}`)
+              refresh()
+            }}
+            className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-[11px] hover:bg-gray-200"
+          >
+            清理 90 天前历史
+          </button>
+        </div>
         <p className="text-xs text-gray-500">{syncInfo || '点击刷新同步工具与权限注册表…'}</p>
+        {cleanupInfo && <p className="text-[10px] text-emerald-500 mt-1">{cleanupInfo}</p>}
         <p className="text-[10px] text-gray-400 mt-2">
           三大主线：知识 Inbox→Knowledge→Problem→Research→Experiment→Decision→SOP；
           AI Data→Relation→Event→Context→Memory→Agent→Workflow→Action→Result→Review；

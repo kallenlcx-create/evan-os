@@ -588,3 +588,25 @@ export async function listBackupSnapshots(): Promise<{ key: string; at?: string 
   }
   return out
 }
+
+// ====== 历史数据清理（保留 N 天）======
+// events / agentRuns / workflowRuns / 已完结 approvals / 已同步墓碑 随时间无限增长，
+// 启动时调用一次即可控制体积。未完结审批永不清除。
+
+export async function cleanupOldRecords(days = 90): Promise<Record<string, number>> {
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString()
+  const result: Record<string, number> = {}
+
+  result.events = await db.events.where('createdAt').below(cutoff).delete()
+  result.agentRuns = await db.agentRuns.where('startedAt').below(cutoff).delete()
+  result.workflowRuns = await db.workflowRuns.where('startedAt').below(cutoff).delete()
+  result.deletions = await db.deletions.where('deletedAt').below(cutoff).delete()
+
+  // 审批：只清已完结（拒绝 或 已执行）的旧记录
+  result.approvals = await db.approvals
+    .where('createdAt').below(cutoff)
+    .filter(a => a.status === 'rejected' || !!a.executedAt)
+    .delete()
+
+  return result
+}

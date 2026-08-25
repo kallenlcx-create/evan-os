@@ -5,7 +5,7 @@
 import 'fake-indexeddb/auto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { db, rotateBackupSnapshot, listBackupSnapshots } from './src/db.ts'
+import { db, rotateBackupSnapshot, listBackupSnapshots, cleanupOldRecords } from './src/db.ts'
 import { DATA_LAYERS, layerOf, syncSystemRegistry } from './src/services/systemRegistry.ts'
 import { AGENT_TOOLS } from './src/services/agentTools.ts'
 import { ACTION_PERMISSION, WORKFLOW_ACTION_LEVEL } from './src/types.ts'
@@ -190,6 +190,25 @@ assert('G1. 滚动快照保留最近两份且带时间戳', snaps.length === 2 &
 
 const cloudCfg = await db.appState.get('cloud')
 assert('G2. 云同步配置与快照共存于 appState（互不覆盖）', cloudCfg === undefined || !!cloudCfg)
+
+// ====== H. 历史数据清理（v1.1）======
+console.log('— 历史清理 —')
+
+const old = new Date(Date.now() - 100 * 86400000).toISOString()
+const fresh = new Date().toISOString()
+await db.events.bulkPut([
+  { id: 'ev-old', type: 'object.created', actorType: 'user', objectType: 'task', objectId: 'x', payload: {}, createdAt: old },
+  { id: 'ev-new', type: 'object.created', actorType: 'user', objectType: 'task', objectId: 'y', payload: {}, createdAt: fresh },
+])
+await db.approvals.bulkPut([
+  { id: 'ap-old', runId: 'r', source: 'agent', agentId: 'review_assistant', actionType: 'review_draft', level: 'L2_suggest', summary: '', payload: {}, status: 'rejected', createdAt: old, executedAt: old },
+  { id: 'ap-pending', runId: 'r', source: 'agent', agentId: 'review_assistant', actionType: 'review_draft', level: 'L2_suggest', summary: '', payload: {}, status: 'pending', createdAt: old },
+])
+const cleaned = await cleanupOldRecords(90)
+assert('H1. 旧事件被清理、新事件保留',
+  (await db.events.get('ev-old')) === undefined && !!(await db.events.get('ev-new')))
+assert('H2. 已完结旧审批被清理，未完结审批永不清除',
+  cleaned.approvals >= 1 && !!(await db.approvals.get('ap-pending')))
 
 console.log(`\n📊 结果: ${pass} 通过, ${fail} 失败\n`)
 process.exit(fail > 0 ? 1 : 0)

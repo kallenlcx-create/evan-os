@@ -46,3 +46,7 @@ if (navigator.storage?.persist) {
 // 云同步：已开启自动同步的设备，启动即挂载同步循环
 import { cloudSync } from './services/cloudSync'
 void cloudSync.startAutoSync()
+
+// 历史数据清理：events/运行记录/已完结审批 保留 90 天
+import { cleanupOldRecords } from './db'
+cleanupOldRecords(90).catch(() => {})

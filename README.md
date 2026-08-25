@@ -37,7 +37,7 @@ npm run build                  # 单文件构建
 第四层 自动化     workflows workflowVersions workflowSteps workflowRuns approvals
 ```
 
-共 30 张表，实时计数见应用内「系统架构」页。
+共 36 张表（含 v1.1 删除墓碑 deletions），实时计数见应用内「系统架构」页。
 
 ## 🛡️ 核心设计原则
 
@@ -75,5 +75,9 @@ Gmail 收件导入 · Shopify 产品/指标同步 · **Hermes**（未回复客�
 
 ## 📚 页面地图
 
-首页 · 目标 · 工作 · 项目 · 行动 · 成长 · 知识与思考 · 生活 · 业务 · 统计分析
-AI 中心 · Agents · 自动化 · AI 记忆 · Context Inspector · 外部集成 · AI 实验室 · 系统架构 · 设置
+首页 · 目标 · 工作台（外贸+独立站） · 项目 · 行动 · 成长 · 知识与思考 · 生活 · 统计分析
+AI 中心（聚合入口） · Agents · 自动化 · AI 记忆 · Context Inspector · AI 实验室
+外部集成 · 云同步 · 系统架构 · 设置
+
+> 侧边栏按「概览 / 工作 / 知识与成长 / AI / 系统」分组折叠。
+> 多设备：前端托管 GitHub Pages；数据同步自部署 `server/`（Express+MySQL，见 server/DEPLOY-LAPTOP.md）。
