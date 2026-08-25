@@ -141,8 +141,9 @@ export default function Sidebar() {
         {GROUPS.map(group => {
           const collapsed = collapsedGroups.includes(group.key)
           // 折叠时：若当前路由在本组内，自动视为展开（保持可见）
-          const activeInside = group.paths.some(p => location.pathname === p || (p !== '/' && location.pathname.startsWith(p)))
-          const showItems = !collapsed || activeInside
+  const activeInside = group.paths.some(p => location.pathname === p || (p !== '/' && location.pathname.startsWith(p)))
+  // 折叠始终生效；当前组以蓝点提示（不再强制展开）
+  const showItems = app.sidebarCollapsed || !collapsed
           return (
             <div key={group.key} className="mb-1.5">
               {!app.sidebarCollapsed ? (
@@ -152,6 +153,9 @@ export default function Sidebar() {
                 >
                   <Layers size={10} />
                   {group.label}
+                  {activeInside && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500" title="当前页面在此分组" />
+                  )}
                   <ChevronDown size={11} className={`ml-auto transition-transform ${collapsed ? '-rotate-90' : ''}`} />
                 </button>
               ) : (
