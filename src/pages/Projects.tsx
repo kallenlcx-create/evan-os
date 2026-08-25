@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
-import { Plus, MoreHorizontal } from 'lucide-react'
+import { Plus, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import {
   DndContext, closestCorners, DragOverlay, useDraggable, useDroppable,
   type DragStartEvent, type DragEndEvent,
@@ -34,6 +34,29 @@ function DraggableCard({ project }: { project: Project }) {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-gray-800 truncate">{project.title}</p>
           {project.description && <p className="text-xs text-gray-400 truncate mt-0.5">{project.description}</p>}
+        </div>
+        <div className="flex flex-col gap-0.5 shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              const title = prompt('修改项目名', project.title ?? ''); if (title === null || !title.trim()) return
+              const progress = prompt('修改进度 %（0-100）', String(project.progress ?? 0)); if (progress === null) return
+              useStore.getState().updateObject('project', project.id, { title: title.trim(), progress: Math.min(100, Math.max(0, Number(progress) || 0)) })
+            }}
+            className="p-1 text-gray-300 hover:text-blue-500" title="编辑"
+          >
+            <Pencil size={12} />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              if (!confirm(`删除项目「${project.title}」？此操作不可恢复`)) return
+              useStore.getState().deleteObject('project', project.id)
+            }}
+            className="p-1 text-gray-300 hover:text-red-500" title="删除"
+          >
+            <Trash2 size={12} />
+          </button>
         </div>
       </div>
       {project.tags.length > 0 && (

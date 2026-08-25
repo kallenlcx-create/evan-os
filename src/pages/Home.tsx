@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox } from 'lucide-react'
@@ -54,8 +54,109 @@ function StatusStrip() {
   )
 }
 
+// ====== 时钟 + 美国时区 + 下班倒计时 ======
+const WORK_HOURS_KEY = 'evan-os-work-hours'
+const DEFAULT_WORK_HOURS = { startAM: '09:00', endAM: '12:00', startPM: '13:30', endPM: '18:00' }
+
+function ClockWork() {
+  const [now, setNow] = useState(new Date())
+  const [hours, setHours] = useState(() => {
+    try { return { ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) } }
+    catch { return DEFAULT_WORK_HOURS }
+  })
+  const notifiedRef = useRef('')
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000)
+    const reload = () => {
+      try { setHours({ ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) }) }
+      catch { /* ignore */ }
+    }
+    window.addEventListener('evan-work-hours', reload)
+    window.addEventListener('storage', reload)
+    return () => { clearInterval(t); window.removeEventListener('evan-work-hours', reload); window.removeEventListener('storage', reload) }
+  }, [])
+
+  const localTime = now.toLocaleTimeString('zh-CN', { hour12: false })
+  const fmtTz = (tz: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
+  const zones = [
+    { label: '美东 ET', tz: 'America/New_York' },
+    { label: '中部 CT', tz: 'America/Chicago' },
+    { label: '山区 MT', tz: 'America/Denver' },
+    { label: '太平洋 PT', tz: 'America/Los_Angeles' },
+  ]
+
+  const todayAt = (s: string) => { const [h, m] = s.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d }
+  const isWeekend = now.getDay() === 0 || now.getDay() === 6
+  const sAM = todayAt(hours.startAM), eAM = todayAt(hours.endAM), sPM = todayAt(hours.startPM), ePM = todayAt(hours.endPM)
+
+  let target: Date | null = null
+  let label = '已下班 🎉'
+  if (isWeekend) { label = '周末休息 🎉' }
+  else if (now < sAM) { target = sAM; label = '距离上班' }
+  else if (now < eAM) { target = eAM; label = '距离上午下班' }
+  else if (now < sPM) { target = sPM; label = '距离下午上班' }
+  else if (now < ePM) { target = ePM; label = '距离下班' }
+
+  let cd = ''
+  if (target && now < target) {
+    const diff = target.getTime() - now.getTime()
+    const h = Math.floor(diff / 3.6e6)
+    const m = Math.floor((diff % 3.6e6) / 6e4)
+    const s = Math.floor((diff % 6e4) / 1000)
+    cd = `${h ? `${h}小时` : ''}${m}分${s}秒`
+  }
+
+  // 跨过下班/上班节点 → 桌面通知（每天每节点一次）
+  useEffect(() => {
+    if (isWeekend || !target || now < target) return
+    const key = `${label}:${now.toDateString()}`
+    if (notifiedRef.current === key) return
+    notifiedRef.current = key
+    if (localStorage.getItem('evan-os-offwork-notify') !== '0' && 'Notification' in window && Notification.permission === 'granted') {
+      try { new Notification('Evan OS', { body: `${label} — 时间到！` }) } catch { /* ignore */ }
+    }
+  }, [now, target, label, isWeekend])
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+        <div className="text-[10px] text-gray-400 mb-1">🕐 本地时间</div>
+        <div className="text-2xl font-bold text-gray-800 tabular-nums">{localTime}</div>
+        <div className="text-[10px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</div>
+      </div>
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+        <div className="text-[10px] text-gray-400 mb-1.5">🇺🇸 美国时间</div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {zones.map(z => (
+            <div key={z.tz} className="flex items-center justify-between text-[11px] gap-1">
+              <span className="text-gray-400 whitespace-nowrap">{z.label}</span>
+              <span className="font-mono text-gray-700 tabular-nums">{fmtTz(z.tz)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="col-span-2 bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+        <div className="text-[10px] text-gray-400 mb-1">💼 工作状态</div>
+        {isWeekend || label.includes('已下班') ? (
+          <div className="text-xl font-bold text-emerald-500">{label}</div>
+        ) : (
+          <>
+            <div className="text-[10px] text-gray-400">{label}</div>
+            <div className="text-2xl font-bold text-gray-800 tabular-nums">{cd}</div>
+          </>
+        )}
+        <div className="text-[10px] text-gray-300 mt-1">
+          {hours.startAM}-{hours.endAM} · {hours.startPM}-{hours.endPM}
+          <span className="ml-1 text-gray-200">（设置 → 外观可改）</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function HomePage() {
-  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, markNotificationRead, setNotificationPanel } = useStore()
+  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, markNotificationRead, setNotificationPanel, updateObject, deleteObject } = useStore()
   const navigate = useNavigate()
   const [newTask, setNewTask] = useState('')
   const [reviewDoneToday, setReviewDoneToday] = useState(false)
@@ -89,6 +190,7 @@ export default function HomePage() {
   return (
     <div className="space-y-6">
       <StatusStrip />
+      <ClockWork />
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
         <div>
@@ -148,7 +250,19 @@ export default function HomePage() {
                 </div>
               )}
               {todayTasks.map(task => (
-                <TaskItem key={task.id} task={task} onToggle={() => toggleTaskStatus(task.id)} />
+                <TaskItem
+                  key={task.id}
+                  task={task}
+                  onToggle={() => toggleTaskStatus(task.id)}
+                  onEdit={() => {
+                    const title = prompt('修改任务', task.title ?? ''); if (title === null || !title.trim()) return
+                    updateObject('task', task.id, { title: title.trim() })
+                  }}
+                  onDelete={() => {
+                    if (!confirm(`删除任务「${task.title}」？`)) return
+                    deleteObject('task', task.id)
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -333,7 +447,7 @@ export default function HomePage() {
 }
 
 // 任务项组件
-function TaskItem({ task, onToggle }: { task: Task; onToggle: () => void }) {
+function TaskItem({ task, onToggle, onEdit, onDelete }: { task: Task; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
   const priorityColors = {
     urgent: 'text-red-500 bg-red-50',
     high: 'text-orange-500 bg-orange-50',
@@ -372,6 +486,20 @@ function TaskItem({ task, onToggle }: { task: Task; onToggle: () => void }) {
           {task.dueDate}
         </span>
       )}
+      <button
+        onClick={(e) => { e.stopPropagation(); onEdit() }}
+        className="p-1 text-gray-200 hover:text-blue-500 transition-colors"
+        title="编辑"
+      >
+        <PenLine size={13} />
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete() }}
+        className="p-1 text-gray-200 hover:text-red-500 transition-colors"
+        title="删除"
+      >
+        🗑
+      </button>
     </div>
   )
 }

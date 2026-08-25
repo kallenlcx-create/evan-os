@@ -7,6 +7,11 @@ export default function SettingsPage() {
   const { backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
   const [status, setStatus] = useState<{ type: 'success' | 'error' | ''; msg: string }>({ type: '', msg: '' })
   const [importing, setImporting] = useState(false)
+  const [workHours, setWorkHoursState] = useState(() => {
+    const defaults = { startAM: '09:00', endAM: '12:00', startPM: '13:30', endPM: '18:00' }
+    try { return { ...defaults, ...(JSON.parse(localStorage.getItem('evan-os-work-hours') || 'null') ?? {}) } }
+    catch { return defaults }
+  })
   const [activeSection, setActiveSection] = useState('data')
 
   const stats = {
@@ -268,6 +273,48 @@ export default function SettingsPage() {
                 ))}
               </div>
               <p className="text-[10px] text-gray-300">深色模式覆盖全局界面；壁纸在两种主题下均可使用。</p>
+            </div>
+
+            <div className="pt-4 border-t border-gray-100">
+              <label className="text-sm font-medium text-gray-700 block mb-3">工作时间（首页倒计时 & 下班桌面提醒）</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  ['startAM', '上午上班'], ['endAM', '上午下班'],
+                  ['startPM', '下午上班'], ['endPM', '下午下班'],
+                ] as const).map(([k, label]) => (
+                  <div key={k}>
+                    <div className="text-[10px] text-gray-400 mb-1">{label}</div>
+                    <input
+                      type="time"
+                      value={(workHours as any)[k]}
+                      onChange={e => {
+                        const next = { ...workHours, [k]: e.target.value }
+                        setWorkHoursState(next)
+                        localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
+                        window.dispatchEvent(new Event('evan-work-hours'))
+                      }}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 mt-3 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={localStorage.getItem('evan-os-offwork-notify') !== '0'}
+                  onChange={e => localStorage.setItem('evan-os-offwork-notify', e.target.checked ? '1' : '0')}
+                  className="rounded text-blue-600"
+                />
+                到点桌面弹窗提醒
+                {'Notification' in window && Notification.permission !== 'granted' && (
+                  <button
+                    onClick={async () => { try { await Notification.requestPermission() } catch { /* ignore */ } }}
+                    className="text-blue-500 hover:underline"
+                  >
+                    （开启浏览器通知权限）
+                  </button>
+                )}
+              </label>
             </div>
 
             <div className="pt-4 border-t border-gray-100">
