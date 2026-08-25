@@ -6,9 +6,11 @@ import type {
   Habit, InboxItem, LearningPath, AgentConfig, Notification,
   DailyLog, PomodoroSession, TagStats, AppState, AnyObject, ObjectType
 } from './types'
-import { loadAllObjects } from './repositories/objectRepository'
+import { loadAllObjects, createObject, updateObject as repoUpdateObject, deleteObject as repoDeleteObject } from './repositories/objectRepository'
+import { createTask as repoCreateTask, toggleTaskStatus as repoToggleTask } from './repositories/taskRepository'
 import { uid, now } from './repositories/result'
 import { searchService } from './services/searchService'
+import { captureInbox as repoCaptureInbox, processInbox as repoProcessInbox, deleteInboxItem as repoDeleteInboxItem } from './repositories/inboxRepository'
 import { relationQueryService } from './services/relationQueryService'
 import { DEFAULT_WALLPAPER, type WallpaperConfig } from './config/wallpapers'
 
@@ -447,16 +449,20 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   // ====== 通用 CRUD（通过 Repository）======
   addObject: async (type, data) => {
-    const { createObject } = await import('./repositories/objectRepository')
-    const result = await createObject(type, data)
-    if (result.ok) {
-      const key = getCollectionKey(type)
-      set(s => ({ [key]: [...(s[key] as any[] || []), result.value] } as any))
-      searchService.updateObject(result.value)
-      relationQueryService.invalidate()
-      return result.value.id
+    try {
+      const result = await createObject(type, data)
+      if (result.ok) {
+        const key = getCollectionKey(type)
+        set(s => ({ [key]: [...(s[key] as any[] || []), result.value] } as any))
+        searchService.updateObject(result.value)
+        relationQueryService.invalidate()
+        return result.value.id
+      }
+      if (result.ok === false) get().addNotification({ title: '保存失败', message: String(result.error).slice(0, 140), type: 'system' })
+    } catch (e) {
+      get().addNotification({ title: '保存异常', message: String(e).slice(0, 140), type: 'system' })
     }
-    // 降级：内存模式
+    // 降级：内存模式（刷新后丢失，但界面立即可见）
     const id = data.id || uid()
     const item = { ...data, id, type, createdAt: now(), updatedAt: now() }
     const key = getCollectionKey(type)
@@ -466,7 +472,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
   },
 
   updateObject: async (type, id, data) => {
-    const { updateObject: repoUpdate } = await import('./repositories/objectRepository')
+    const repoUpdate = repoUpdateObject
     await repoUpdate(type, id, data)
     const key = getCollectionKey(type)
     const updated = (get()[key] as any[] || []).map(item =>
@@ -479,7 +485,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
   },
 
   deleteObject: async (type, id) => {
-    const { deleteObject: repoDelete } = await import('./repositories/objectRepository')
+    const repoDelete = repoDeleteObject
     await repoDelete(type, id)
     const key = getCollectionKey(type)
     set(s => ({ [key]: (s[key] as any[] || []).filter(item => item.id !== id) } as any))
@@ -489,11 +495,15 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   // ====== 任务 ======
   addTask: async (data) => {
-    const { createTask } = await import('./repositories/taskRepository')
-    const result = await createTask(data)
-    if (result.ok) {
-      set(s => ({ tasks: [...s.tasks, result.value] }))
-      return result.value.id
+    try {
+      const result = await repoCreateTask(data)
+      if (result.ok) {
+        set(s => ({ tasks: [...s.tasks, result.value] }))
+        return result.value.id
+      }
+      if (result.ok === false) get().addNotification({ title: '任务保存失败', message: String(result.error).slice(0, 140), type: 'system' })
+    } catch (e) {
+      get().addNotification({ title: '任务保存异常', message: String(e).slice(0, 140), type: 'system' })
     }
     // 降级
     const id = uid()
@@ -511,7 +521,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
   },
 
   toggleTaskStatus: async (id) => {
-    const { toggleTaskStatus: repoToggle } = await import('./repositories/taskRepository')
+    const repoToggle = repoToggleTask
     await repoToggle(id)
     const task = get().tasks.find(t => t.id === id)
     if (task) {
@@ -561,7 +571,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   // ====== 全局收集 ======
   addToInbox: async (content, type) => {
-    const { captureInbox } = await import('./repositories/inboxRepository')
+    const captureInbox = repoCaptureInbox
     const result = await captureInbox(content, type)
     if (result.ok) {
       set(s => ({ inbox: [result.value, ...s.inbox] }))
@@ -575,13 +585,13 @@ export const useStore = create<EvanStore>()((set, get) => ({
   },
 
   processInboxItem: async (id, processedType, processedId) => {
-    const { processInbox } = await import('./repositories/inboxRepository')
+    const processInbox = repoProcessInbox
     await processInbox(id, processedType, processedId)
     set(s => ({ inbox: s.inbox.map(i => i.id === id ? { ...i, processed: true, processedType, processedId } : i) }))
   },
 
   deleteInboxItem: async (id) => {
-    const { deleteInboxItem: repoDelete } = await import('./repositories/inboxRepository')
+    const repoDelete = repoDeleteInboxItem
     await repoDelete(id)
     set(s => ({ inbox: s.inbox.filter(i => i.id !== id) }))
   },

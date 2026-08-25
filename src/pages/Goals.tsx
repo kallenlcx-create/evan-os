@@ -27,6 +27,18 @@ export default function GoalsPage() {
   const [newTitle, setNewTitle] = useState('')
   const [newLevel, setNewLevel] = useState<Goal['level']>('current')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [editing, setEditing] = useState<{ id: string; title: string; level: Goal['level']; progress: number; deadline: string } | null>(null)
+
+  const handleSaveEdit = async () => {
+    if (!editing || !editing.title.trim()) return
+    await updateObject('goal', editing.id, {
+      title: editing.title.trim(),
+      level: editing.level,
+      progress: Math.min(100, Math.max(0, editing.progress)),
+      deadline: editing.deadline || undefined,
+    })
+    setEditing(null)
+  }
 
   const handleAdd = () => {
     if (!newTitle.trim()) return
@@ -178,18 +190,44 @@ export default function GoalsPage() {
                       </div>
                     </div>
 
-                    {/* KR 展开区 */}
-                    {expanded && (
-                      <div className="border-t border-gray-50 bg-gray-50/50 p-5 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">关键结果 (OKR)</span>
-                          <button
-                            onClick={() => handleAddKR(goal.id)}
-                            className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
-                          >
-                            <Plus size={12} /> 添加 KR
-                          </button>
-                        </div>
+{/* KR 展开区 */}
+{expanded && (
+<div className="border-t border-gray-50 bg-gray-50/50 p-5 space-y-3">
+  {/* 编辑表单 */}
+  {editing?.id === goal.id ? (
+    <div className="bg-white border border-blue-200 rounded-xl p-3 space-y-2">
+      <input value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} placeholder="目标标题" className="w-full text-sm px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100" />
+      <div className="flex gap-2 flex-wrap">
+        <select value={editing.level} onChange={e => setEditing({ ...editing, level: e.target.value as Goal['level'] })} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5">
+          {levelOrder.map(l => <option key={l} value={l}>{levelLabels[l]}</option>)}
+        </select>
+        <input type="number" min={0} max={100} value={editing.progress} onChange={e => setEditing({ ...editing, progress: Number(e.target.value) })} className="w-20 text-xs border border-gray-200 rounded-lg px-2 py-1.5" title="进度 %" />
+        <input type="date" value={editing.deadline ?? ''} onChange={e => setEditing({ ...editing, deadline: e.target.value })} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5" />
+      </div>
+      <div className="flex gap-2">
+        <button onClick={handleSaveEdit} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700">保存修改</button>
+        <button onClick={() => setEditing(null)} className="px-3 py-1.5 text-gray-400 text-xs">取消</button>
+      </div>
+    </div>
+  ) : (
+    <div className="flex items-center justify-between">
+      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">关键结果 (OKR)</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setEditing({ id: goal.id, title: goal.title, level: goal.level, progress: goal.progress, deadline: goal.deadline ?? '' })}
+          className="text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1"
+        >
+          ✏️ 编辑
+        </button>
+        <button
+          onClick={() => handleAddKR(goal.id)}
+          className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+        >
+          <Plus size={12} /> 添加 KR
+        </button>
+      </div>
+    </div>
+  )}
                         {goal.keyResults.length === 0 && (
                           <div className="text-center py-4 text-sm text-gray-400">
                             暂无关键结果，点击上方添加

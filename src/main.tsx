@@ -57,3 +57,15 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register('./sw.js').catch(() => {})
   })
 }
+
+// 未处理的异步错误 → 通知中心（不再静默）
+window.addEventListener('unhandledrejection', e => {
+  console.error('[EvanOS] 未处理的异步错误:', e.reason)
+  try {
+    useStore.getState().addNotification({
+      title: '操作失败',
+      message: String(e.reason).slice(0, 140),
+      type: 'system',
+    })
+  } catch { /* ignore */ }
+})

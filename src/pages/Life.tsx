@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { listByKind, migrateLSList, syncKind } from '../repositories/collectionRepository'
 import type { CollectionKind } from '../types'
-import { DollarSign, Heart, ListTodo, Star, FileText, Check, Plus, TrendingUp, TrendingDown, Trash2 } from 'lucide-react'
+import { DollarSign, Heart, ListTodo, Star, FileText, Check, Plus, TrendingUp, TrendingDown, Trash2, Pencil } from 'lucide-react'
 import type { Habit } from '../types'
 
 const sections = [
@@ -183,6 +183,13 @@ export default function LifePage() {
                     <span className={`text-sm font-bold ${f.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
                       {f.type === 'income' ? '+' : '-'}¥{f.amount.toLocaleString()}
                     </span>
+                    <button onClick={() => {
+                      const amount = prompt('修改金额', String(f.amount ?? 0)); if (amount === null) return
+                      const note = prompt('修改备注', f.note ?? '') ?? f.note
+                      setFinances(finances.map(x => x.id === f.id ? { ...x, amount: Number(amount) || 0, note } : x))
+                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                      <Pencil size={14} />
+                    </button>
                     <button onClick={() => setFinances(finances.filter(x => x.id !== f.id))} className="p-1 text-gray-300 hover:text-red-400">
                       <Trash2 size={14} />
                     </button>
@@ -211,6 +218,13 @@ export default function LifePage() {
                       </div>
                       <div className="text-xs text-gray-400">{h.date} {h.note && `· ${h.note}`}</div>
                     </div>
+                    <button onClick={() => {
+                      const value = prompt('修改数值', h.value ?? ''); if (value === null) return
+                      const note = prompt('修改备注', h.note ?? '') ?? h.note
+                      setHealthRecs(healthRecs.map(x => x.id === h.id ? { ...x, value, note } : x))
+                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                      <Pencil size={14} />
+                    </button>
                     <button onClick={() => setHealthRecs(healthRecs.filter(x => x.id !== h.id))} className="p-1 text-gray-300 hover:text-red-400">
                       <Trash2 size={14} />
                     </button>
@@ -247,9 +261,17 @@ export default function LifePage() {
                       <div key={p.id} className="bg-white rounded-lg p-3 shadow-sm">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-sm text-gray-700">{p.title}</span>
-                          <button onClick={() => setPlans(plans.filter(x => x.id !== p.id))} className="text-gray-300 hover:text-red-400">
-                            <Trash2 size={12} />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => {
+                              const title = prompt('修改计划', p.title ?? ''); if (title === null || !title.trim()) return
+                              setPlans(plans.map(x => x.id === p.id ? { ...x, title: title.trim() } : x))
+                            }} className="text-gray-300 hover:text-blue-500" title="编辑">
+                              <Pencil size={12} />
+                            </button>
+                            <button onClick={() => setPlans(plans.filter(x => x.id !== p.id))} className="text-gray-300 hover:text-red-400">
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] text-gray-400">{planCats.find(c => c.key === p.category)?.label}</span>
@@ -296,7 +318,13 @@ export default function LifePage() {
                       >
                         <Check size={16} />
                       </button>
-                      <button onClick={() => setWishes(wishes.filter(x => x.id !== w.id))} className="p-1 text-gray-300 hover:text-red-400">
+                      <button onClick={() => {
+                      const title = prompt('修改愿望', w.title ?? ''); if (title === null || !title.trim()) return
+                      setWishes(wishes.map(x => x.id === w.id ? { ...x, title: title.trim() } : x))
+                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => setWishes(wishes.filter(x => x.id !== w.id))} className="p-1 text-gray-300 hover:text-red-400">
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -323,6 +351,12 @@ export default function LifePage() {
                       <div className="text-xs text-gray-400 mb-1">{r.date}</div>
                       <div className="text-sm text-gray-700 whitespace-pre-wrap">{r.content}</div>
                     </div>
+                    <button onClick={() => {
+                      const content = prompt('修改记录内容', r.content ?? ''); if (content === null) return
+                      setRecords(records.map(x => x.id === r.id ? { ...x, content } : x))
+                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                      <Pencil size={14} />
+                    </button>
                     <button onClick={() => setRecords(records.filter(x => x.id !== r.id))} className="p-1 text-gray-300 hover:text-red-400">
                       <Trash2 size={14} />
                     </button>
