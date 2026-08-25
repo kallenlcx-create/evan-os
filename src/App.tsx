@@ -18,6 +18,7 @@ import IntegrationsPage from './pages/IntegrationsPage'
 import AiLabPage from './pages/AiLabPage'
 import SystemPage from './pages/SystemPage'
 import SyncPage from './pages/SyncPage'
+import InboxPage from './pages/InboxPage'
 import DailyLogPage from './pages/DailyLog'
 import StatsPage from './pages/Stats'
 
@@ -27,6 +28,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<HomePage />} />
+          <Route path="inbox" element={<InboxPage />} />
           <Route path="goals" element={<GoalsPage />} />
           <Route path="work" element={<WorkPage />} />
           <Route path="projects" element={<ProjectsPage />} />

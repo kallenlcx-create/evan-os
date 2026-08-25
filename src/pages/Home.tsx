@@ -1,8 +1,56 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { Plus, Check, Clock, AlertCircle, Lightbulb, TrendingUp, ChevronRight, PenLine } from 'lucide-react'
+import { Plus, Check, Clock, AlertCircle, Lightbulb, TrendingUp, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox } from 'lucide-react'
+import { db } from '../db'
+import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import type { Task } from '../types'
+
+// ====== 状态聚合条（审批 / 收集 / 同步 / 备份）======
+function StatusStrip() {
+  const navigate = useNavigate()
+  const [pendingApprovals, setPendingApprovals] = useState(0)
+  const [pendingInbox, setPendingInbox] = useState(0)
+  const [syncInfo, setSyncInfo] = useState<{ last?: string; auto: boolean } | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      try { setPendingApprovals(await db.approvals.where('status').equals('pending').count()) } catch {}
+      try { setPendingInbox(await db.inbox.filter(i => !i.processed).count()) } catch {}
+      try {
+        const cfg = await getSyncConfig()
+        if (cfg?.serverUrl) setSyncInfo({ last: cfg.lastSyncAt, auto: !!cfg.autoSync })
+      } catch {}
+    })()
+  }, [])
+
+  const tiles = [
+    pendingApprovals > 0 && {
+      key: 'approvals', emoji: '🛡️', label: `待审批 ${pendingApprovals}`, cls: 'bg-amber-50 border-amber-200 text-amber-700', path: '/agents',
+    },
+    pendingInbox > 0 && {
+      key: 'inbox', emoji: '📥', label: `收集 ${pendingInbox}`, cls: 'bg-sky-50 border-sky-200 text-sky-700', path: '/inbox',
+    },
+    syncInfo && {
+      key: 'sync', emoji: '☁️',
+      label: syncInfo.last ? `已同步 ${new Date(syncInfo.last).toLocaleTimeString()}` : '未同步',
+      cls: 'bg-white border-gray-200 text-gray-500', path: '/sync',
+    },
+  ].filter(Boolean) as { key: string; emoji: string; label: string; cls: string; path: string }[]
+
+  if (tiles.length === 0) return null
+  return (
+    <div className="flex items-center gap-2 mb-4 overflow-x-auto">
+      {tiles.map(t => (
+        <button key={t.key} onClick={() => navigate(t.path)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs whitespace-nowrap ${t.cls}`}>
+          <span>{t.emoji}</span> {t.label}
+          {t.key === 'sync' && syncInfo?.auto && <span className="text-[9px] text-green-500">auto</span>}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 export default function HomePage() {
   const { projects, habits, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats } = useStore()
@@ -25,6 +73,7 @@ export default function HomePage() {
 
   return (
     <div className="space-y-6">
+      <StatusStrip />
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
         <div>

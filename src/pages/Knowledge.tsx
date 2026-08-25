@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
 import KnowledgeGraph from '../components/KnowledgeGraph'
+import RelationCreator from '../components/RelationCreator'
 import type { Knowledge, ObjectType } from '../types'
 
 const tabs = [
@@ -343,6 +344,7 @@ export default function KnowledgePage() {
       case 'relations':
         return (
           <div className="space-y-4">
+            <RelationCreator />
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
               <h3 className="font-semibold text-gray-800 mb-4">🔗 知识关系</h3>
               <p className="text-sm text-gray-500 mb-4">

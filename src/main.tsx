@@ -50,3 +50,10 @@ void cloudSync.startAutoSync()
 // 历史数据清理：events/运行记录/已完结审批 保留 90 天
 import { cleanupOldRecords } from './db'
 cleanupOldRecords(90).catch(() => {})
+
+// Service Worker：离线可靠 + 版本缓存（仅生产构建注册）
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {})
+  })
+}

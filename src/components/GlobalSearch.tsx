@@ -113,7 +113,8 @@ export default function GlobalSearch() {
     searchService.markRecent(sr.item.id)
     const route = typeRoute[sr.item.type] || '/'
     toggleGlobalSearch()
-    navigate(route)
+    // 深链：携带焦点参数，目标页由 Layout 悬浮卡定位展示
+    navigate(`${route}?focus=${encodeURIComponent(sr.item.type)}:${encodeURIComponent(sr.item.id)}`)
   }
 
   const toggleType = (type: SearchKind) => {
@@ -199,7 +200,7 @@ export default function GlobalSearch() {
                     searchService.markRecent(item.id)
                     const route = typeRoute[item.type] || '/'
                     toggleGlobalSearch()
-                    navigate(route)
+                    navigate(`${route}?focus=${encodeURIComponent(item.type)}:${encodeURIComponent(item.id)}`)
                   }}
                   className="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
                 >

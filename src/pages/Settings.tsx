@@ -241,6 +241,36 @@ export default function SettingsPage() {
 
             {/* ====== 壁纸 ====== */}
             <div className="pt-4 border-t border-gray-100">
+              <label className="text-sm font-medium text-gray-700 block mb-3">主题</label>
+              <div className="flex gap-2 mb-1">
+                {([
+                  { key: 'light', label: '☀️ 浅色' },
+                  { key: 'dark', label: '🌙 深色' },
+                  { key: 'auto', label: '🌗 跟随系统' },
+                ] as const).map(t => (
+                  <button
+                    key={t.key}
+                    onClick={() => {
+                      localStorage.setItem('evan-os-theme', t.key)
+                      const dark = t.key === 'dark' || (t.key === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+                      document.documentElement.classList.toggle('dark', dark)
+                      window.dispatchEvent(new CustomEvent('evan-theme-change'))
+                    }}
+                    className={`px-4 py-2 rounded-lg text-sm border ${
+                      (() => {
+                        const cur = localStorage.getItem('evan-os-theme') ?? 'auto'
+                        return cur === t.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                      })()
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-300">深色模式覆盖全局界面；壁纸在两种主题下均可使用。</p>
+            </div>
+
+            <div className="pt-4 border-t border-gray-100">
               <label className="text-sm font-medium text-gray-700 block mb-3">背景壁纸</label>
 
               {/* 预览 */}

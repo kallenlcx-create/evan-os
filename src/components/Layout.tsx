@@ -5,6 +5,7 @@ import Sidebar from './Sidebar'
 import GlobalSearch from './GlobalSearch'
 import QuickCapture from './QuickCapture'
 import NotificationCenter from './NotificationCenter'
+import SearchDeepLink from './SearchDeepLink'
 import { PageErrorBoundary } from './ErrorBoundary'
 import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
@@ -147,6 +148,7 @@ export default function Layout() {
       <GlobalSearch />
       <QuickCapture />
       <NotificationCenter />
+      <SearchDeepLink />
     </div>
   )
 }

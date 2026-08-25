@@ -13,6 +13,7 @@ import { getPresetCss } from '../config/wallpapers'
 // ====== 全部导航项 ======
 const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/': { icon: Home, label: '首页', emoji: '🏠' },
+  '/inbox': { icon: Inbox, label: '收件箱', emoji: '📥' },
   '/goals': { icon: Target, label: '目标', emoji: '🎯' },
   '/work': { icon: Briefcase, label: '工作台', emoji: '💼' },
   '/projects': { icon: FolderKanban, label: '项目', emoji: '🚀' },
@@ -36,7 +37,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 
 // ====== 分组定义 ======
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
-  { key: 'core', label: '概览', paths: ['/', '/goals', '/actions', '/life'] },
+  { key: 'core', label: '概览', paths: ['/', '/inbox', '/goals', '/actions', '/life'] },
   { key: 'work', label: '工作', paths: ['/work', '/projects'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
