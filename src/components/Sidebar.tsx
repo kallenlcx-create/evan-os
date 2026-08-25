@@ -6,9 +6,10 @@ import {
   Plug, TrendingUp, FlaskConical, Database, CloudUpload,
   ChevronDown, Layers
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
+import { getSyncConfig } from '../services/cloudSync'
 
 // ====== 全部导航项 ======
 const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
@@ -71,6 +72,18 @@ export default function Sidebar() {
   const sidebarBg = hasWallpaper ? 'bg-white/85 backdrop-blur-md' : 'bg-white'
 
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>(loadCollapsed)
+
+  // 云同步状态（登录名 / 自动模式）
+  const [cloud, setCloud] = useState<{ loggedIn: boolean; username?: string; auto: boolean } | null>(null)
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const cfg = await getSyncConfig()
+        if (cfg?.serverUrl) setCloud({ loggedIn: !!cfg.token, username: cfg.username, auto: !!cfg.autoSync })
+        else setCloud(null)
+      } catch { setCloud(null) }
+    })()
+  }, [location.pathname])
   const toggleGroup = (key: string) => {
     setCollapsedGroups(prev => {
       const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
@@ -169,6 +182,25 @@ export default function Sidebar() {
 
       {/* Bottom Global Tools */}
       <div className="border-t border-gray-100 py-2 px-2">
+        {/* 云同步状态（常驻） */}
+        <button
+          onClick={() => { closeMobile(); navigate('/sync') }}
+          title="云同步"
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full transition-colors ${
+            cloud?.loggedIn ? 'text-green-600 hover:bg-green-50' : 'text-gray-400 hover:bg-gray-50'
+          } ${app.sidebarCollapsed ? 'md:justify-center md:px-2' : ''}`}
+        >
+          <CloudUpload size={18} className="flex-shrink-0" />
+          {!app.sidebarCollapsed && (
+            <span className="text-sm flex-1 text-left">
+              {cloud?.loggedIn ? `已同步 · ${cloud.username}` : cloud ? '未登录' : '云同步未配置'}
+            </span>
+          )}
+          {!app.sidebarCollapsed && cloud?.auto && (
+            <span className="text-[9px] px-1 py-0.5 bg-green-100 text-green-600 rounded">auto</span>
+          )}
+        </button>
+
         <button
           onClick={() => { closeMobile(); toggleQuickCapture() }}
           className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 w-full text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors ${

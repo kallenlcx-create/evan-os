@@ -6,12 +6,13 @@ import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import type { Task } from '../types'
 
-// ====== 状态聚合条（审批 / 收集 / 同步 / 备份）======
+// ====== 状态聚合条（登录 / 审批 / 收集 / 同步 / 备份）======
 function StatusStrip() {
   const navigate = useNavigate()
+  const { backupNeeded } = useStore()
   const [pendingApprovals, setPendingApprovals] = useState(0)
   const [pendingInbox, setPendingInbox] = useState(0)
-  const [syncInfo, setSyncInfo] = useState<{ last?: string; auto: boolean } | null>(null)
+  const [syncInfo, setSyncInfo] = useState<{ loggedIn: boolean; username?: string; auto: boolean; last?: string } | null>(null)
 
   useEffect(() => {
     ;(async () => {
@@ -19,33 +20,34 @@ function StatusStrip() {
       try { setPendingInbox(await db.inbox.filter(i => !i.processed).count()) } catch {}
       try {
         const cfg = await getSyncConfig()
-        if (cfg?.serverUrl) setSyncInfo({ last: cfg.lastSyncAt, auto: !!cfg.autoSync })
+        if (cfg?.serverUrl) {
+          setSyncInfo({ loggedIn: !!cfg.token, username: cfg.username, auto: !!cfg.autoSync, last: cfg.lastSyncAt })
+        } else {
+          setSyncInfo({ loggedIn: false, auto: false })
+        }
       } catch {}
     })()
   }, [])
 
-  const tiles = [
-    pendingApprovals > 0 && {
-      key: 'approvals', emoji: '🛡️', label: `待审批 ${pendingApprovals}`, cls: 'bg-amber-50 border-amber-200 text-amber-700', path: '/agents',
-    },
-    pendingInbox > 0 && {
-      key: 'inbox', emoji: '📥', label: `收集 ${pendingInbox}`, cls: 'bg-sky-50 border-sky-200 text-sky-700', path: '/inbox',
-    },
-    syncInfo && {
-      key: 'sync', emoji: '☁️',
-      label: syncInfo.last ? `已同步 ${new Date(syncInfo.last).toLocaleTimeString()}` : '未同步',
-      cls: 'bg-white border-gray-200 text-gray-500', path: '/sync',
-    },
-  ].filter(Boolean) as { key: string; emoji: string; label: string; cls: string; path: string }[]
+  const tiles: { key: string; emoji: string; label: string; cls: string; path: string; extra?: string }[] = []
+  if (syncInfo) {
+    tiles.push(syncInfo.loggedIn
+      ? { key: 'sync', emoji: '☁️', label: `已登录 · ${syncInfo.username}`, cls: 'bg-green-50 border-green-200 text-green-700', path: '/sync', extra: syncInfo.auto ? '自动' : '手动' }
+      : { key: 'sync', emoji: '☁️', label: '未登录', cls: 'bg-amber-50 border-amber-200 text-amber-700', path: '/sync', extra: '' })
+  } else {
+    tiles.push({ key: 'sync', emoji: '☁️', label: '未配置同步', cls: 'bg-white border-gray-200 text-gray-400', path: '/sync', extra: '' })
+  }
+  if (pendingApprovals > 0) tiles.push({ key: 'approvals', emoji: '🛡️', label: `待审批 ${pendingApprovals}`, cls: 'bg-amber-50 border-amber-200 text-amber-700', path: '/agents', extra: '' })
+  if (pendingInbox > 0) tiles.push({ key: 'inbox', emoji: '📥', label: `收集 ${pendingInbox}`, cls: 'bg-sky-50 border-sky-200 text-sky-700', path: '/inbox', extra: '' })
+  if (backupNeeded) tiles.push({ key: 'backup', emoji: '🛡️', label: '该备份了', cls: 'bg-amber-50 border-amber-200 text-amber-700', path: '/settings', extra: '' })
 
-  if (tiles.length === 0) return null
   return (
     <div className="flex items-center gap-2 mb-4 overflow-x-auto">
       {tiles.map(t => (
         <button key={t.key} onClick={() => navigate(t.path)}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs whitespace-nowrap ${t.cls}`}>
           <span>{t.emoji}</span> {t.label}
-          {t.key === 'sync' && syncInfo?.auto && <span className="text-[9px] text-green-500">auto</span>}
+          {t.extra && <span className="text-[9px] opacity-70">{t.extra}</span>}
         </button>
       ))}
     </div>
