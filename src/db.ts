@@ -10,7 +10,7 @@ import type {
   TradeDeal, SiteProduct, SiteMetric, SeoKeyword,
   Domain, AgentToolRecord, AgentPermissionRecord, ContextSnapshotRecord,
   WorkflowVersionRecord, WorkflowStepRecord,
-  DeletionRecord,
+  DeletionRecord, CollectionRecord,
 } from './types'
 
 // ====== 数据库版本 ======
@@ -74,6 +74,8 @@ export class EvanOSDatabase extends Dexie {
   workflowSteps!: Table<WorkflowStepRecord, string>
   // v9 新增（云同步墓碑）
   deletions!: Table<DeletionRecord, string>
+  // v10 新增（通用收藏/清单：提示词/AI工具/学习/生活清单）
+  collections!: Table<CollectionRecord, string>
 
   constructor() {
     super('EvanOSDatabase')
@@ -347,6 +349,11 @@ export class EvanOSDatabase extends Dexie {
       deletions: 'id, tableName, deletedAt',
     })
 
+    // v10: + collections（通用收藏/清单，替代 localStorage 孤岛）
+    this.version(10).stores({
+      collections: 'id, kind, category, updatedAt',
+    })
+
     // 全局删除捕获中间件：任何表的 delete 自动写入墓碑（云同步传播删除）
     this.use({
       stack: 'dbcore',
@@ -504,6 +511,8 @@ export const TABLES = {
   contexts: db.contexts,
   workflowVersions: db.workflowVersions,
   workflowSteps: db.workflowSteps,
+  // v10 新增
+  collections: db.collections,
 } as const
 
 export type TableName = keyof typeof TABLES

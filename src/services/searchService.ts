@@ -58,6 +58,7 @@ export class SearchService {
     const SOURCES: {
       kind: SearchKind
       table: string
+      filterKind?: string
       map?: (r: Record<string, any>) => Record<string, any>
     }[] = [
       { kind: 'goal', table: 'goals' },
@@ -140,12 +141,106 @@ export class SearchService {
           createdAt: r.createdAt, updatedAt: r.createdAt,
         }),
       },
+      // ---- v1.1 通用收藏/清单 ----
+      {
+        kind: 'prompt', table: 'collections', filterKind: 'prompt',
+        map: r => ({
+          id: r.id, type: 'prompt',
+          title: r.data?.title ?? '提示词',
+          description: String(r.data?.content ?? ''),
+          emoji: '📝', tags: [r.data?.category].filter(Boolean),
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'ai_tool', table: 'collections', filterKind: 'ai_tool',
+        map: r => ({
+          id: r.id, type: 'ai_tool',
+          title: r.data?.name ?? 'AI 工具',
+          description: `${r.data?.description ?? ''} ${r.data?.url ?? ''}`.trim(),
+          emoji: '🛠', tags: [r.data?.category].filter(Boolean),
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'study_log', table: 'collections', filterKind: 'study_log',
+        map: r => ({
+          id: r.id, type: 'study_log',
+          title: `${r.data?.subject ?? '学习'} · ${r.data?.date ?? ''}`,
+          description: `${r.data?.duration ?? ''}分钟 ${r.data?.notes ?? ''}`.trim(),
+          emoji: '📚', tags: [],
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'study_resource', table: 'collections', filterKind: 'study_resource',
+        map: r => ({
+          id: r.id, type: 'study_resource',
+          title: r.data?.title ?? '资源',
+          description: String(r.data?.url ?? ''),
+          emoji: '🔗', tags: [r.data?.category].filter(Boolean),
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'finance', table: 'collections', filterKind: 'finance',
+        map: r => ({
+          id: r.id, type: 'finance',
+          title: `${r.data?.type === 'income' ? '收入' : '支出'} ¥${r.data?.amount ?? 0}`,
+          description: `${r.data?.category ?? ''} ${r.data?.note ?? ''}`.trim(),
+          emoji: '💰', tags: [],
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'wish', table: 'collections', filterKind: 'wish',
+        map: r => ({
+          id: r.id, type: 'wish',
+          title: `${r.data?.emoji ?? '⭐'} ${r.data?.title ?? '愿望'}`,
+          description: r.data?.done ? '已达成' : '待实现',
+          emoji: '⭐', tags: [],
+          status: r.data?.done ? 'done' : 'open',
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'health', table: 'collections', filterKind: 'health',
+        map: r => ({
+          id: r.id, type: 'health',
+          title: `${r.data?.type ?? '健康'} ${r.data?.value ?? ''}`,
+          description: String(r.data?.note ?? ''),
+          emoji: '🏃', tags: [],
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'life_plan', table: 'collections', filterKind: 'life_plan',
+        map: r => ({
+          id: r.id, type: 'life_plan',
+          title: r.data?.title ?? '计划',
+          description: String(r.data?.status ?? ''),
+          emoji: '📋', tags: [r.data?.category].filter(Boolean),
+          status: r.data?.status,
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
+      {
+        kind: 'personal_record', table: 'collections', filterKind: 'personal_record',
+        map: r => ({
+          id: r.id, type: 'personal_record',
+          title: String(r.data?.content ?? r.data?.title ?? '记录').slice(0, 40),
+          description: String(r.data?.note ?? ''),
+          emoji: '📝', tags: [],
+          createdAt: r.createdAt, updatedAt: r.updatedAt,
+        }),
+      },
     ]
 
     const objects: Record<string, any>[] = []
     for (const src of SOURCES) {
       try {
-        const items: Record<string, any>[] = await (db as any)[src.table].toArray()
+        const all: Record<string, any>[] = await (db as any)[src.table].toArray()
+        const items = src.filterKind ? all.filter(r => r.kind === src.filterKind) : all
         for (const item of items) {
           objects.push(src.map ? src.map(item) : item)
         }

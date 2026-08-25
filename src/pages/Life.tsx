@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '../store'
+import { listByKind, migrateLSList, syncKind } from '../repositories/collectionRepository'
+import type { CollectionKind } from '../types'
 import { DollarSign, Heart, ListTodo, Star, FileText, Check, Plus, TrendingUp, TrendingDown, Trash2 } from 'lucide-react'
 import type { Habit } from '../types'
 
@@ -12,17 +14,31 @@ const sections = [
   { key: 'records', label: '📝 个人记录', icon: FileText, emoji: '📝' },
 ]
 
-// 本地存储的财务/健康/愿望数据（轻量 localStorage）
+// v1.1：持久层为 IndexedDB collections（首次自动迁移 LS，幂等）；签名与旧版一致
 function useLocalData<T>(key: string, initial: T) {
+  const kindMap: Record<string, CollectionKind> = {
+    finances: 'finance', wishes: 'wish', health: 'health',
+    plans: 'life_plan', records: 'personal_record',
+  }
+  const kind = kindMap[key] ?? 'personal_record'
   const [data, setData] = useState<T>(() => {
     try {
       const raw = localStorage.getItem(`evan-os-${key}`)
       return raw ? JSON.parse(raw) : initial
     } catch { return initial }
   })
+  const [hydrated, setHydrated] = useState(false)
+  useEffect(() => {
+    ;(async () => {
+      try { await migrateLSList(`evan-os-${key}`, kind) } catch { /* ignore */ }
+      const rows = await listByKind(kind)
+      if (rows.length > 0) setData(rows as T)
+      setHydrated(true)
+    })()
+  }, [key])
   const update = (newData: T) => {
     setData(newData)
-    try { localStorage.setItem(`evan-os-${key}`, JSON.stringify(newData)) } catch {}
+    if (hydrated) syncKind(kind, newData as any[]).catch(() => {})
   }
   return [data, update] as const
 }

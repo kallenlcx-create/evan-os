@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
+import { listByKind, migrateLSItems, syncKind } from '../repositories/collectionRepository'
 import { Plus, Globe, Bot, TrendingUp, Wrench, Clock, BookOpen, Link2, Trash2 } from 'lucide-react'
 import type { LearningPath } from '../types'
 
@@ -55,10 +56,6 @@ function loadGrowth(): { logs: StudyLog[]; resources: Resource[] } {
   }
 }
 
-function saveGrowth(data: any) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch { /* ignore */ }
-}
-
 type SubTab = 'paths' | 'logs' | 'resources'
 
 export default function GrowthPage() {
@@ -72,7 +69,26 @@ export default function GrowthPage() {
   const [newLog, setNewLog] = useState({ subject: '', duration: '', notes: '' })
   const [newResource, setNewResource] = useState({ title: '', url: '', category: 'english' })
 
-  useEffect(() => { saveGrowth(growth) }, [growth])
+  // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
+  const [hydrated, setHydrated] = useState(false)
+  useEffect(() => {
+    ;(async () => {
+      await migrateLSItems(LS_KEY, 'study_log', d => d.logs)
+      await migrateLSItems(LS_KEY, 'study_resource', d => d.resources)
+      const [logs, resources] = await Promise.all([listByKind('study_log'), listByKind('study_resource')])
+      setGrowth(g => ({
+        logs: logs.length ? (logs as any) : g.logs,
+        resources: resources.length ? (resources as any) : g.resources,
+      }))
+      setHydrated(true)
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    syncKind('study_log', growth.logs).catch(() => {})
+    syncKind('study_resource', growth.resources).catch(() => {})
+  }, [growth, hydrated])
 
   const handleAdd = () => {
     if (!newTitle.trim()) return

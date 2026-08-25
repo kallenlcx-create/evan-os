@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { db, rotateBackupSnapshot, listBackupSnapshots, cleanupOldRecords } from './src/db.ts'
 import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER } from './src/config/wallpapers.ts'
+import { syncKind, listByKind, migrateLSItems } from './src/repositories/collectionRepository.ts'
 import { DATA_LAYERS, layerOf, syncSystemRegistry } from './src/services/systemRegistry.ts'
 import { AGENT_TOOLS } from './src/services/agentTools.ts'
 import { ACTION_PERMISSION, WORKFLOW_ACTION_LEVEL } from './src/types.ts'
@@ -224,6 +225,25 @@ const wpRound = (await db.appState.get('wallpaper')) as any
 assert('I2. 壁纸配置持久化往返（设备本地偏好）',
   wpRound.type === 'preset' && wpRound.presetId === 'aurora' && wpRound.dim === 0.2)
 assert('I3. 默认壁纸为 none 且零遮罩', DEFAULT_WALLPAPER.type === 'none' && DEFAULT_WALLPAPER.dim === 0)
+
+// ====== J. 通用收藏表（v1.1：替代 localStorage 孤岛）======
+console.log('— 通用收藏 —')
+
+await db.collections.where('kind').equals('prompt').delete()
+await syncKind('prompt', [
+  { id: 'cp1', title: '提示词一', category: '外贸', content: '内容一' },
+  { id: 'cp2', title: '提示词二', category: '独立站', content: '内容二' },
+])
+assert('J1. syncKind 写入两条', (await listByKind('prompt')).length === 2)
+
+await syncKind('prompt', [{ id: 'cp1', title: '提示词一（改）', category: '外贸', content: '内容一' }])
+const afterDiff = await listByKind('prompt')
+assert('J2. 差异同步：缺席的 cp2 被删除，cp1 被更新',
+  afterDiff.length === 1 && afterDiff[0].title.includes('改'))
+
+// LS 迁移幂等：目标已有数据时跳过
+await migrateLSItems('evan-os-ai-data', 'prompt', d => d.prompts)
+assert('J3. LS 迁移不重复导入', (await listByKind('prompt')).length === 1)
 
 console.log(`\n📊 结果: ${pass} 通过, ${fail} 失败\n`)
 process.exit(fail > 0 ? 1 : 0)

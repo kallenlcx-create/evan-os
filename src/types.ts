@@ -429,6 +429,37 @@ export type SearchKind = ObjectType
   | 'habit'
   | 'dailyLog'
   | 'notification'
+  | 'prompt'
+  | 'ai_tool'
+  | 'study_log'
+  | 'study_resource'
+  | 'finance'
+  | 'wish'
+  | 'health'
+  | 'life_plan'
+  | 'personal_record'
+
+// ====== 通用收藏/清单表（v1.1：替代 localStorage 孤岛）======
+// 提示词 · AI 工具 · 学习日志 · 学习资源 · 财务 · 愿望 · 健康 · 生活计划 · 个人记录
+
+export type CollectionKind =
+  | 'prompt'
+  | 'ai_tool'
+  | 'study_log'
+  | 'study_resource'
+  | 'finance'
+  | 'wish'
+  | 'health'
+  | 'life_plan'
+  | 'personal_record'
+
+export interface CollectionRecord {
+  id: string
+  kind: CollectionKind
+  data: Record<string, any>     // 原始条目形状（页面 UI 无需改动）
+  createdAt: string
+  updatedAt: string
+}
 
 // ====== Memory System（v0.4）======
 // Memory ≠ Knowledge：

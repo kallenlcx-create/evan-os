@@ -25,7 +25,9 @@ const typeRoute: Record<string, string> = {
   // v1.1 扩展源
   memory: '/memory', tradeDeal: '/work', siteProduct: '/work',
   seoKeyword: '/work', habit: '/life', dailyLog: '/journal',
-  notification: '/sync',
+  prompt: '/ai', ai_tool: '/ai', study_log: '/growth', study_resource: '/growth',
+  finance: '/life', wish: '/life', health: '/life', life_plan: '/life',
+  personal_record: '/life', notification: '/sync',
 }
 
 const allTypes: { type: SearchKind; label: string }[] = [
@@ -45,6 +47,12 @@ const allTypes: { type: SearchKind; label: string }[] = [
   { type: 'habit', label: '习惯' },
   { type: 'dailyLog', label: '日志' },
   { type: 'notification', label: '通知' },
+  // v1.1 通用收藏
+  { type: 'prompt', label: '提示词' },
+  { type: 'ai_tool', label: 'AI 工具' },
+  { type: 'study_log', label: '学习' },
+  { type: 'finance', label: '财务' },
+  { type: 'life_plan', label: '清单' },
 ]
 
 const matchTypeBadge: Record<string, { label: string; color: string }> = {

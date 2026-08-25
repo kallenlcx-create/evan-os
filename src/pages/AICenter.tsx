@@ -9,6 +9,7 @@ import {
   MessageSquare, Eye, Plug, Copy, Trash2, Plus, ExternalLink, ArrowRight, Check,
 } from 'lucide-react'
 import { useStore } from '../store'
+import { listByKind, migrateLSItems, syncKind } from '../repositories/collectionRepository'
 
 // ---------- 本地清单（提示词/工具） ----------
 
@@ -70,7 +71,26 @@ export default function AICenterPage() {
   const [newPrompt, setNewPrompt] = useState({ title: '', category: '', content: '' })
   const [newTool, setNewTool] = useState({ name: '', url: '', category: '', description: '' })
 
-  useEffect(() => { localStorage.setItem(LS_KEY, JSON.stringify(aiData)) }, [aiData])
+  // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
+  const [hydrated, setHydrated] = useState(false)
+  useEffect(() => {
+    ;(async () => {
+      await migrateLSItems(LS_KEY, 'prompt', d => d.prompts)
+      await migrateLSItems(LS_KEY, 'ai_tool', d => d.tools)
+      const [prompts, tools] = await Promise.all([listByKind('prompt'), listByKind('ai_tool')])
+      setAiData(d => ({
+        prompts: prompts.length ? (prompts as any) : d.prompts,
+        tools: tools.length ? (tools as any) : d.tools,
+      }))
+      setHydrated(true)
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    syncKind('prompt', aiData.prompts).catch(() => {})
+    syncKind('ai_tool', aiData.tools).catch(() => {})
+  }, [aiData, hydrated])
 
   const addPrompt = () => {
     if (!newPrompt.title.trim()) return
