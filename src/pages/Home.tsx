@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { Plus, Check, Clock, AlertCircle, Lightbulb, TrendingUp, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox } from 'lucide-react'
+import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox } from 'lucide-react'
 import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import type { Task } from '../types'
@@ -55,15 +55,28 @@ function StatusStrip() {
 }
 
 export default function HomePage() {
-  const { projects, habits, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats } = useStore()
+  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, markNotificationRead, setNotificationPanel } = useStore()
   const navigate = useNavigate()
   const [newTask, setNewTask] = useState('')
+  const [reviewDoneToday, setReviewDoneToday] = useState(false)
+  const [inboxPending, setInboxPending] = useState(0)
   const todayTasks = getTodayTasks()
   const unreadNotifs = getUnreadNotifications()
 
   const todayStr = new Date().toISOString().slice(0, 10)
   const todayLog = getDailyLog(todayStr)
   const todayPomo = getTodayPomodoroStats()
+
+  // AI 建议数据源：复盘状态 + 收集箱
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const n = await db.reviews.where('period').equals(todayStr).count()
+        setReviewDoneToday(n > 0)
+      } catch {}
+      try { setInboxPending(await db.inbox.filter(i => !i.processed).count()) } catch {}
+    })()
+  }, [todayStr])
 
   const handleAddTask = () => {
     if (!newTask.trim()) return
@@ -146,7 +159,7 @@ export default function HomePage() {
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>🚀</span> 进行中的项目
               </h2>
-              <button className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+              <button onClick={() => navigate('/projects')} className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
                 查看全部 <ChevronRight size={14} />
               </button>
             </div>
@@ -186,14 +199,23 @@ export default function HomePage() {
             ) : (
               <div className="space-y-2">
                 {unreadNotifs.slice(0, 5).map(n => (
-                  <div key={n.id} className="flex items-start gap-2 p-2 bg-orange-50 rounded-lg">
+                  <button
+                    key={n.id}
+                    onClick={() => { markNotificationRead(n.id); setNotificationPanel(true) }}
+                    className="w-full text-left flex items-start gap-2 p-2 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
+                  >
                     <AlertCircle size={16} className="text-orange-500 mt-0.5 flex-shrink-0" />
-                    <div>
+                    <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-gray-800">{n.title}</div>
-                      <div className="text-xs text-gray-500">{n.message}</div>
+                      <div className="text-xs text-gray-500 line-clamp-1">{n.message}</div>
                     </div>
-                  </div>
+                  </button>
                 ))}
+                {unreadNotifs.length > 5 && (
+                  <button onClick={() => setNotificationPanel(true)} className="text-[11px] text-gray-400 hover:text-gray-600">
+                    还有 {unreadNotifs.length - 5} 条 → 打开通知中心
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -229,43 +251,80 @@ export default function HomePage() {
               <span>✅</span> 今日习惯
             </h2>
             <div className="space-y-2">
+              {habits.length === 0 && (
+                <div className="text-center py-4 text-gray-400 text-sm">
+                  还没有习惯 —— 到「生活」页添加
+                </div>
+              )}
               {habits.map(h => {
-                const done = h.completedDates.includes(new Date().toISOString().slice(0, 10))
+                const done = h.completedDates.includes(todayStr)
                 return (
                   <div key={h.id} className={`flex items-center gap-2 p-2 rounded-lg ${done ? 'bg-green-50' : 'bg-gray-50'}`}>
                     <span className="text-lg">{h.emoji}</span>
                     <span className={`text-sm flex-1 ${done ? 'text-green-700 line-through' : 'text-gray-700'}`}>
                       {h.title}
                     </span>
-                    {done && <Check size={16} className="text-green-500" />}
-                    {!done && <span className="text-[10px] text-gray-400">待完成</span>}
+                    <button
+                      onClick={() => toggleHabit(h.id, todayStr)}
+                      title={done ? '取消打卡' : '打卡'}
+                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs transition-colors ${
+                        done ? 'bg-green-500 text-white' : 'border-2 border-gray-300 text-gray-300 hover:border-green-400 hover:text-green-400'
+                      }`}
+                    >
+                      {done ? <Check size={14} /> : '打卡'}
+                    </button>
                   </div>
                 )
               })}
             </div>
           </div>
 
-          {/* AI 建议 */}
+          {/* AI 建议（基于真实状态动态生成） */}
           <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-2xl p-5 shadow-sm border border-purple-100">
             <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-3">
               <span>🤖</span> AI 建议
             </h2>
-            <div className="space-y-3">
-              <div className="flex items-start gap-2 p-2">
-                <Lightbulb size={16} className="text-purple-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <div className="text-sm text-gray-700">开始每日复盘</div>
-                  <div className="text-xs text-gray-400">坚持复盘能帮你更快成长，今天还没写复盘笔记</div>
-                </div>
-              </div>
-              <div className="flex items-start gap-2 p-2">
-                <TrendingUp size={16} className="text-blue-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <div className="text-sm text-gray-700">设置学习目标</div>
-                  <div className="text-xs text-gray-400">在"成长"模块中创建你的第一个学习路径</div>
-                </div>
-              </div>
+            <div className="space-y-1">
+              {(() => {
+                const tips: { emoji: string; title: string; desc: string; path: string }[] = []
+                if (!reviewDoneToday) {
+                  tips.push({ emoji: '📝', title: '开始今日复盘', desc: '今天还没写复盘——复盘助手可以帮你起草', path: '/actions' })
+                }
+                if (inboxPending > 0) {
+                  tips.push({ emoji: '📥', title: `整理收件箱（${inboxPending} 条）`, desc: '有未分拣的收集内容，转成任务或知识', path: '/inbox' })
+                }
+                if (learningPaths.length === 0) {
+                  tips.push({ emoji: '📚', title: '设置学习目标', desc: '在成长模块创建你的第一个学习路径', path: '/growth' })
+                }
+                const openTasks = todayTasks.filter(t => t.status !== 'done').length
+                if (openTasks > 0) {
+                  tips.push({ emoji: '⏰', title: `还有 ${openTasks} 个今日任务`, desc: '完成它们，然后好好休息', path: '/actions' })
+                }
+                if (tips.length === 0) {
+                  tips.push({ emoji: '🎉', title: '今天全部搞定', desc: '复盘已写、收件箱已清、任务已完成', path: '/stats' })
+                }
+                return tips.slice(0, 3).map((t, i) => (
+                  <button
+                    key={i}
+                    onClick={() => navigate(t.path)}
+                    className="w-full text-left flex items-start gap-2 p-2 rounded-lg hover:bg-white/70 transition-colors"
+                  >
+                    <span className="mt-0.5">{t.emoji}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-gray-700">{t.title}</div>
+                      <div className="text-xs text-gray-400">{t.desc}</div>
+                    </div>
+                    <ChevronRight size={14} className="text-gray-300 mt-1" />
+                  </button>
+                ))
+              })()}
             </div>
+            <button
+              onClick={() => navigate('/agents')}
+              className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 bg-white/70 border border-purple-100 rounded-lg text-[11px] text-purple-600 hover:bg-white"
+            >
+              🤖 让智能体帮我整理 → Agents
+            </button>
           </div>
         </div>
       </div>
