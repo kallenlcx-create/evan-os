@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox } from 'lucide-react'
+import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox, Trash2 } from 'lucide-react'
 import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import type { Task } from '../types'
@@ -156,9 +156,11 @@ function ClockWork() {
 }
 
 export default function HomePage() {
-  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, markNotificationRead, setNotificationPanel, updateObject, deleteObject } = useStore()
+  const { projects, habits, learningPaths, getTodayTasks, getUnreadNotifications, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, addHabit, updateHabit, deleteHabit, markNotificationRead, setNotificationPanel, updateObject, deleteObject } = useStore()
   const navigate = useNavigate()
   const [newTask, setNewTask] = useState('')
+  const [showHabitForm, setShowHabitForm] = useState(false)
+  const [newHabit, setNewHabit] = useState({ title: '', emoji: '✅' })
   const [reviewDoneToday, setReviewDoneToday] = useState(false)
   const [inboxPending, setInboxPending] = useState(0)
   const todayTasks = getTodayTasks()
@@ -361,23 +363,73 @@ export default function HomePage() {
 
           {/* 今日习惯 */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-4">
-              <span>✅</span> 今日习惯
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <span>✅</span> 今日习惯
+              </h2>
+              <button
+                onClick={() => setShowHabitForm(f => !f)}
+                className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+              >
+                <Plus size={12} /> 添加习惯
+              </button>
+            </div>
+
+            {showHabitForm && (
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={newHabit.emoji}
+                  onChange={e => setNewHabit({ ...newHabit, emoji: e.target.value })}
+                  placeholder="😀"
+                  className="w-12 text-center text-sm border border-gray-200 rounded-lg py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+                <input
+                  value={newHabit.title}
+                  onChange={e => setNewHabit({ ...newHabit, title: e.target.value })}
+                  onKeyDown={e => e.key === 'Enter' && newHabit.title.trim() && addHabit(newHabit).then(() => { setNewHabit({ title: '', emoji: '' }); setShowHabitForm(false) })}
+                  placeholder="习惯名称，如：每天读书 30 分钟"
+                  className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+                <button
+                  onClick={() => { if (!newHabit.title.trim()) return; addHabit(newHabit).then(() => { setNewHabit({ title: '', emoji: '' }); setShowHabitForm(false) }) }}
+                  className="px-3 py-1.5 bg-green-500 text-white rounded-lg text-xs hover:bg-green-600"
+                >
+                  添加
+                </button>
+              </div>
+            )}
+
             <div className="space-y-2">
               {habits.length === 0 && (
                 <div className="text-center py-4 text-gray-400 text-sm">
-                  还没有习惯 —— 到「生活」页添加
+                  还没有习惯 —— 点上方「添加习惯」创建第一个
                 </div>
               )}
               {habits.map(h => {
                 const done = h.completedDates.includes(todayStr)
                 return (
-                  <div key={h.id} className={`flex items-center gap-2 p-2 rounded-lg ${done ? 'bg-green-50' : 'bg-gray-50'}`}>
+                  <div key={h.id} className={`group flex items-center gap-2 p-2 rounded-lg ${done ? 'bg-green-50' : 'bg-gray-50'}`}>
                     <span className="text-lg">{h.emoji}</span>
                     <span className={`text-sm flex-1 ${done ? 'text-green-700 line-through' : 'text-gray-700'}`}>
                       {h.title}
                     </span>
+                    <button
+                      onClick={() => {
+                        const title = prompt('修改习惯名称', h.title ?? ''); if (title === null || !title.trim()) return
+                        updateHabit(h.id, { title: title.trim() })
+                      }}
+                      className="p-1 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="编辑"
+                    >
+                      <PenLine size={13} />
+                    </button>
+                    <button
+                      onClick={() => { if (confirm(`删除习惯「${h.title}」？打卡记录将一并删除`)) deleteHabit(h.id) }}
+                      className="p-1 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="删除"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                     <button
                       onClick={() => toggleHabit(h.id, todayStr)}
                       title={done ? '取消打卡' : '打卡'}

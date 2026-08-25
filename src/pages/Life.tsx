@@ -84,7 +84,9 @@ interface PersonalRecord {
 }
 
 export default function LifePage() {
-  const { habits, toggleHabit } = useStore()
+  const { habits, toggleHabit, addHabit, updateHabit, deleteHabit } = useStore()
+  const [newHabitTitle, setNewHabitTitle] = useState('')
+  const [newHabitEmoji, setNewHabitEmoji] = useState('')
   const [activeSection, setActiveSection] = useState('habits')
   const today = new Date().toISOString().slice(0, 10)
 
@@ -97,11 +99,16 @@ export default function LifePage() {
 
   const renderContent = () => {
     switch (activeSection) {
-      case 'habits':
-        return (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {habits.map((habit: Habit) => {
+case 'habits':
+return (
+<div className="space-y-4">
+<div className="bg-white border border-gray-200 rounded-2xl p-4 flex gap-2">
+  <input value={newHabitEmoji} onChange={e => setNewHabitEmoji(e.target.value)} placeholder="😀" className="w-12 text-center text-sm border border-gray-200 rounded-lg py-1.5 focus:outline-none" />
+  <input value={newHabitTitle} onChange={e => setNewHabitTitle(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newHabitTitle.trim()) { addHabit({ title: newHabitTitle.trim(), emoji: newHabitEmoji || '✅' }); setNewHabitTitle(''); setNewHabitEmoji('') } }} placeholder="添加习惯，如：每天运动 30 分钟" className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-100" />
+  <button onClick={() => { if (!newHabitTitle.trim()) return; addHabit({ title: newHabitTitle.trim(), emoji: newHabitEmoji || '✅' }); setNewHabitTitle(''); setNewHabitEmoji('') }} className="px-3 py-1.5 bg-green-500 text-white rounded-lg text-xs hover:bg-green-600">添加</button>
+</div>
+<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+{habits.map((habit: Habit) => {
                 const done = habit.completedDates.includes(today)
                 const weekDays = ['一', '二', '三', '四', '五', '六', '日']
                 const thisWeek = Array.from({ length: 7 }, (_, i) => {
@@ -116,6 +123,17 @@ export default function LifePage() {
                       <div className="flex-1">
                         <h3 className="font-semibold text-gray-800 text-sm">{habit.title}</h3>
                         <p className="text-[11px] text-gray-400">🔥 连续 {habit.streak} 天 · {habit.frequency === 'daily' ? '每天' : '每周'}</p>
+                      </div>
+                      <div className="flex items-center gap-0.5">
+                        <button onClick={() => {
+                          const title = prompt('修改习惯名称', habit.title ?? ''); if (title === null || !title.trim()) return
+                          updateHabit(habit.id, { title: title.trim() })
+                        }} className="p-1.5 text-gray-300 hover:text-blue-500" title="编辑">
+                          <Pencil size={13} />
+                        </button>
+                        <button onClick={() => { if (confirm(`删除习惯「${habit.title}」？打卡记录将一并删除`)) deleteHabit(habit.id) }} className="p-1.5 text-gray-300 hover:text-red-500" title="删除">
+                          <Trash2 size={13} />
+                        </button>
                       </div>
                       <button onClick={() => toggleHabit(habit.id, today)} className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${done ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>
                         <Check size={20} />

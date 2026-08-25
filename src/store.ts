@@ -89,6 +89,9 @@ export interface EvanStore {
 
   // 习惯
   toggleHabit: (id: string, date: string) => Promise<void>
+  addHabit: (data: Partial<Habit>) => Promise<string>
+  updateHabit: (id: string, data: Partial<Habit>) => Promise<void>
+  deleteHabit: (id: string) => Promise<void>
 
   // 全局收集
   addToInbox: (content: string, type: InboxItem['type']) => Promise<string>
@@ -567,6 +570,36 @@ export const useStore = create<EvanStore>()((set, get) => ({
     const next = { ...habit, completedDates: dates, streak: calcStreak(dates) }
     set(s => ({ habits: s.habits.map(h => h.id === id ? next : h) }))
     await safeWrite(() => db.habits.put(next))
+  },
+  addHabit: async (data) => {
+    const habit: Habit = {
+      id: uid(),
+      title: data.title || '新习惯',
+      emoji: data.emoji || '✅',
+      frequency: data.frequency || 'daily',
+      targetDays: data.targetDays || [1, 2, 3, 4, 5],
+      completedDates: [],
+      streak: 0,
+      createdAt: now(),
+    }
+    set(s => ({ habits: [...s.habits, habit] }))
+    const r = await safeWrite(() => db.habits.put(habit))
+    if (r === undefined) get().addNotification({ title: '习惯保存失败', message: '写入数据库失败，当前仅内存可见', type: 'system' })
+    return habit.id
+  },
+  updateHabit: async (id, data) => {
+    const habit = get().habits.find(h => h.id === id)
+    if (!habit) return
+    const next = { ...habit, ...data }
+    set(s => ({ habits: s.habits.map(h => h.id === id ? next : h) }))
+    const r = await safeWrite(() => db.habits.put(next))
+    if (r === undefined) get().addNotification({ title: '习惯修改失败', message: '写入数据库失败', type: 'system' })
+  },
+  deleteHabit: async (id) => {
+    set(s => ({ habits: s.habits.filter(h => h.id !== id) }))
+    let ok = false
+    await safeWrite(async () => { await db.habits.delete(id); ok = true })
+    if (!ok) get().addNotification({ title: '习惯删除失败', message: '写入数据库失败', type: 'system' })
   },
 
   // ====== 全局收集 ======
