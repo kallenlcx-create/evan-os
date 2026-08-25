@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell, Palette, Info, BellOff } from 'lucide-react'
+import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl } from '../config/wallpapers'
 
 export default function SettingsPage() {
-  const { backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications } = useStore()
+  const { backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
   const [status, setStatus] = useState<{ type: 'success' | 'error' | ''; msg: string }>({ type: '', msg: '' })
   const [importing, setImporting] = useState(false)
   const [activeSection, setActiveSection] = useState('data')
@@ -235,6 +236,99 @@ export default function SettingsPage() {
                     {m}
                   </label>
                 ))}
+              </div>
+            </div>
+
+            {/* ====== 壁纸 ====== */}
+            <div className="pt-4 border-t border-gray-100">
+              <label className="text-sm font-medium text-gray-700 block mb-3">背景壁纸</label>
+
+              {/* 预览 */}
+              <div
+                className="h-24 rounded-xl border border-gray-200 mb-4 relative overflow-hidden bg-[#f5f5f7]"
+                style={wallpaper.type === 'image' && wallpaper.imageDataUrl
+                  ? { backgroundImage: `url(${wallpaper.imageDataUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                  : wallpaper.type === 'preset'
+                    ? { backgroundImage: getPresetCss(wallpaper.presetId) }
+                    : undefined}
+              >
+                {wallpaper.dim > 0 && (
+                  <div className="absolute inset-0 bg-black" style={{ opacity: wallpaper.dim }} />
+                )}
+                <div className="absolute left-3 bottom-2 right-3">
+                  <div className="h-6 bg-white rounded-lg shadow-sm flex items-center px-2">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 mr-1.5" />
+                    <div className="h-1.5 w-16 bg-gray-200 rounded-full" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 预设 */}
+              <div className="grid grid-cols-5 gap-2 mb-4">
+                <button
+                  onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER })}
+                  className={`h-12 rounded-lg border-2 bg-[#f5f5f7] text-[10px] text-gray-400 flex items-center justify-center ${
+                    wallpaper.type === 'none' ? 'border-blue-500' : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  无
+                </button>
+                {WALLPAPER_PRESETS.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => setWallpaper({ type: 'preset', presetId: p.id, dim: wallpaper.dim })}
+                    title={p.name}
+                    className={`h-12 rounded-lg border-2 ${
+                      wallpaper.type === 'preset' && wallpaper.presetId === p.id ? 'border-blue-500' : 'border-transparent hover:border-gray-300'
+                    }`}
+                    style={{ backgroundImage: p.css }}
+                  />
+                ))}
+              </div>
+
+              {/* 自定义图片 */}
+              <div className="flex items-center gap-2 mb-4">
+                <label className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs cursor-pointer hover:bg-gray-200">
+                  🖼️ 上传自定义图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async e => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      try {
+                        const dataUrl = await fileToWallpaperDataUrl(file)
+                        setWallpaper({ type: 'image', imageDataUrl: dataUrl, dim: wallpaper.dim })
+                      } catch (err) {
+                        alert('图片处理失败：' + String(err).slice(0, 80))
+                      }
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
+                {wallpaper.type !== 'none' && (
+                  <button
+                    onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER })}
+                    className="px-3 py-1.5 text-gray-400 text-xs hover:text-red-500"
+                  >
+                    清除壁纸
+                  </button>
+                )}
+                <span className="text-[10px] text-gray-300">图片仅存本设备，自动压缩至 1920px</span>
+              </div>
+
+              {/* 遮罩调节 */}
+              <div>
+                <label className="text-[11px] text-gray-400 block mb-1">
+                  暗色遮罩（提升文字可读性）：<span className="text-gray-600">{Math.round(wallpaper.dim * 100)}%</span>
+                </label>
+                <input
+                  type="range" min={0} max={60} step={5}
+                  value={Math.round(wallpaper.dim * 100)}
+                  onChange={e => setWallpaper({ ...wallpaper, dim: Number(e.target.value) / 100 })}
+                  className="w-full accent-blue-500"
+                />
               </div>
             </div>
           </div>

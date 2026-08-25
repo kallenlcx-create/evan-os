@@ -10,6 +10,7 @@ import { loadAllObjects } from './repositories/objectRepository'
 import { uid, now } from './repositories/result'
 import { searchService } from './services/searchService'
 import { relationQueryService } from './services/relationQueryService'
+import { DEFAULT_WALLPAPER, type WallpaperConfig } from './config/wallpapers'
 
 /** 备份提醒间隔 / 滚动快照间隔 / 贪睡时长 */
 const BACKUP_REMIND_MS = 7 * 86400000
@@ -50,6 +51,10 @@ export interface EvanStore {
   app: AppState
   /** 距上次备份超过 7 天（提醒横幅用） */
   backupNeeded: boolean
+
+  // 外观
+  wallpaper: WallpaperConfig
+  setWallpaper: (cfg: WallpaperConfig) => void
 
   // 初始化
   initFromDB: () => Promise<void>
@@ -311,6 +316,8 @@ export const useStore = create<EvanStore>()((set, get) => ({
   /** 距上次备份超过 7 天时提醒 */
   backupNeeded: false,
 
+  wallpaper: DEFAULT_WALLPAPER,
+
   // ====== 从 IndexedDB 加载（通过 Repository）======
   initFromDB: async () => {
     const seed = getSeedData()
@@ -346,6 +353,14 @@ export const useStore = create<EvanStore>()((set, get) => ({
             console.warn('[EvanOS] 读取 UI 状态失败:', err)
           }
 
+          // 加载壁纸（设备本地偏好）
+          try {
+            const wp = (await db.appState.get('wallpaper')) as any
+            if (wp && wp.type) state.wallpaper = { type: wp.type, presetId: wp.presetId, imageDataUrl: wp.imageDataUrl, dim: Number(wp.dim ?? 0) }
+          } catch (err) {
+            console.warn('[EvanOS] 读取壁纸失败:', err)
+          }
+
           // 备份提醒 + 每周滚动快照（存于 appState，用于误操作恢复）
           try {
             const lastRec = (await db.appState.get('backup:lastAt')) as any
@@ -374,6 +389,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
       if (!state[name]) state[name] = (seed as any)[name] || []
     })
     if (!state.app) state.app = { sidebarCollapsed: false, globalSearchOpen: false, quickCaptureOpen: false, mobileNavOpen: false, notificationPanelOpen: false }
+    if (!state.wallpaper) state.wallpaper = DEFAULT_WALLPAPER
 
     set(state)
     set({ loaded: true })
@@ -412,6 +428,11 @@ export const useStore = create<EvanStore>()((set, get) => ({
   snoozeBackupReminder: () => {
     db.appState.put({ key: 'backup:snooze', value: Date.now() + BACKUP_SNOOZE_MS }).catch(() => {})
     set({ backupNeeded: false })
+  },
+  setWallpaper: (cfg: WallpaperConfig) => {
+    // 壁纸为设备本地偏好，不参与云同步
+    set({ wallpaper: cfg })
+    db.appState.put({ ...cfg, key: 'wallpaper' }).catch(() => {})
   },
   toggleGlobalSearch: () => {
     const next = { ...get().app, globalSearchOpen: !get().app.globalSearchOpen }

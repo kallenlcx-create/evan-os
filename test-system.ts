@@ -6,6 +6,7 @@ import 'fake-indexeddb/auto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { db, rotateBackupSnapshot, listBackupSnapshots, cleanupOldRecords } from './src/db.ts'
+import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER } from './src/config/wallpapers.ts'
 import { DATA_LAYERS, layerOf, syncSystemRegistry } from './src/services/systemRegistry.ts'
 import { AGENT_TOOLS } from './src/services/agentTools.ts'
 import { ACTION_PERMISSION, WORKFLOW_ACTION_LEVEL } from './src/types.ts'
@@ -209,6 +210,20 @@ assert('H1. 旧事件被清理、新事件保留',
   (await db.events.get('ev-old')) === undefined && !!(await db.events.get('ev-new')))
 assert('H2. 已完结旧审批被清理，未完结审批永不清除',
   cleaned.approvals >= 1 && !!(await db.approvals.get('ap-pending')))
+
+// ====== I. 壁纸配置（v1.1）======
+console.log('— 壁纸 —')
+
+const presetIds = WALLPAPER_PRESETS.map(p => p.id)
+assert('I1. 预设壁纸 id 唯一且样式非空',
+  new Set(presetIds).size === presetIds.length &&
+  WALLPAPER_PRESETS.every(p => p.css.includes('gradient')))
+
+await db.appState.put({ key: 'wallpaper', type: 'preset', presetId: 'aurora', dim: 0.2 })
+const wpRound = (await db.appState.get('wallpaper')) as any
+assert('I2. 壁纸配置持久化往返（设备本地偏好）',
+  wpRound.type === 'preset' && wpRound.presetId === 'aurora' && wpRound.dim === 0.2)
+assert('I3. 默认壁纸为 none 且零遮罩', DEFAULT_WALLPAPER.type === 'none' && DEFAULT_WALLPAPER.dim === 0)
 
 console.log(`\n📊 结果: ${pass} 通过, ${fail} 失败\n`)
 process.exit(fail > 0 ? 1 : 0)

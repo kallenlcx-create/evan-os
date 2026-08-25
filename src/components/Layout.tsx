@@ -1,16 +1,41 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Search, Plus, Menu, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, type CSSProperties } from 'react'
 import Sidebar from './Sidebar'
 import GlobalSearch from './GlobalSearch'
 import QuickCapture from './QuickCapture'
 import NotificationCenter from './NotificationCenter'
 import { PageErrorBoundary } from './ErrorBoundary'
 import { useStore } from '../store'
+import { getPresetCss } from '../config/wallpapers'
 
 export default function Layout() {
-  const { app, toggleSidebar, setMobileNav, setNotificationPanel, toggleGlobalSearch, toggleQuickCapture, backupNeeded, runBackupNow, snoozeBackupReminder } = useStore()
+  const { app, wallpaper, toggleSidebar, setMobileNav, setNotificationPanel, toggleGlobalSearch, toggleQuickCapture, backupNeeded, runBackupNow, snoozeBackupReminder } = useStore()
   const location = useLocation()
+
+  // 应用壁纸（图片或预设渐变）+ 同步 body 背景
+  const hasWallpaper = wallpaper.type === 'image' && !!wallpaper.imageDataUrl
+    ? true
+    : wallpaper.type === 'preset' && !!getPresetCss(wallpaper.presetId)
+
+  const bgStyle: CSSProperties = {}
+  if (wallpaper.type === 'image' && wallpaper.imageDataUrl) {
+    bgStyle.backgroundImage = `url(${wallpaper.imageDataUrl})`
+  } else if (wallpaper.type === 'preset') {
+    bgStyle.backgroundImage = getPresetCss(wallpaper.presetId)
+  }
+  if (bgStyle.backgroundImage) {
+    bgStyle.backgroundSize = 'cover'
+    bgStyle.backgroundPosition = 'center'
+    bgStyle.backgroundAttachment = 'fixed'
+  }
+
+  useEffect(() => {
+    document.body.style.background = hasWallpaper ? (bgStyle.backgroundImage ?? '') : ''
+    document.body.style.backgroundSize = hasWallpaper ? 'cover' : ''
+    document.body.style.backgroundAttachment = hasWallpaper ? 'fixed' : ''
+    return () => { document.body.style.background = '' }
+  }, [hasWallpaper, wallpaper])
 
   // 路由变化时收起移动端抽屉（兜底，导航点击时已处理）
   useEffect(() => { setMobileNav(false); setNotificationPanel(false) }, [location.pathname, setMobileNav, setNotificationPanel])
@@ -30,7 +55,17 @@ export default function Layout() {
   }, [toggleGlobalSearch, toggleQuickCapture])
 
   return (
-    <div className="min-h-screen bg-[#f5f5f7]">
+    <div
+      className={`min-h-screen relative ${hasWallpaper ? '' : 'bg-[#f5f5f7]'}`}
+      style={bgStyle.backgroundImage ? bgStyle : undefined}
+    >
+      {/* 壁纸遮罩（保证白色卡片内容可读） */}
+      {hasWallpaper && wallpaper.dim > 0 && (
+        <div
+          className="absolute inset-0 bg-black pointer-events-none"
+          style={{ opacity: wallpaper.dim }}
+        />
+      )}
       <Sidebar />
 
       {/* 移动端顶栏 */}
@@ -60,7 +95,7 @@ export default function Layout() {
       </div>
 
       <div
-        className={`transition-all duration-200
+        className={`relative transition-all duration-200
           ml-0
           ${app.sidebarCollapsed ? 'md:ml-[60px]' : 'md:ml-[220px]'}`}
       >

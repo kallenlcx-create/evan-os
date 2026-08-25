@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { useStore } from '../store'
+import { getPresetCss } from '../config/wallpapers'
 
 // ====== 全部导航项 ======
 const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
@@ -61,6 +62,13 @@ export default function Sidebar() {
   const mobileOpen = app.mobileNavOpen
   const closeMobile = () => setMobileNav(false)
 
+  // 壁纸激活时侧边栏毛玻璃化，让背景透出
+  const wp = useStore(s => s.wallpaper)
+  const hasWallpaper =
+    (wp.type === 'image' && !!wp.imageDataUrl) ||
+    (wp.type === 'preset' && !!getPresetCss(wp.presetId))
+  const sidebarBg = hasWallpaper ? 'bg-white/85 backdrop-blur-md' : 'bg-white'
+
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>(loadCollapsed)
   const toggleGroup = (key: string) => {
     setCollapsedGroups(prev => {
@@ -103,11 +111,12 @@ export default function Sidebar() {
       )}
 
       <aside
-        className={`fixed left-0 top-0 h-full bg-white border-r border-gray-200 flex flex-col z-40
+        className={`fixed left-0 top-0 h-full border-r border-gray-200 flex flex-col z-40
           w-[240px] transition-transform duration-200 ease-out
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
           md:translate-x-0 md:transition-all
-          ${app.sidebarCollapsed ? 'md:w-[60px]' : 'md:w-[220px]'}`}
+          ${app.sidebarCollapsed ? 'md:w-[60px]' : 'md:w-[220px]'}
+          ${sidebarBg}`}
       >
       {/* Logo */}
       <div className="h-12 flex items-center px-3 border-b border-gray-100 shrink-0">
