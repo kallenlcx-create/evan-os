@@ -4,6 +4,8 @@ import { useStore } from '../store'
 import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox, Trash2 } from 'lucide-react'
 import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
+import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
+import { pickDaily, RECIPES, fetchRecipeTutorial, pickDailyHotspots } from '../config/dailyContent'
 import type { Task } from '../types'
 
 // ====== 状态聚合条（登录 / 审批 / 收集 / 同步 / 备份）======
@@ -55,23 +57,6 @@ function StatusStrip() {
 }
 
 // ====== 时钟 + 美国时区 + 下班倒计时 ======
-const WORK_HOURS_KEY = 'evan-os-work-hours'
-const DEFAULT_WORK_HOURS = { startAM: '09:00', endAM: '12:00', startPM: '13:30', endPM: '18:00' }
-
-function readWorkHours() {
-  try { return { ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) } }
-  catch { return { ...DEFAULT_WORK_HOURS } }
-}
-/** 是否处于工作时间（工作日 + 时段区间内） */
-function isWorkNow(): boolean {
-  const h = readWorkHours()
-  const d = new Date()
-  const workdays: number[] = (h as any).workdays ?? [1, 2, 3, 4, 5]
-  if (!workdays.includes(d.getDay())) return false
-  const cur = d.getHours() * 60 + d.getMinutes()
-  const toMin = (s: string) => { const [a, b] = s.split(':').map(Number); return a * 60 + b }
-  return cur >= toMin(h.startAM) && cur <= toMin(h.endPM)
-}
 
 function ClockWork() {
   const [now, setNow] = useState(new Date())
@@ -80,13 +65,14 @@ function ClockWork() {
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000)
-    const reload = () => {
-      try { setHours({ ...DEFAULT_WORK_HOURS, ...(JSON.parse(localStorage.getItem(WORK_HOURS_KEY) || 'null') ?? {}) }) }
-      catch { /* ignore */ }
-    }
+    const reload = () => setHours(readWorkHours())
     window.addEventListener('evan-work-hours', reload)
     window.addEventListener('storage', reload)
-    return () => { clearInterval(t); window.removeEventListener('evan-work-hours', reload); window.removeEventListener('storage', reload) }
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('evan-work-hours', reload)
+      window.removeEventListener('storage', reload)
+    }
   }, [])
 
   const localTime = now.toLocaleTimeString('zh-CN', { hour12: false })
@@ -99,8 +85,10 @@ function ClockWork() {
   ]
 
   const todayAt = (s: string) => { const [h, m] = s.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d }
-  const workdays: number[] = (hours as any).workdays ?? [1, 2, 3, 4, 5]
-  const isOffDay = !workdays.includes(now.getDay())
+  const isOffDay = !isWorkDay(now)
+  const scheduleNote = hours.schedule === 'alternating'
+    ? (isoWeekNumber(now) % 2 === 0 ? '本周双休' : '本周单休')
+    : ''
   const sAM = todayAt(hours.startAM), eAM = todayAt(hours.endAM), sPM = todayAt(hours.startPM), ePM = todayAt(hours.endPM)
 
   let target: Date | null = null
@@ -120,7 +108,7 @@ function ClockWork() {
     cd = `${h ? `${h}小时` : ''}${m}分${s}秒`
   }
 
-  // 跨过下班/上班节点 → 桌面通知（每天每节点一次）
+  // 跨过节点 → 桌面通知（每天每节点一次）
   useEffect(() => {
     if (isOffDay || !target || now < target) return
     const key = `${label}:${now.toDateString()}`
@@ -150,7 +138,7 @@ function ClockWork() {
         </div>
       </div>
       <div className="col-span-2 bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="text-[10px] text-gray-400 mb-1">💼 工作状态</div>
+        <div className="text-[10px] text-gray-400 mb-1">💼 工作状态 {scheduleNote && <span className="text-purple-400">· {scheduleNote}</span>}</div>
         {isOffDay || label.includes('已下班') ? (
           <div className="text-xl font-bold text-emerald-500">{label}</div>
         ) : (
@@ -262,6 +250,21 @@ export default function HomePage() {
     if (c?.trim()) { localStorage.setItem('evan-os-weather-city', c.trim()); loadWeather(c.trim()) }
   }
   useEffect(() => { loadWeather() }, [loadWeather])
+
+  // 今日食谱（按日轮换 + AI 教程接口预留）
+  const todayRecipe = pickDaily(RECIPES)
+  const [showRecipe, setShowRecipe] = useState(false)
+  const [tutorial, setTutorial] = useState<{ title: string; detail: string[] }>({ title: '', detail: [] })
+  const toggleTutorial = async () => {
+    if (!showRecipe && tutorial.title === '') {
+      const t = await fetchRecipeTutorial(todayRecipe)
+      setTutorial(t)
+    }
+    setShowRecipe(v => !v)
+  }
+
+  // AI 热点（每日轮换 + AI 接口预留）
+  const [aiHotspots] = useState(() => pickDailyHotspots())
 
   const todayLog = getDailyLog(todayStr)
   const todayPomo = getTodayPomodoroStats()
@@ -435,29 +438,57 @@ export default function HomePage() {
             </button>
           </div>
 
-          {/* 今日习惯 */}
+          {/* 今日食谱 */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-4">
-              <span>🍅</span> 今日专注
-            </h2>
-            <div className="flex items-center gap-4">
-              <div className="text-center">
-                <div className="text-3xl font-bold text-orange-500">{todayPomo.completed}</div>
-                <div className="text-[10px] text-gray-400">番茄钟</div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <span>🍳</span> 今日食谱
+              </h2>
+              <span className="text-[10px] text-gray-300">每天一道 · 约 {todayRecipe.minutes} 分钟</span>
+            </div>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-3xl">{todayRecipe.emoji}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-gray-800">{todayRecipe.name}</div>
+                <div className="text-[10px] text-gray-400 truncate">{todayRecipe.ingredients.join('、')}</div>
               </div>
-              <div className="w-px h-10 bg-gray-200" />
-              <div className="text-center">
-                <div className="text-3xl font-bold text-blue-500">{todayPomo.minutes}</div>
-                <div className="text-[10px] text-gray-400">分钟</div>
-              </div>
-              <div className="w-px h-10 bg-gray-200" />
               <button
-                onClick={() => navigate('/actions')}
-                className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg text-xs hover:bg-orange-100 transition-colors"
+                onClick={() => setShowRecipe(v => !v)}
+                className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg text-xs hover:bg-orange-100 shrink-0"
               >
-                开始专注 →
+                {showRecipe ? '收起教程' : '做菜教程'}
               </button>
             </div>
+            {showRecipe && (
+              <div className="bg-orange-50/60 border border-orange-100 rounded-xl p-3 space-y-1">
+                {tutorial.detail.map((line, i) => (
+                  <p key={i} className="text-[11px] text-gray-600">{line}</p>
+                ))}
+                <p className="text-[9px] text-gray-300 pt-1">🤖 AI 图文教程接口预留中</p>
+              </div>
+            )}
+          </div>
+
+          {/* AI 热点 */}
+          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <span>🤖</span> AI 热点
+              </h2>
+              <button onClick={() => navigate('/ai-lab')} className="text-[10px] text-purple-400 hover:text-purple-600">
+                去实验室筛选 →
+              </button>
+            </div>
+            <div className="space-y-2">
+              {aiHotspots.map((h, i) => (
+                <div key={i} className="p-2 bg-gray-50 rounded-lg">
+                  <div className="text-xs font-medium text-gray-700">{h.title}</div>
+                  <div className="text-[10px] text-gray-400 line-clamp-2 mt-0.5">{h.summary}</div>
+                  <span className="text-[9px] text-gray-300">{h.source}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-200 mt-2">每日轮换 · AI 接口预留中，接入后为实时热点</p>
           </div>
 
           {/* 补水 & 久坐提醒 */}

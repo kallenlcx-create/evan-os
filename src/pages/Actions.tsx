@@ -25,10 +25,11 @@ const moods = [
 ]
 
 export default function ActionsPage() {
-  const { tasks, reviews, addTask, toggleTaskStatus, addObject } = useStore()
+  const { tasks, reviews, addTask, toggleTaskStatus, addObject, updateObject, deleteObject } = useStore()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('today')
   const [newTask, setNewTask] = useState('')
+  const [newRecurring, setNewRecurring] = useState({ title: '', rule: 'daily' })
   const [calMonth, setCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
 
   // 复盘表单状态
@@ -216,24 +217,80 @@ export default function ActionsPage() {
       case 'pomodoro':
         return <PomodoroTimer />
 
-      case 'recurring':
+      case 'recurring': {
+        const ruleLabels: Record<string, string> = { daily: '每天', weekly: '每周一', workdays: '工作日' }
         return (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            {/* 新增表单 */}
+            <div className="bg-white border border-gray-200 rounded-2xl p-4 flex gap-2 flex-wrap">
+              <input
+                value={newRecurring.title}
+                onChange={e => setNewRecurring({ ...newRecurring, title: e.target.value })}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newRecurring.title.trim()) {
+                    addTask({ title: newRecurring.title.trim(), isRecurring: true, recurringRule: newRecurring.rule, emoji: '🔄' })
+                    setNewRecurring({ title: '', rule: 'daily' })
+                  }
+                }}
+                placeholder="重复事项名称，如：每周写周报"
+                className="flex-1 min-w-[160px] text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-100"
+              />
+              <select
+                value={newRecurring.rule}
+                onChange={e => setNewRecurring({ ...newRecurring, rule: e.target.value })}
+                className="text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none"
+              >
+                <option value="daily">每天</option>
+                <option value="weekly">每周一</option>
+                <option value="workdays">工作日</option>
+              </select>
+              <button
+                onClick={() => {
+                  if (!newRecurring.title.trim()) return
+                  addTask({ title: newRecurring.title.trim(), isRecurring: true, recurringRule: newRecurring.rule, emoji: '🔄' })
+                  setNewRecurring({ title: '', rule: 'daily' })
+                }}
+                className="px-4 py-2 bg-purple-500 text-white rounded-lg text-sm hover:bg-purple-600"
+              >
+                添加
+              </button>
+            </div>
+
             {recurringTasks.length === 0 ? (
-              <div className="text-center py-12 text-gray-400 text-sm">暂无重复事项</div>
+              <div className="text-center py-12 text-gray-400 text-sm">暂无重复事项 —— 用上方表单添加</div>
             ) : (
-              recurringTasks.map(task => (
-                <div key={task.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100">
-                  <span className="text-lg">{task.emoji}</span>
-                  <span className="text-sm text-gray-700 flex-1">{task.title}</span>
-                  <span className="text-[10px] px-2 py-0.5 bg-purple-50 text-purple-500 rounded-full">
-                    {task.recurringRule === 'daily' ? '每天' : task.recurringRule}
-                  </span>
-                </div>
-              ))
+              <div className="space-y-2">
+                {recurringTasks.map(task => (
+                  <div key={task.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 group">
+                    <span className="text-lg">{task.emoji}</span>
+                    <span className="text-sm text-gray-700 flex-1">{task.title}</span>
+                    <span className="text-[10px] px-2 py-0.5 bg-purple-50 text-purple-500 rounded-full">
+                      {ruleLabels[task.recurringRule ?? ''] ?? task.recurringRule}
+                    </span>
+                    <button
+                      onClick={() => {
+                        const title = prompt('修改重复事项', task.title ?? ''); if (title === null || !title.trim()) return
+                        updateObject('task', task.id, { title: title.trim() })
+                      }}
+                      className="p-1 text-gray-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="修改"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={() => { if (confirm(`删除重复事项「${task.title}」？`)) deleteObject('task', task.id) }}
+                      className="p-1 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="删除"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )
+      }
 
       case 'journal':
         return (

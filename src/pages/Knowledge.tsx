@@ -1,9 +1,13 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
-import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
-import KnowledgeGraph from '../components/KnowledgeGraph'
 import RelationCreator from '../components/RelationCreator'
+import KnowledgeGraph from '../components/KnowledgeGraph'
+import MindMap from '../components/MindMap'
+import { listByKind, syncKind } from '../repositories/collectionRepository'
+import { downloadFile } from '../services/vaultSync'
 import type { Knowledge, ObjectType } from '../types'
 
 const tabs = [
@@ -15,7 +19,7 @@ const tabs = [
   { key: 'decision', label: '🧩 决策', icon: GitBranch },
   { key: 'bookmark', label: '⭐ 收藏', icon: Bookmark },
   { key: 'relations', label: '🔗 知识关系', icon: Link2 },
-  { key: 'graph', label: '🕸️ 知识图谱', icon: Network },
+  { key: 'graph', label: '🧠 思维导图', icon: Network },
 ]
 
 const categories = [
@@ -30,6 +34,7 @@ const categories = [
 ]
 
 export default function KnowledgePage() {
+  const navigate = useNavigate()
   const { knowledge, inspirations, questions, research, experiments, decisions, addObject, updateObject, deleteObject, getAllTags, getBacklinks } = useStore()
   const [activeTab, setActiveTab] = useState('all')
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
@@ -39,6 +44,7 @@ export default function KnowledgePage() {
   const [newContent, setNewContent] = useState('')
   const [newCategory, setNewCategory] = useState('general')
   const [newTags, setNewTags] = useState('')
+  const [newFormat, setNewFormat] = useState<Knowledge['format']>('markdown')
   const [editContent, setEditContent] = useState('')
   const [editTitle, setEditTitle] = useState('')
   const [editTags, setEditTags] = useState('')
@@ -46,6 +52,44 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [graphDepth, setGraphDepth] = useState(1)
   const [graphCenterId, setGraphCenterId] = useState<string | undefined>(undefined)
+
+  // ====== 标签体系（v1.1）：1级分类 → 2级标签 → 3级知识条目 ======
+  interface TagL1 { id: string; name: string }
+  interface TagL2 { id: string; name: string; parent: string }
+  const [l1List, setL1List] = useState<TagL1[]>([])
+  const [l2List, setL2List] = useState<TagL2[]>([])
+  const [expandedL1, setExpandedL1] = useState<string | null>(null)
+  const [selectedL2Filter, setSelectedL2Filter] = useState<string | null>(null)
+
+  const loadTagTree = useCallback(async () => {
+    const [l1, l2] = await Promise.all([listByKind('tag_l1'), listByKind('tag_l2')])
+    setL1List(l1.map(r => ({ id: r.id, name: r.name })))
+    setL2List(l2.map(r => ({ id: r.id, name: r.name, parent: r.parent })))
+  }, [])
+
+  // 种子：首次进入时从现有知识的 category / tags 生成标签树
+  useEffect(() => {
+    ;(async () => {
+      const l1 = await listByKind('tag_l1')
+      if (l1.length === 0) {
+        const cats = [...new Set(knowledge.map(k => k.category).filter(c => c && c !== 'general' && c !== 'template' && c !== 'ai-hotspot' && c !== 'research'))]
+        const defaults = ['业务', '运营', '生活', ...cats].filter(Boolean)
+        await syncKind('tag_l1', defaults.map(n => ({ id: 'l1-' + n, name: n })))
+      }
+      const l2 = await listByKind('tag_l2')
+      if (l2.length === 0) {
+        const l1Now = await listByKind('tag_l1')
+        const firstL1 = l1Now[0]?.name ?? '通用'
+        const tags = getAllTags()
+        await syncKind('tag_l2', tags.map(t => {
+          const firstItem = knowledge.find(k => k.tags.includes(t.tag))
+          return { id: 'l2-' + t.tag, name: t.tag, parent: firstItem?.category && l1Now.some(l => l.name === firstItem.category) ? firstItem.category : firstL1 }
+        }))
+      }
+      await loadTagTree()
+    })()
+  }, [knowledge.length === 0]) // 仅在知识为空判断一次；后续由操作函数手动刷新
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 
   const allTags = useMemo(() => getAllTags(), [knowledge, inspirations, questions, research, experiments, decisions])
 
@@ -74,13 +118,12 @@ export default function KnowledgePage() {
       content: newContent,
       category: newCategory,
       tags,
-      isBookmarked: false,
-      format: 'markdown',
-      backlinks: [],
+      format: newFormat,
     })
     setNewTitle('')
     setNewContent('')
     setNewTags('')
+    setNewFormat('markdown')
     setShowForm(false)
   }
 
@@ -112,6 +155,110 @@ export default function KnowledgePage() {
   const viewingItem = viewingId ? knowledge.find(k => k.id === viewingId) : null
   const backlinks = viewingId ? getBacklinks(viewingId) : []
 
+  // ====== 标签树 CRUD 与导入导出 ======
+  const saveL1 = async (list: TagL1[]) => {
+    setL1List(list)
+    await syncKind('tag_l1', list.map(x => ({ id: x.id, name: x.name })))
+  }
+  const saveL2 = async (list: TagL2[]) => {
+    setL2List(list)
+    await syncKind('tag_l2', list.map(x => ({ id: x.id, name: x.name, parent: x.parent })))
+  }
+  const addL1Category = async () => {
+    const name = prompt('新增一级分类名（如：业务 / 运营 / 生活）')
+    if (!name?.trim()) return
+    if (l1List.some(l => l.name === name.trim())) { alert('分类已存在'); return }
+    await saveL1([...l1List, { id: 'l1-' + name.trim(), name: name.trim() }])
+  }
+  const renameL1Category = async (l1: TagL1) => {
+    const name = prompt('重命名一级分类', l1.name)
+    if (!name?.trim() || name.trim() === l1.name) return
+    await saveL1(l1List.map(x => x.id === l1.id ? { ...x, name: name.trim() } : x))
+    await saveL2(l2List.map(x => x.parent === l1.name ? { ...x, parent: name.trim() } : x))
+  }
+  const deleteL1Category = async (l1: TagL1) => {
+    const childCount = l2List.filter(x => x.parent === l1.name).length
+    if (!confirm(`删除分类「${l1.name}」？${childCount ? `其下 ${childCount} 个标签将变为未分类` : ''}`)) return
+    await saveL1(l1List.filter(x => x.id !== l1.id))
+    await saveL2(l2List.filter(x => x.parent !== l1.name))
+  }
+  const addL2Tag = async (parent: string) => {
+    const name = prompt(`在分类「${parent}」下添加标签：`)
+    if (!name?.trim()) return
+    if (l2List.some(l => l.name === name.trim())) { alert('标签已存在'); return }
+    await saveL2([...l2List, { id: 'l2-' + name.trim(), name: name.trim(), parent }])
+  }
+  const renameL2Tag = async (l2: TagL2) => {
+    const name = prompt('重命名标签', l2.name)
+    if (!name?.trim() || name.trim() === l2.name) return
+    await saveL2(l2List.map(x => x.id === l2.id ? { ...x, name: name.trim() } : x))
+    for (const k of knowledge.filter(kk => kk.category === l2.name)) {
+      await updateObject('knowledge', k.id, { category: name.trim() } as any)
+    }
+  }
+  const deleteL2Tag = async (l2: TagL2) => {
+    const count = knowledge.filter(k => k.category === l2.name).length
+    if (!confirm(`删除标签「${l2.name}」？${count ? `其下 ${count} 条知识将变为未分类` : ''}`)) return
+    await saveL2(l2List.filter(x => x.id !== l2.id))
+    if (selectedL2Filter === l2.name) setSelectedL2Filter(null)
+  }
+  const exportL2 = (l2: TagL2, fmt: 'md' | 'json') => {
+    const items = knowledge.filter(k => k.category === l2.name)
+    if (fmt === 'json') {
+      downloadFile(
+        `evan-tags-${l2.name}.json`,
+        JSON.stringify({ name: l2.name, parent: l2.parent, items: items.map(k => ({ title: k.title, content: k.content, tags: k.tags, format: k.format })) }, null, 2),
+        'application/json'
+      )
+    } else {
+      const md = `# ${l2.name} 标签导出\n\n` + items.map(k => `## ${k.title}\n\n${k.content}\n`).join('\n---\n\n')
+      downloadFile(`evan-tags-${l2.name}.md`, md, 'text/markdown')
+    }
+  }
+  const exportAllTags = () => {
+    downloadFile(
+      'evan-tags-all.json',
+      JSON.stringify({
+        l1: l1List.map(l => l.name),
+        l2: l2List.map(l => ({ name: l.name, parent: l.parent })),
+        items: knowledge.map(k => ({ title: k.title, content: k.content, tags: k.tags, category: k.category, format: k.format })),
+      }, null, 2),
+      'application/json'
+    )
+  }
+  const importTagsFile = async (file: File, parentL1: string) => {
+    try {
+      const text = await file.text()
+      if (file.name.endsWith('.json')) {
+        const parsed = JSON.parse(text)
+        if (parsed.name && parsed.items) {
+          await saveL2([...l2List.filter(x => x.id !== 'l2-' + parsed.name), { id: 'l2-' + parsed.name, name: parsed.name, parent: parentL1 }])
+          for (const it of parsed.items) {
+            await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: parsed.name, format: it.format ?? 'markdown' })
+          }
+        } else if (parsed.l1 && parsed.l2) {
+          await saveL1(parsed.l1.map((n: string) => ({ id: 'l1-' + n, name: n })))
+          await saveL2(parsed.l2.map((x: any) => ({ id: 'l2-' + x.name, name: x.name, parent: x.parent })))
+          for (const it of parsed.items ?? []) {
+            await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: it.category ?? parsed.l2[0]?.name, format: it.format ?? 'markdown' })
+          }
+        }
+        alert('JSON 导入完成')
+      } else {
+        const sections = text.split(/\n## /).slice(1)
+        for (const sec of sections) {
+          const title = sec.split('\n')[0].replace(/^## /, '').trim()
+          const content = sec.split('\n').slice(1).join('\n').trim()
+          if (title) await addObject('knowledge', { title, content, category: parentL1, tags: ['导入'], format: 'markdown' })
+        }
+        alert('Markdown 导入完成')
+      }
+      await loadTagTree()
+    } catch (e) {
+      alert('导入失败：' + String(e).slice(0, 100))
+    }
+  }
+
   // 解析 [[...]] 链接
   const parseContent = (content: string) => {
     const parts = content.split(/(\[\[([^\]]+)\]\])/g)
@@ -137,11 +284,108 @@ export default function KnowledgePage() {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'all':
-      case 'bookmark':
+      case 'all': {
+        // 标签树数据：l1 → 其下 l2（含计数）
+        const l2sByL1 = l1List.map(l1 => ({
+          l1,
+          children: l2List.filter(l2 => l2.parent === l1.name),
+        }))
+        const uncategorized = knowledge.filter(k => !l2List.some(l2 => l2.name === k.category))
+        const countByL2 = (name: string) => knowledge.filter(k => k.category === name).length
+        const visibleItems = selectedL2Filter
+          ? filteredKnowledge.filter(k => k.category === selectedL2Filter)
+          : filteredKnowledge
+
         return (
-          <div className="space-y-4">
-            {/* 搜索和新增 */}
+        <div className="grid lg:grid-cols-[280px_1fr] gap-4 items-start">
+          {/* ====== 左：标签树 ====== */}
+          <aside className="bg-white rounded-2xl border border-gray-100 p-3 space-y-1 lg:sticky lg:top-16 max-h-[70vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-1 mb-1">
+              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">标签体系</span>
+              <button onClick={addL1Category} className="text-[10px] text-blue-500 hover:text-blue-700">＋ 分类</button>
+            </div>
+
+            {/* 全部 */}
+            <button
+              onClick={() => { setSelectedL2Filter(null) }}
+              className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs ${
+                !selectedL2Filter ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-50'
+              }`}
+            >
+              📚 全部知识
+              <span className="text-[10px] text-gray-300">{knowledge.length}</span>
+            </button>
+
+            {l2sByL1.map(({ l1, children }) => {
+              const expanded = expandedL1 === l1.id
+              const l1Count = knowledge.filter(k => k.category && l2List.some(l2 => l2.name === k.category && l2.parent === l1.name)).length
+              return (
+                <div key={l1.id}>
+                  <div className="flex items-center gap-1 px-1 py-1 group">
+                    <button onClick={() => setExpandedL1(expanded ? null : l1.id)} className="flex items-center gap-1 flex-1 text-left">
+                      <ChevronDown size={11} className={`text-gray-300 transition-transform ${expanded ? '' : '-rotate-90'}`} />
+                      <span className="text-[11px] font-medium text-gray-600">{l1.name}</span>
+                      <span className="text-[9px] text-gray-300">{children.length}</span>
+                    </button>
+                    <button onClick={() => renameL1Category(l1)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100"><Pencil size={10} /></button>
+                    <button onClick={() => deleteL1Category(l1)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100"><Trash2 size={10} /></button>
+                  </div>
+                  {expanded && (
+                    <div className="ml-3 pl-2 border-l border-gray-100 space-y-0.5">
+                      {children.map(l2 => (
+                        <div key={l2.id} className="flex items-center gap-1 group/l2">
+                          <button
+                            onClick={() => setSelectedL2Filter(selectedL2Filter === l2.name ? null : l2.name)}
+                            className={`flex-1 flex items-center justify-between px-2 py-1 rounded-md text-[11px] ${
+                              selectedL2Filter === l2.name ? 'bg-purple-50 text-purple-600 font-medium' : 'text-gray-500 hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="truncate">🏷 {l2.name}</span>
+                            <span className="text-[9px] text-gray-300">{countByL2(l2.name)}</span>
+                          </button>
+                          <button onClick={() => exportL2(l2, 'md')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 MD">⬇</button>
+                          <button onClick={() => exportL2(l2, 'json')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 JSON">⬇</button>
+                          <button onClick={() => renameL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-0 group-hover/l2:opacity-100"><Pencil size={9} /></button>
+                          <button onClick={() => deleteL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-0 group-hover/l2:opacity-100"><Trash2 size={9} /></button>
+                        </div>
+                      ))}
+                      <button onClick={() => addL2Tag(l1.name)} className="w-full text-left px-2 py-1 text-[10px] text-gray-300 hover:text-blue-500">＋ 标签</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+
+            {/* 未分类 */}
+            {uncategorized.length > 0 && (
+              <button
+                onClick={() => setSelectedL2Filter(selectedL2Filter === '__未分类__' ? null : '__未分类__')}
+                className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs ${
+                  selectedL2Filter === '__未分类__' ? 'bg-blue-50 text-blue-700' : 'text-gray-400 hover:bg-gray-50'
+                }`}
+              >
+                📦 未分类
+                <span className="text-[10px] text-gray-300">{uncategorized.length}</span>
+              </button>
+            )}
+
+            {/* 导入导出 */}
+            <div className="pt-2 mt-2 border-t border-gray-100 flex flex-wrap gap-1">
+              <button onClick={exportAllTags} className="px-2 py-1 bg-gray-50 text-gray-500 rounded text-[10px] hover:bg-gray-100">⬇ 导出全部</button>
+              <label className="px-2 py-1 bg-gray-50 text-gray-500 rounded text-[10px] hover:bg-gray-100 cursor-pointer">
+                ⬆ 导入
+                <input type="file" accept=".json,.md" className="hidden" onChange={e => {
+                  const f = e.target.files?.[0]
+                  if (f) importTagsFile(f, l1List[0]?.name ?? '通用')
+                  e.target.value = ''
+                }} />
+              </label>
+            </div>
+          </aside>
+
+          {/* ====== 右：条目列表（3级只显示标题）====== */}
+          <div className="space-y-4 min-w-0">
+            {/* 搜索和新建 */}
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -150,41 +394,16 @@ export default function KnowledgePage() {
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder="搜索知识..."
-                  className="w-full pl-9 pr-4 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-blue-400"
+                  className="w-full pl-9 pr-4 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-100"
                 />
               </div>
               <button
                 onClick={() => setShowForm(true)}
-                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700"
+                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm hover:bg-blue-700"
               >
                 <Plus size={16} /> 新建
               </button>
             </div>
-
-            {/* 标签云 */}
-            {allTags.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => setSelectedTag(null)}
-                  className={`px-2.5 py-1 rounded-lg text-xs transition-colors ${
-                    !selectedTag ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                  }`}
-                >
-                  全部
-                </button>
-                {allTags.slice(0, 20).map(t => (
-                  <button
-                    key={t.tag}
-                    onClick={() => setSelectedTag(t.tag === selectedTag ? null : t.tag)}
-                    className={`px-2.5 py-1 rounded-lg text-xs transition-colors ${
-                      t.tag === selectedTag ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                    }`}
-                  >
-                    {t.tag} ({t.count})
-                  </button>
-                ))}
-              </div>
-            )}
 
             {/* 新建表单 */}
             {showForm && (
@@ -200,32 +419,42 @@ export default function KnowledgePage() {
                     type="text"
                     value={newTitle}
                     onChange={e => setNewTitle(e.target.value)}
-                    placeholder="标题"
-                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-blue-400"
+                    placeholder="标题（3级条目）"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-100"
                     autoFocus
                   />
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <select
                       value={newCategory}
                       onChange={e => setNewCategory(e.target.value)}
                       className="px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
                     >
-                      {categories.map(c => (
-                        <option key={c.value} value={c.value}>{c.emoji} {c.label}</option>
+                      {l2List.map(l2 => (
+                        <option key={l2.id} value={l2.name}>{l2.parent} / {l2.name}</option>
                       ))}
+                      {l2List.length === 0 && <option value="general">通用</option>}
+                    </select>
+                    <select
+                      value={newFormat}
+                      onChange={e => setNewFormat(e.target.value as Knowledge['format'])}
+                      className="px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
+                    >
+                      <option value="markdown">Markdown</option>
+                      <option value="json">JSON</option>
+                      <option value="plain">纯文本</option>
                     </select>
                     <input
                       type="text"
                       value={newTags}
                       onChange={e => setNewTags(e.target.value)}
                       placeholder="标签（逗号分隔）"
-                      className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:border-blue-400"
+                      className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-100"
                     />
                   </div>
                   <MarkdownEditor
                     value={newContent}
                     onChange={setNewContent}
-                    placeholder="内容... 支持 Markdown，用 [[笔记名]] 创建链接"
+                    placeholder={newFormat === 'json' ? '{"key": "value", ...}  输入合法 JSON' : '内容... 支持 Markdown，用 [[笔记名]] 创建链接'}
                     minHeight="150px"
                   />
                   <button
@@ -238,54 +467,61 @@ export default function KnowledgePage() {
               </div>
             )}
 
-            {/* 知识列表 */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredKnowledge.map(k => (
-                <div
-                  key={k.id}
-                  className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all cursor-pointer group"
-                  onClick={() => setViewingId(k.id)}
-                >
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{k.emoji || '📌'}</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                        {categories.find(c => c.value === k.category)?.label || k.category}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={e => { e.stopPropagation(); handleToggleBookmark(k) }}
-                        className={`p-1 rounded-lg ${k.isBookmarked ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'}`}
-                      >
-                        <Bookmark size={14} fill={k.isBookmarked ? 'currentColor' : 'none'} />
-                      </button>
-                    </div>
-                  </div>
-                  <h3 className="font-semibold text-gray-800 mb-1.5 line-clamp-1">{k.title}</h3>
-                  <p className="text-sm text-gray-400 line-clamp-2 mb-3">
-                    {k.content.replace(/[#*\[\]`]/g, '').slice(0, 100)}
-                  </p>
-                  {k.tags.length > 0 && (
-                    <div className="flex gap-1 flex-wrap">
-                      {k.tags.slice(0, 3).map(t => (
-                        <span key={t} className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{t}</span>
-                      ))}
-                    </div>
-                  )}
+            {/* 条目标题列表（3级只显示标题） */}
+            <div className="space-y-1">
+              {visibleItems.length === 0 && (
+                <div className="text-center py-12 text-gray-400">
+                  <Brain size={48} className="mx-auto mb-3 opacity-30" />
+                  <p>暂无知识记录</p>
+                  <p className="text-sm mt-1">点击"新建"开始记录你的知识</p>
                 </div>
+              )}
+              {visibleItems.map(k => (
+                <button
+                  key={k.id}
+                  onClick={() => setViewingId(k.id)}
+                  className={`w-full text-left flex items-center gap-2.5 px-4 py-2.5 rounded-xl border transition-colors ${
+                    viewingId === k.id ? 'border-blue-300 bg-blue-50/50' : 'border-gray-100 bg-white hover:border-blue-200'
+                  }`}
+                >
+                  <span className="text-base">{k.emoji || '📄'}</span>
+                  <span className="text-sm text-gray-700 truncate flex-1">{k.title}</span>
+                  {(k as any).markType && (
+                    <span className="text-[9px] px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded">{(k as any).markType}</span>
+                  )}
+                  {k.isBookmarked && <span className="text-yellow-500 text-xs">★</span>}
+                  <ChevronRight size={13} className="text-gray-200" />
+                </button>
               ))}
             </div>
-
-            {filteredKnowledge.length === 0 && (
-              <div className="text-center py-12 text-gray-400">
-                <Brain size={48} className="mx-auto mb-3 opacity-30" />
-                <p>暂无知识记录</p>
-                <p className="text-sm mt-1">点击"新建"开始记录你的知识</p>
-              </div>
-            )}
           </div>
+        </div>
         )
+        }
+
+        case 'bookmark': {
+          const bookmarked = knowledge.filter(k => k.isBookmarked)
+          return (
+            <div className="space-y-2">
+              {bookmarked.length === 0 ? (
+                <div className="text-center py-12 text-gray-400">
+                  <Bookmark size={48} className="mx-auto mb-3 opacity-30" />
+                  <p>暂无收藏 —— 在知识条目详情里点 ★ 收藏</p>
+                </div>
+              ) : bookmarked.map(k => (
+                <button
+                  key={k.id}
+                  onClick={() => setViewingId(k.id)}
+                  className="w-full text-left flex items-center gap-2.5 px-4 py-3 bg-white rounded-xl border border-gray-100 hover:border-yellow-200"
+                >
+                  <span className="text-base">{k.emoji || '📌'}</span>
+                  <span className="text-sm text-gray-700 truncate flex-1">{k.title}</span>
+                  <span className="text-[10px] text-gray-300 truncate max-w-[40%]">{k.category}</span>
+                </button>
+              ))}
+            </div>
+          )
+        }
 
       case 'inspiration':
       case 'question':
@@ -370,39 +606,76 @@ export default function KnowledgePage() {
           </div>
         )
 
-      case 'graph':
+      case 'graph': {
+        // 思维导图：1级分类 → 2级标签 → 3级知识条目
+        const branches = l1List.map(l1 => ({
+          name: l1.name,
+          children: l2List
+            .filter(l2 => l2.parent === l1.name)
+            .map(l2 => ({
+              name: l2.name,
+              items: knowledge.filter(k => k.category === l2.name).map(k => k.title),
+            })),
+        }))
+        const totalItems = branches.reduce((s, b) => s + b.children.reduce((s2, c) => s2 + c.items.length, 0), 0)
         return (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="font-semibold text-gray-800">🕸️ 知识图谱</h3>
-                <p className="text-xs text-gray-400 mt-0.5">从 Relation 数据实时生成 · 拖拽平移 · 滚轮缩放</p>
+                <h3 className="font-semibold text-gray-800">🧠 思维导图</h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  一级分类 → 二级标签 → 三级知识 · 共 {l1List.length} 分类 / {l2List.length} 标签 / {totalItems} 条目
+                </p>
               </div>
               <div className="flex gap-2">
-                <select
-                  value={graphDepth}
-                  onChange={e => setGraphDepth(Number(e.target.value))}
-                  className="text-xs px-2 py-1 border border-gray-200 rounded-lg text-gray-600"
-                >
-                  <option value={1}>1 度关系</option>
-                  <option value={2}>2 度关系</option>
-                  <option value={3}>3 度关系</option>
-                </select>
+                <button onClick={() => navigate('/ai')} className="px-3 py-1.5 bg-gray-100 text-gray-500 rounded-lg text-xs hover:bg-gray-200">
+                  ← AI 中心
+                </button>
               </div>
             </div>
-            <KnowledgeGraph
-              centerId={graphCenterId}
-              depth={graphDepth}
-              height={550}
-              onNodeClick={(node) => {
-                if (node.type === 'knowledge') {
-                  setViewingId(node.id)
-                  setActiveTab('all')
-                }
-              }}
-            />
+            {l1List.length === 0 ? (
+              <div className="text-center py-12 text-gray-400 text-sm">
+                暂无标签体系 —— 在「全部知识」左侧添加一级分类和标签后，这里会自动生成思维导图
+              </div>
+            ) : (
+              <MindMap
+                root="📚 知识"
+                branches={branches}
+              />
+            )}
+            {/* 关系图谱保留入口 */}
+            <details className="bg-white rounded-2xl border border-gray-100 p-4">
+              <summary className="cursor-pointer text-xs text-gray-500">🕸️ 关系图谱（基于 Relation 连线，独立于标签层级）</summary>
+              <div className="mt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex gap-2">
+                    <select
+                      value={graphDepth}
+                      onChange={e => setGraphDepth(Number(e.target.value))}
+                      className="text-xs px-2 py-1 border border-gray-200 rounded-lg text-gray-600"
+                    >
+                      <option value={1}>1 度关系</option>
+                      <option value={2}>2 度关系</option>
+                      <option value={3}>3 度关系</option>
+                    </select>
+                  </div>
+                </div>
+                <KnowledgeGraph
+                  centerId={graphCenterId}
+                  depth={graphDepth}
+                  height={450}
+                  onNodeClick={(node) => {
+                    if (node.type === 'knowledge') {
+                      setViewingId(node.id)
+                      setActiveTab('all')
+                    }
+                  }}
+                />
+              </div>
+            </details>
           </div>
         )
+      }
     }
   }
 
@@ -496,8 +769,32 @@ export default function KnowledgePage() {
                     ))}
                   </div>
 
+                  <div className="mb-4 flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] text-gray-400">标记为：</span>
+                    {(['inspiration', 'question', 'research', 'experiment', 'decision'] as const).map(mt => (
+                      <button
+                        key={mt}
+                        onClick={async () => {
+                          const next = (viewingItem as any).markType === mt ? '' : mt
+                          await updateObject('knowledge', viewingItem.id, { markType: next || undefined } as any)
+                        }}
+                        className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${
+                          (viewingItem as any).markType === mt
+                            ? 'bg-purple-500 text-white border-purple-500'
+                            : 'bg-white text-gray-400 border-gray-200 hover:border-purple-300 hover:text-purple-500'
+                        }`}
+                      >
+                        {mt === 'inspiration' ? '💡 灵感' : mt === 'question' ? '❓ 问题' : mt === 'research' ? '🔬 研究' : mt === 'experiment' ? '🧪 实验' : '🧩 决策'}
+                      </button>
+                    ))}
+                  </div>
+
                   <div className="prose prose-sm max-w-none mb-4 text-gray-700">
-                    {viewingItem.content ? parseContent(viewingItem.content) : (
+                    {viewingItem.format === 'json' ? (
+                      <pre className="bg-gray-900 text-green-100 rounded-xl p-4 text-[11px] overflow-x-auto whitespace-pre-wrap">
+                        {(() => { try { return JSON.stringify(JSON.parse(viewingItem.content), null, 2) } catch { return viewingItem.content } })()}
+                      </pre>
+                    ) : viewingItem.content ? parseContent(viewingItem.content) : (
                       <p className="text-gray-300 italic">暂无内容</p>
                     )}
                   </div>

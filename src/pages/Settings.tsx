@@ -316,28 +316,96 @@ export default function SettingsPage() {
                 )}
               </label>
               <div className="mt-3">
-                <div className="text-[10px] text-gray-400 mb-1.5">每周工作日（非工作日不提醒、首页显示休息）</div>
-                <div className="flex gap-1.5">
-                  {['日', '一', '二', '三', '四', '五', '六'].map((d, idx) => {
-                    const on = (workHours as any).workdays?.includes(idx) ?? (idx >= 1 && idx <= 5)
-                    return (
-                      <button
-                        key={idx}
-                        onClick={() => {
-                          const wd = new Set<number>((workHours as any).workdays ?? [1, 2, 3, 4, 5])
-                          if (wd.has(idx)) wd.delete(idx); else wd.add(idx)
-                          const next = { ...workHours, workdays: [...wd].sort((a, b) => a - b) } as any
-                          setWorkHoursState(next)
-                          localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
-                          window.dispatchEvent(new Event('evan-work-hours'))
-                        }}
-                        className={`w-8 h-8 rounded-full text-[11px] border transition-colors ${on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-400 border-gray-200 hover:border-gray-300'}`}
-                      >
-                        {d}
-                      </button>
-                    )
-                  })}
+                {/* 排班模式 */}
+                <div className="text-[10px] text-gray-400 mb-1.5">排班模式</div>
+                <div className="flex gap-2 mb-3">
+                  {([
+                    { key: 'fixed', label: '每周固定' },
+                    { key: 'alternating', label: '大小周' },
+                  ] as const).map(m => (
+                    <button
+                      key={m.key}
+                      onClick={() => {
+                        const next = { ...workHours, schedule: m.key } as any
+                        setWorkHoursState(next)
+                        localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
+                        window.dispatchEvent(new Event('evan-work-hours'))
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs border ${
+                        (workHours.schedule ?? 'fixed') === m.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
                 </div>
+
+                {/* 固定模式：每周工作日 */}
+                {(workHours.schedule ?? 'fixed') === 'fixed' && (
+                  <>
+                    <div className="text-[10px] text-gray-400 mb-1.5">每周工作日（非工作日不提醒、首页显示休息）</div>
+                    <div className="flex gap-1.5">
+                      {['日', '一', '二', '三', '四', '五', '六'].map((d, idx) => {
+                        const on = (workHours as any).workdays?.includes(idx) ?? (idx >= 1 && idx <= 5)
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => {
+                              const wd = new Set<number>((workHours as any).workdays ?? [1, 2, 3, 4, 5])
+                              if (wd.has(idx)) wd.delete(idx); else wd.add(idx)
+                              const next = { ...workHours, workdays: [...wd].sort((a, b) => a - b) } as any
+                              setWorkHoursState(next)
+                              localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
+                              window.dispatchEvent(new Event('evan-work-hours'))
+                            }}
+                            className={`w-8 h-8 rounded-full text-[11px] border transition-colors ${on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-400 border-gray-200 hover:border-gray-300'}`}
+                          >
+                            {d}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* 大小周模式 */}
+                {workHours.schedule === 'alternating' && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-gray-400">按 ISO 周数奇偶自动交替：偶数周 = 双休周，奇数周 = 单休周</p>
+                    {([
+                      { key: 'offDaysFull', label: '双休周休息日', def: [0, 6] },
+                      { key: 'offDaysSingle', label: '单休周休息日', def: [0] },
+                    ] as const).map(row => {
+                      const offList: number[] = (workHours as any)[row.key] ?? row.def
+                      return (
+                        <div key={row.key} className="flex items-center gap-2">
+                          <span className="text-[11px] text-gray-500 w-24 shrink-0">{row.label}</span>
+                          <div className="flex gap-1.5">
+                            {['日', '一', '二', '三', '四', '五', '六'].map((d, idx) => {
+                              const on = offList.includes(idx)
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => {
+                                    const s = new Set<number>(offList)
+                                    if (s.has(idx)) s.delete(idx); else s.add(idx)
+                                    const next = { ...workHours, [row.key]: [...s].sort((a, b) => a - b) } as any
+                                    setWorkHoursState(next)
+                                    localStorage.setItem('evan-os-work-hours', JSON.stringify(next))
+                                    window.dispatchEvent(new Event('evan-work-hours'))
+                                  }}
+                                  className={`w-7 h-7 rounded-full text-[10px] border transition-colors ${on ? 'bg-red-400 text-white border-red-400' : 'bg-white text-gray-300 border-gray-200 hover:border-gray-300'}`}
+                                >
+                                  {d}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
