@@ -38,6 +38,11 @@ root.render(
 // 初始化数据库
 useStore.getState().initFromDB()
 
+// 请求桌面通知权限（首次访问时静默请求）
+if ('Notification' in window && Notification.permission === 'default') {
+  Notification.requestPermission().catch(() => {})
+}
+
 // 申请持久化存储：阻止浏览器在磁盘空间紧张时自动清除 IndexedDB
 if (navigator.storage?.persist) {
   navigator.storage.persist().catch(() => {})

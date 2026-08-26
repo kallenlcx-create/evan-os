@@ -78,14 +78,15 @@ function ClockWork() {
   const localTime = now.toLocaleTimeString('zh-CN', { hour12: false })
   const fmtTz = (tz: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
   const zones = [
-    { label: '美东 ET', tz: 'America/New_York' },
-    { label: '中部 CT', tz: 'America/Chicago' },
-    { label: '山区 MT', tz: 'America/Denver' },
-    { label: '太平洋 PT', tz: 'America/Los_Angeles' },
+    { flag: '🇺🇸', label: '美东', tz: 'America/New_York' },
+    { flag: '🇺🇸', label: '中部', tz: 'America/Chicago' },
+    { flag: '🇺🇸', label: '山区', tz: 'America/Denver' },
+    { flag: '🇺🇸', label: '太平洋', tz: 'America/Los_Angeles' },
   ]
 
   const todayAt = (s: string) => { const [h, m] = s.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d }
-  const isOffDay = !isWorkDay(now)
+  const workdays: number[] = (hours as any).workdays ?? [1, 2, 3, 4, 5]
+  const isOffDay = !workdays.includes(now.getDay())
   const scheduleNote = hours.schedule === 'alternating'
     ? (isoWeekNumber(now) % 2 === 0 ? '本周双休' : '本周单休')
     : ''
@@ -100,57 +101,79 @@ function ClockWork() {
   else if (now < ePM) { target = ePM; label = '距离下班' }
 
   let cd = ''
+  let cdPct = 0
   if (target && now < target) {
     const diff = target.getTime() - now.getTime()
     const h = Math.floor(diff / 3.6e6)
     const m = Math.floor((diff % 3.6e6) / 6e4)
     const s = Math.floor((diff % 6e4) / 1000)
-    cd = `${h ? `${h}小时` : ''}${m}分${s}秒`
+    cd = [h > 0 ? h + '小时' : '', m + '分', s + '秒'].filter(Boolean).join('')
+    const dayStart = todayAt(hours.startAM).getTime()
+    cdPct = Math.min(100, Math.round(((now.getTime() - dayStart) / (target.getTime() - dayStart)) * 100))
   }
 
-  // 跨过节点 → 桌面通知（每天每节点一次）
+  // 跨过节点 → 桌面通知
   useEffect(() => {
     if (isOffDay || !target || now < target) return
-    const key = `${label}:${now.toDateString()}`
+    const key = label + ':' + now.toDateString()
     if (notifiedRef.current === key) return
     notifiedRef.current = key
     if (localStorage.getItem('evan-os-offwork-notify') !== '0' && 'Notification' in window && Notification.permission === 'granted') {
-      try { new Notification('Evan OS', { body: `${label} — 时间到！` }) } catch { /* ignore */ }
+      try { new Notification('Evan OS', { body: label + ' — 时间到！' }) } catch (e) { /* ignore */ }
     }
   }, [now, target, label, isOffDay])
 
+  const isResting = isOffDay || label.includes('已下班') || label.includes('休息')
+  const cardBg = isResting
+    ? 'bg-gradient-to-br from-emerald-50 to-teal-50 border-emerald-100'
+    : 'bg-gradient-to-br from-orange-50 to-amber-50 border-amber-100'
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="text-[10px] text-gray-400 mb-1">🕐 本地时间</div>
-        <div className="text-2xl font-bold text-gray-800 tabular-nums">{localTime}</div>
-        <div className="text-[10px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</div>
-      </div>
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="text-[10px] text-gray-400 mb-1.5">🇺🇸 美国时间</div>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-          {zones.map(z => (
-            <div key={z.tz} className="flex items-center justify-between text-[11px] gap-1">
-              <span className="text-gray-400 whitespace-nowrap">{z.label}</span>
-              <span className="font-mono text-gray-700 tabular-nums">{fmtTz(z.tz)}</span>
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      {/* 合并卡：本地时间 + 美国四时区（渐变背景 + 装饰） */}
+      <div className="md:col-span-2 rounded-2xl p-5 shadow-sm border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-purple-50 relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-28 h-28 bg-gradient-to-bl from-indigo-100/60 to-transparent rounded-bl-full pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-20 h-20 bg-gradient-to-tr from-purple-50/50 to-transparent rounded-tr-full pointer-events-none" />
+        <div className="flex items-start justify-between relative">
+          <div>
+            <div className="text-[10px] text-indigo-400 mb-1 font-medium">🕐 本地时间</div>
+            <div className="text-3xl font-bold text-gray-800 tabular-nums tracking-tight">{localTime}</div>
+            <div className="text-[10px] text-gray-300 mt-0.5">{now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-indigo-300 mb-1.5 font-medium">🇺🇸 美国时间</div>
+            <div className="space-y-1">
+              {zones.map(z => (
+                <div key={z.tz} className="flex items-center justify-end gap-2 text-[11px]">
+                  <span className="text-gray-400 w-10">{z.label}</span>
+                  <span className="font-mono text-gray-600 tabular-nums bg-white/60 px-1.5 py-0.5 rounded">{fmtTz(z.tz)}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
       </div>
-      <div className="col-span-2 bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="text-[10px] text-gray-400 mb-1">💼 工作状态 {scheduleNote && <span className="text-purple-400">· {scheduleNote}</span>}</div>
-        {isOffDay || label.includes('已下班') ? (
-          <div className="text-xl font-bold text-emerald-500">{label}</div>
+
+      {/* 工作状态卡（渐变背景 + 进度条 + 装饰） */}
+      <div className={'rounded-2xl p-4 shadow-sm border relative overflow-hidden ' + cardBg}>
+        <div className="absolute top-0 right-0 w-16 h-16 bg-white/40 rounded-bl-full pointer-events-none" />
+        <div className="text-[10px] text-gray-400 mb-1">
+          💼 工作状态 {scheduleNote && <span className="text-purple-400">· {scheduleNote}</span>}
+        </div>
+        {isResting ? (
+          <div className="text-lg font-bold text-emerald-500">{label}</div>
         ) : (
           <>
             <div className="text-[10px] text-gray-400">{label}</div>
-            <div className="text-2xl font-bold text-gray-800 tabular-nums">{cd}</div>
+            <div className="text-xl font-bold text-gray-800 tabular-nums">{cd}</div>
+            {cdPct > 0 && (
+              <div className="mt-1.5 w-full h-1 bg-white/60 rounded-full overflow-hidden">
+                <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: cdPct + '%' }} />
+              </div>
+            )}
           </>
         )}
-        <div className="text-[10px] text-gray-300 mt-1">
-          {hours.startAM}-{hours.endAM} · {hours.startPM}-{hours.endPM}
-          <span className="ml-1 text-gray-200">（设置 → 外观可改）</span>
-        </div>
+        <div className="text-[9px] text-gray-300 mt-1">{hours.startAM}-{hours.endAM} · {hours.startPM}-{hours.endPM}</div>
       </div>
     </div>
   )
@@ -164,7 +187,14 @@ export default function HomePage() {
   const [reviewDoneToday, setReviewDoneToday] = useState(false)
   const [inboxPending, setInboxPending] = useState(0)
   const [itemDate, setItemDate] = useState(todayStr)
-  const todayItems = tasks.filter(t => (t.dueDate ?? '') === itemDate && t.status !== 'cancelled')
+  const todayItems = tasks.filter(t => {
+    if (t.status === 'cancelled') return false
+    if (t.isRecurring) return true
+    // 无日期任务（行动页添加）始终显示
+    if (!t.dueDate) return true
+    // 有日期任务：今天或之前的都显示
+    return t.dueDate <= todayStr
+  })
 
   // 补水（上午 2 杯 + 下午 2 杯，按天记录）
   const [water, setWater] = useState(() => {
@@ -251,13 +281,17 @@ export default function HomePage() {
   }
   useEffect(() => { loadWeather() }, [loadWeather])
 
-  // 今日食谱（按日轮换 + AI 教程接口预留）
-  const todayRecipe = pickDaily(RECIPES)
+  // 今日食谱（按日轮换选 2 道 + AI 教程接口预留）
+  const dayIdx = Math.floor(Date.now() / 86400000)
+  const todayRecipe = RECIPES[dayIdx % RECIPES.length]
+  const todayRecipe2 = RECIPES[(dayIdx + Math.floor(RECIPES.length / 2)) % RECIPES.length]
   const [showRecipe, setShowRecipe] = useState(false)
+  const [recipeTutorialIdx, setRecipeTutorialIdx] = useState(0)
   const [tutorial, setTutorial] = useState<{ title: string; detail: string[] }>({ title: '', detail: [] })
   const toggleTutorial = async () => {
+    const r = recipeTutorialIdx === 0 ? todayRecipe : todayRecipe2
     if (!showRecipe && tutorial.title === '') {
-      const t = await fetchRecipeTutorial(todayRecipe)
+      const t = await fetchRecipeTutorial(r)
       setTutorial(t)
     }
     setShowRecipe(v => !v)
@@ -438,29 +472,36 @@ export default function HomePage() {
             </button>
           </div>
 
-          {/* 今日食谱 */}
+          {/* 今日食谱（2道菜） */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>🍳</span> 今日食谱
               </h2>
-              <span className="text-[10px] text-gray-300">每天一道 · 约 {todayRecipe.minutes} 分钟</span>
+              <span className="text-[10px] text-gray-300">每天两道 · 按日轮换</span>
             </div>
-            <div className="flex items-center gap-3 mb-3">
-              <span className="text-3xl">{todayRecipe.emoji}</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-gray-800">{todayRecipe.name}</div>
-                <div className="text-[10px] text-gray-400 truncate">{todayRecipe.ingredients.join('、')}</div>
-              </div>
-              <button
-                onClick={() => setShowRecipe(v => !v)}
-                className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg text-xs hover:bg-orange-100 shrink-0"
-              >
-                {showRecipe ? '收起教程' : '做菜教程'}
-              </button>
+            <div className="grid grid-cols-2 gap-3">
+              {[todayRecipe, todayRecipe2].map((r, ri) => (
+                <div key={ri} className="bg-orange-50/50 border border-orange-100 rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-xl">{r.emoji}</span>
+                    <span className="text-xs font-bold text-gray-700 truncate">{r.name}</span>
+                  </div>
+                  <div className="text-[10px] text-gray-400 truncate mb-1">{r.ingredients.join('、')}</div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] text-gray-300">⏱ {r.minutes}min</span>
+                    <button
+                      onClick={() => { setRecipeTutorialIdx(ri); setShowRecipe(v => !v) }}
+                      className="text-[10px] text-orange-400 hover:text-orange-600"
+                    >
+                      教程 →
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
             {showRecipe && (
-              <div className="bg-orange-50/60 border border-orange-100 rounded-xl p-3 space-y-1">
+              <div className="mt-3 bg-orange-50/60 border border-orange-100 rounded-xl p-3 space-y-1">
                 {tutorial.detail.map((line, i) => (
                   <p key={i} className="text-[11px] text-gray-600">{line}</p>
                 ))}
