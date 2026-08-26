@@ -129,22 +129,22 @@ function ClockWork() {
     : 'bg-gradient-to-br from-orange-50 to-amber-50 border-amber-100'
 
   return (
-    <div className={`rounded-2xl p-4 shadow-sm border relative overflow-hidden ${cardBg}`}>
-      <div className="absolute top-0 right-0 w-20 h-20 bg-white/30 rounded-bl-full pointer-events-none" />
-      <div className="absolute bottom-0 left-0 w-14 h-14 bg-white/20 rounded-tr-full pointer-events-none" />
-      <div className="flex items-start justify-between gap-3 relative">
+    <div className={`rounded-2xl px-4 py-2.5 shadow-sm border relative overflow-hidden ${cardBg}`}>
+      <div className="absolute top-0 right-0 w-16 h-16 bg-white/30 rounded-bl-full pointer-events-none" />
+      <div className="absolute bottom-0 left-0 w-10 h-10 bg-white/20 rounded-tr-full pointer-events-none" />
+      <div className="flex items-center justify-between gap-3 relative">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[10px] text-indigo-400 font-medium">🕐 {localTime}</span>
-            <span className="text-[9px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}</span>
+            <span className="text-xs text-indigo-400 font-medium">🕐 {localTime}</span>
+            <span className="text-[10px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}</span>
           </div>
           {isResting ? (
-            <div className="text-sm font-bold text-emerald-500">{label}</div>
+            <div className="text-base font-bold text-emerald-500">{label}</div>
           ) : (
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-gray-400">{label}</span>
-                <span className="text-sm font-bold text-amber-600 tabular-nums">{cd}</span>
+                <span className="text-[11px] text-gray-400">{label}</span>
+                <span className="text-base font-bold text-amber-600 tabular-nums">{cd}</span>
               </div>
               {cdPct > 0 && (
                 <div className="mt-1 w-full h-1.5 bg-white/50 rounded-full overflow-hidden">
@@ -153,18 +153,18 @@ function ClockWork() {
               )}
             </div>
           )}
-          <div className="text-[9px] text-gray-300 mt-1">
+          <div className="text-[10px] text-gray-300 mt-0.5">
             {hours.startAM}–{hours.endAM} · {hours.startPM}–{hours.endPM}
             {scheduleNote && <span className="ml-1 text-purple-400">· {scheduleNote}</span>}
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-[9px] text-indigo-300 font-medium mb-0.5">🇺🇸</div>
-          <div className="space-y-0">
+          <div className="text-[10px] text-indigo-300 font-medium mb-0.5">🇺🇸</div>
+          <div className="space-y-0.5">
             {zones.map(z => (
-              <div key={z.tz} className="flex items-center justify-end gap-1 text-[10px]">
-                <span className="text-gray-400 w-7">{z.label}</span>
-                <span className="font-mono text-gray-600 tabular-nums bg-white/50 px-1 rounded">{fmtTz(z.tz)}</span>
+              <div key={z.tz} className="flex items-center justify-end gap-1.5 text-[11px]">
+                <span className="text-gray-400 w-8">{z.label}</span>
+                <span className="font-mono text-gray-600 tabular-nums bg-white/50 px-1.5 py-0.5 rounded">{fmtTz(z.tz)}</span>
               </div>
             ))}
           </div>
@@ -320,12 +320,35 @@ export default function HomePage() {
       <StatusStrip />
       <ClockWork />
       {/* 页面标题 */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">🏠 首页</h1>
           <p className="text-sm text-gray-400 mt-0.5">
             {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
           </p>
+        </div>
+        {/* 补水 & 久坐 */}
+        <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-2 shadow-sm border border-gray-100">
+          <div className="flex items-center gap-1.5">
+            {(water as any).am.map((v: boolean, i: number) => (
+              <button key={`am${i}`} onClick={() => toggleCup('am', i)}
+                title={`上午第 ${i + 1} 杯`}
+                className={`w-7 h-7 rounded-full text-xs transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                💧
+              </button>
+            ))}
+            {(water as any).pm.map((v: boolean, i: number) => (
+              <button key={`pm${i}`} onClick={() => toggleCup('pm', i)}
+                title={`下午第 ${i + 1} 杯`}
+                className={`w-7 h-7 rounded-full text-xs transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                💧
+              </button>
+            ))}
+          </div>
+          <div className="text-[10px] text-gray-400 border-l border-gray-100 pl-3">
+            <span className="text-sky-500 font-medium">{(water as any).am.filter(Boolean).length + (water as any).pm.filter(Boolean).length}</span>/4 杯
+            {isWorkNow() && <span className="ml-2 text-gray-300">🪑 {sedentaryMin}分</span>}
+          </div>
         </div>
         <button
           onClick={() => navigate('/journal')}
@@ -437,7 +460,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* 右列：重要提醒 + 习惯 + AI 建议 */}
+        {/* 右列：天气 + 食谱 + AI 热点 */}
         <div className="space-y-6">
           {/* 天气 */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
@@ -523,55 +546,6 @@ export default function HomePage() {
               ))}
             </div>
             <p className="text-[10px] text-gray-200 mt-2">每日轮换 · AI 接口预留中，接入后为实时热点</p>
-          </div>
-
-          {/* 补水 & 久坐提醒 */}
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-4">
-              <span>💧</span> 补水 & 久坐
-            </h2>
-
-            {isWorkNow() ? (
-              <>
-                <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2 px-1">
-                  <span>上午 ×2</span>
-                  <span>下午 ×2</span>
-                </div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex gap-2">
-                    {(water as any).am.map((v: boolean, i: number) => (
-                      <button key={`am${i}`} onClick={() => toggleCup('am', i)}
-                        title={`上午第 ${i + 1} 杯`}
-                        className={`w-10 h-10 rounded-full text-base transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
-                        💧
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex gap-2">
-                    {(water as any).pm.map((v: boolean, i: number) => (
-                      <button key={`pm${i}`} onClick={() => toggleCup('pm', i)}
-                        title={`下午第 ${i + 1} 杯`}
-                        className={`w-10 h-10 rounded-full text-base transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
-                        💧
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="text-[10px] text-gray-300 text-right">
-                  今日 {(water as any).am.filter(Boolean).length + (water as any).pm.filter(Boolean).length} / 4 杯
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-gray-400">当前非工作时间，提醒已暂停</p>
-            )}
-
-            <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs">
-              <span className="text-gray-500">🪑 久坐 {sedentaryMin} 分钟</span>
-              <button onClick={resetSedentary} className="px-2 py-1 bg-gray-100 rounded-lg text-[10px] text-gray-500 hover:bg-gray-200">
-                刚活动过
-              </button>
-            </div>
-            <p className="text-[10px] text-gray-300 mt-1.5">工作时间外不提醒 · 久坐每 50 分钟桌面弹窗</p>
           </div>
 
           {/* AI 建议（基于真实状态动态生成） */}
