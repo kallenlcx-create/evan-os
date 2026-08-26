@@ -171,6 +171,7 @@ export default function KnowledgePage() {
     if (!name?.trim()) return
     if (l1List.some(l => l.name === name.trim())) { alert('分类已存在'); return }
     await saveL1([...l1List, { id: 'l1-' + name.trim(), name: name.trim() }])
+    setExpandedL1('l1-' + name.trim()) // 自动展开，方便立即添加 2级标签
   }
   const renameL1Category = async (l1: TagL1) => {
     const name = prompt('重命名一级分类', l1.name)
@@ -234,18 +235,27 @@ export default function KnowledgePage() {
       if (file.name.endsWith('.json')) {
         const parsed = JSON.parse(text)
         if (parsed.name && parsed.items) {
-          await saveL2([...l2List.filter(x => x.id !== 'l2-' + parsed.name), { id: 'l2-' + parsed.name, name: parsed.name, parent: parentL1 }])
+          // 标签级导入：确保父级 l1 存在
+          const parent = parsed.parent || parentL1 || '通用'
+          if (!l1List.some(l => l.name === parent)) {
+            await saveL1([...l1List, { id: 'l1-' + parent, name: parent }])
+          }
+          await saveL2([...l2List.filter(x => x.id !== 'l2-' + parsed.name), { id: 'l2-' + parsed.name, name: parsed.name, parent }])
           for (const it of parsed.items) {
             await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: parsed.name, format: it.format ?? 'markdown' })
           }
+          setSelectedL2Filter(parsed.name) // 自动选中新导入的标签
         } else if (parsed.l1 && parsed.l2) {
+          // 全量导入
           await saveL1(parsed.l1.map((n: string) => ({ id: 'l1-' + n, name: n })))
           await saveL2(parsed.l2.map((x: any) => ({ id: 'l2-' + x.name, name: x.name, parent: x.parent })))
           for (const it of parsed.items ?? []) {
             await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: it.category ?? parsed.l2[0]?.name, format: it.format ?? 'markdown' })
           }
+          if (parsed.l2.length > 0) setSelectedL2Filter(parsed.l2[0].name)
         }
-        alert('JSON 导入完成')
+        alert('导入完成 ✓ 刷新页面查看所有数据')
+        await loadTagTree()
       } else {
         const sections = text.split(/\n## /).slice(1)
         for (const sec of sections) {
@@ -254,10 +264,10 @@ export default function KnowledgePage() {
           if (title) await addObject('knowledge', { title, content, category: parentL1, tags: ['导入'], format: 'markdown' })
         }
         alert('Markdown 导入完成')
+        await loadTagTree()
       }
-      await loadTagTree()
     } catch (e) {
-      alert('导入失败：' + String(e).slice(0, 100))
+      alert('导入失败：' + String(e).slice(0, 160))
     }
   }
 
@@ -428,13 +438,39 @@ export default function KnowledgePage() {
                   <div className="flex gap-2 flex-wrap">
                     <select
                       value={newCategory}
-                      onChange={e => setNewCategory(e.target.value)}
+                      onChange={e => {
+                        if (e.target.value === '__add_new__') {
+                          const parent = l1List[0]?.name ?? '通用'
+                          const name = prompt('新标签名称（将创建在「' + parent + '」分类下）：')
+                          if (name?.trim()) {
+                            const id = 'l2-' + name.trim()
+                            if (!l2List.some(l => l.id === id)) {
+                              saveL2([...l2List, { id, name: name.trim(), parent }])
+                              setNewCategory(name.trim())
+                            }
+                          }
+                        } else {
+                          setNewCategory(e.target.value)
+                        }
+                      }}
                       className="px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
                     >
-                      {l2List.map(l2 => (
-                        <option key={l2.id} value={l2.name}>{l2.parent} / {l2.name}</option>
-                      ))}
+                      <option value="" disabled>选择标签…</option>
+                      {/* 按 l1 分组显示 optgroup */}
+                      {l1List.map(l1 => {
+                        const children = l2List.filter(l2 => l2.parent === l1.name)
+                        if (children.length === 0) return null
+                        return (
+                          <optgroup key={l1.id} label={l1.name}>
+                            {children.map(l2 => (
+                              <option key={l2.id} value={l2.name}>{l2.name}</option>
+                            ))}
+                          </optgroup>
+                        )
+                      })}
+                      {/* 无标签时兜底 */}
                       {l2List.length === 0 && <option value="general">通用</option>}
+                      <option value="__add_new__">＋ 新建标签…</option>
                     </select>
                     <select
                       value={newFormat}
