@@ -1,4 +1,4 @@
-// ====== MemoryPage — AI 记忆管理 ======
+﻿// ====== MemoryPage — AI 记忆管理 ======
 // 用户对 Memory 拥有完全控制权：查看 / 确认 / 修改 / 删除 / 归档
 // AI 建议只出现在"待确认"区，确认前不会进入 AI 上下文
 // 注意：Memory ≠ Knowledge，此页面不读写知识库
@@ -9,6 +9,7 @@ import {
   Sparkles, Clock, ShieldCheck, RotateCcw,
 } from 'lucide-react'
 import { memoryService } from '../services/memoryService'
+import { useAskText } from '../components/PromptModal'
 import type { Memory, MemoryStatus, MemoryType } from '../types'
 
 const typeLabels: Record<MemoryType, string> = {
@@ -200,6 +201,7 @@ function MemoryCard({
 // ====== 主页面 ======
 
 export default function MemoryPage() {
+  const [askModal, askText] = useAskText()
   const [memories, setMemories] = useState<Memory[]>([])
   const [tab, setTab] = useState<MemoryStatus>('candidate')
   const [loading, setLoading] = useState(true)
@@ -287,7 +289,7 @@ export default function MemoryPage() {
 
   // 手动添加记忆
   const addManual = async () => {
-    const content = prompt('输入记忆内容（将直接生效）：')
+    const content = await askText('输入记忆内容（将直接生效）：')
     if (!content || !content.trim()) return
     await memoryService.addManualMemory({ type: 'context', content, importance: 0.5 })
     setTab('active')
@@ -311,6 +313,7 @@ export default function MemoryPage() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
+      {askModal}
       {/* 标题栏 */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">

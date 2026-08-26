@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useStore } from '../store'
+import { localDate } from '../utils/date'
 import { TrendingUp, CheckCircle2, Clock, Target, Flame, Calendar, Award, BarChart3 } from 'lucide-react'
 
 export default function StatsPage() {
@@ -24,7 +25,7 @@ export default function StatsPage() {
   const last30Days = Array.from({ length: 30 }, (_, i) => {
     const d = new Date()
     d.setDate(d.getDate() - (29 - i))
-    return d.toISOString().slice(0, 10)
+    return localDate(d)
   })
 
   const habitHeatmap = last30Days.map(date => {
@@ -54,7 +55,7 @@ export default function StatsPage() {
   const weekTaskTrend = Array.from({ length: 7 }, (_, i) => {
     const d = new Date()
     d.setDate(d.getDate() - (6 - i))
-    const dateStr = d.toISOString().slice(0, 10)
+    const dateStr = localDate(d)
     const dayName = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
     // 简化：统计所有已完成任务的 updatedAt 在当天的
     const done = doneTasks.filter(t => t.updatedAt.startsWith(dateStr)).length

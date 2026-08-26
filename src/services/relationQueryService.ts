@@ -64,6 +64,8 @@ export class RelationQueryService {
 
     this.relationsCache = await db.relations.toArray()
     this.lastLoadTime = now
+    // 对象缓存随关系缓存一同过期：否则对象改名/删除后图谱持续返回旧标题甚至已删节点
+    this.objectCache.clear()
 
     // 重建邻接表
     this.adjacency.clear()

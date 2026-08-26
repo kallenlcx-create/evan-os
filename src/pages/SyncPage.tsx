@@ -8,6 +8,7 @@ import {
   type SyncSummary,
 } from '../services/cloudSync'
 import type { CloudSyncConfig } from '../types'
+import { useStore } from '../store'
 
 export default function SyncPage() {
   const [cfg, setCfg] = useState<CloudSyncConfig | null>(null)
@@ -65,6 +66,10 @@ export default function SyncPage() {
         ok: true,
         text: `同步完成：推送 ${s.pushedRows} 行（${s.tablesPushed} 表）· 拉取 ${s.pulledRows} 行 · 应用 ${s.appliedRows} 行 · 删除 ${s.appliedDeletions} · 冲突保留本地 ${s.skippedConflicts}`,
       })
+      // 拉取的行直写 IndexedDB，重载 store 让所有页面立即可见远端数据
+      if (s.appliedRows > 0 || s.appliedDeletions > 0) {
+        await useStore.getState().initFromDB()
+      }
     } catch (e) {
       setMessage({ ok: false, text: `同步失败：${String(e).slice(0, 200)}` })
     } finally {

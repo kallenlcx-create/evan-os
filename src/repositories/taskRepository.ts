@@ -2,7 +2,7 @@ import { db } from '../db'
 import type { Task } from '../types'
 import { uid, now, type Result, ok, err } from './result'
 import { createEvent } from './eventRepository'
-import { createRelation, deleteRelation, getOutgoingRelations } from './relationRepository'
+import { createRelation, deleteRelation } from './relationRepository'
 
 // ====== Task Repository ======
 
@@ -86,13 +86,4 @@ export async function toggleTaskStatus(id: string): Promise<Result<Task['status'
   }
 }
 
-export async function getProjectTasks(projectId: string): Promise<Task[]> {
-  const rels = await getOutgoingRelations('project', projectId)
-  // 不太对 — 应该是 task → project 的 belongs_to
-  // 用 relationRepository 的 getTasksForProject
-  const { getTasksForProject } = await import('./relationRepository')
-  const taskRels = await getTasksForProject(projectId)
-  const taskIds = taskRels.map(r => r.sourceId)
-  const tasks = await Promise.all(taskIds.map(id => db.tasks.get(id)))
-  return tasks.filter(Boolean) as Task[]
-}
+

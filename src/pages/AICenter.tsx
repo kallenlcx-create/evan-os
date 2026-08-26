@@ -1,4 +1,4 @@
-// ====== AICenterPage — AI 中心（v1.1 聚合版）======
+﻿// ====== AICenterPage — AI 中心（v1.1 聚合版）======
 // 六大 AI 能力统一入口：助手 / 智能体 / 记忆 / 上下文 / 工具 / 自动化
 // 保留：提示词库 + AI 工具收藏（本地清单）
 
@@ -221,7 +221,7 @@ export default function AICenterPage() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-medium text-gray-800 truncate">{p.title}</span>
                     <span className="px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded text-[10px]">{p.category}</span>
-                    <div className="ml-auto flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="ml-auto flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                       <button onClick={() => copyPrompt(p)} className="p-1 text-gray-300 hover:text-blue-500" title="复制">
                         {copiedId === p.id ? <Check size={13} className="text-green-500" /> : <Copy size={13} />}
                       </button>
@@ -269,7 +269,7 @@ export default function AICenterPage() {
                   <Cpu size={14} className="text-cyan-500 shrink-0" />
                   <span className="text-sm font-medium text-gray-800 truncate">{t.name}</span>
                   <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-[10px]">{t.category}</span>
-                  <div className="ml-auto flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="ml-auto flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                     {t.url && (
                       <a href={t.url} target="_blank" rel="noreferrer" className="p-1 text-gray-300 hover:text-blue-500" title="打开">
                         <ExternalLink size={13} />

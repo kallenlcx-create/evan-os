@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
 import { listByKind, migrateLSItems, syncKind, onKindsChanged } from '../repositories/collectionRepository'
+import { localDate } from '../utils/date'
 import { Plus, Globe, Bot, TrendingUp, Wrench, Clock, BookOpen, Link2, Trash2 } from 'lucide-react'
 import type { LearningPath } from '../types'
 
@@ -45,8 +46,8 @@ function loadGrowth(): { logs: StudyLog[]; resources: Resource[] } {
   } catch { /* ignore */ }
   return {
     logs: [
-      { id: 'l1', date: new Date().toISOString().slice(0, 10), subject: '英语听力', duration: 30, notes: 'BBC 6 Minute English，完成2集' },
-      { id: 'l2', date: new Date().toISOString().slice(0, 10), subject: 'Shopify 主题开发', duration: 45, notes: '学习 Liquid 模板语法' },
+      { id: 'l1', date: localDate(), subject: '英语听力', duration: 30, notes: 'BBC 6 Minute English，完成2集' },
+      { id: 'l2', date: localDate(), subject: 'Shopify 主题开发', duration: 45, notes: '学习 Liquid 模板语法' },
     ],
     resources: [
       { id: 'r1', title: 'Shopify 官方文档', url: 'https://shopify.dev', category: 'shopify', bookmarked: true },
@@ -103,7 +104,7 @@ export default function GrowthPage() {
 
   const addLog = () => {
     if (!newLog.subject.trim()) return
-    const log: StudyLog = { id: Date.now().toString(), date: new Date().toISOString().slice(0, 10), subject: newLog.subject, duration: Number(newLog.duration) || 0, notes: newLog.notes }
+    const log: StudyLog = { id: Date.now().toString(), date: localDate(), subject: newLog.subject, duration: Number(newLog.duration) || 0, notes: newLog.notes }
     setGrowth(g => ({ ...g, logs: [log, ...g.logs] }))
     setNewLog({ subject: '', duration: '', notes: '' }); setShowForm(false)
   }
@@ -227,7 +228,7 @@ export default function GrowthPage() {
                         <select
                           value={lp.status}
                           onChange={e => updateLearningPathStatus(lp.id, e.target.value as LearningPath['status'])}
-                          className="text-[10px] border border-gray-200 rounded px-1 py-0.5 bg-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="text-[10px] border border-gray-200 rounded px-1 py-0.5 bg-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                         >
                           {Object.entries(statusLabels).map(([k, v]) => (
                             <option key={k} value={k}>{v.label}</option>
@@ -295,7 +296,7 @@ export default function GrowthPage() {
                   <div className="text-sm font-bold text-blue-600">{log.duration}</div>
                   <div className="text-[10px] text-gray-400">分钟</div>
                 </div>
-                <button onClick={() => deleteLog(log.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                <button onClick={() => deleteLog(log.id)} className="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -334,7 +335,7 @@ export default function GrowthPage() {
                       <span className="text-lg">{cat?.label.split(' ')[0] || '🔗'}</span>
                       <h3 className="font-semibold text-gray-800 text-sm">{r.title}</h3>
                     </div>
-                    <button onClick={() => deleteResource(r.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                    <button onClick={() => deleteResource(r.id)} className="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
                       <Trash2 size={14} />
                     </button>
                   </div>

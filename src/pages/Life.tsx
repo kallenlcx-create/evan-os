@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
 import { listByKind, migrateLSList, syncKind, onKindsChanged } from '../repositories/collectionRepository'
+import { localDate, localToday } from '../utils/date'
 import type { CollectionKind } from '../types'
 import { DollarSign, Heart, ListTodo, Star, FileText, Check, Plus, TrendingUp, TrendingDown, Trash2, Pencil } from 'lucide-react'
 import type { Habit } from '../types'
+import { useAskText } from '../components/PromptModal'
 
 const sections = [
   { key: 'habits', label: '✅ 习惯', icon: Check, emoji: '✅' },
@@ -86,10 +88,11 @@ interface PersonalRecord {
 
 export default function LifePage() {
   const { habits, toggleHabit, addHabit, updateHabit, deleteHabit } = useStore()
+  const [askModal, askText] = useAskText()
   const [newHabitTitle, setNewHabitTitle] = useState('')
   const [newHabitEmoji, setNewHabitEmoji] = useState('')
   const [activeSection, setActiveSection] = useState('habits')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localToday()
 
   // 本地数据
   const [finances, setFinances] = useLocalData<FinanceRecord[]>('finances', [])
@@ -114,8 +117,8 @@ return (
                 const weekDays = ['一', '二', '三', '四', '五', '六', '日']
                 const thisWeek = Array.from({ length: 7 }, (_, i) => {
                   const d = new Date()
-                  d.setDate(d.getDate() - d.getDay() + 1 + i)
-                  return d.toISOString().slice(0, 10)
+                  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + i)
+                  return localDate(d)
                 })
                 return (
                   <div key={habit.id} className={`bg-white rounded-2xl p-5 border ${done ? 'border-green-200' : 'border-gray-100'} shadow-sm`}>
@@ -126,10 +129,11 @@ return (
                         <p className="text-[11px] text-gray-400">🔥 连续 {habit.streak} 天 · {habit.frequency === 'daily' ? '每天' : '每周'}</p>
                       </div>
                       <div className="flex items-center gap-0.5">
-                        <button onClick={() => {
-                          const title = prompt('修改习惯名称', habit.title ?? ''); if (title === null || !title.trim()) return
+                        <button onClick={() => { void (async () => {
+                          const title = await askText('修改习惯名称', habit.title ?? '')
+                          if (title === null || !title.trim()) return
                           updateHabit(habit.id, { title: title.trim() })
-                        }} className="p-1.5 text-gray-300 hover:text-blue-500" title="编辑">
+                        })() }} className="p-1.5 text-gray-300 hover:text-blue-500" title="编辑">
                           <Pencil size={13} />
                         </button>
                         <button onClick={() => { if (confirm(`删除习惯「${habit.title}」？打卡记录将一并删除`)) deleteHabit(habit.id) }} className="p-1.5 text-gray-300 hover:text-red-500" title="删除">
@@ -202,11 +206,11 @@ return (
                     <span className={`text-sm font-bold ${f.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
                       {f.type === 'income' ? '+' : '-'}¥{f.amount.toLocaleString()}
                     </span>
-                    <button onClick={() => {
-                      const amount = prompt('修改金额', String(f.amount ?? 0)); if (amount === null) return
-                      const note = prompt('修改备注', f.note ?? '') ?? f.note
-                      setFinances(finances.map(x => x.id === f.id ? { ...x, amount: Number(amount) || 0, note } : x))
-                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                    <button onClick={() => { void (async () => {
+                      const amount = await askText('修改金额', String(f.amount ?? 0)); if (amount === null) return
+                      const note = await askText('修改备注', f.note ?? '')
+                      setFinances(finances.map(x => x.id === f.id ? { ...x, amount: Number(amount) || 0, note: note ?? f.note } : x))
+                    })() }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
                       <Pencil size={14} />
                     </button>
                     <button onClick={() => setFinances(finances.filter(x => x.id !== f.id))} className="p-1 text-gray-300 hover:text-red-400">
@@ -237,11 +241,11 @@ return (
                       </div>
                       <div className="text-xs text-gray-400">{h.date} {h.note && `· ${h.note}`}</div>
                     </div>
-                    <button onClick={() => {
-                      const value = prompt('修改数值', h.value ?? ''); if (value === null) return
-                      const note = prompt('修改备注', h.note ?? '') ?? h.note
-                      setHealthRecs(healthRecs.map(x => x.id === h.id ? { ...x, value, note } : x))
-                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                    <button onClick={() => { void (async () => {
+                      const value = await askText('修改数值', h.value ?? ''); if (value === null) return
+                      const note = await askText('修改备注', h.note ?? '')
+                      setHealthRecs(healthRecs.map(x => x.id === h.id ? { ...x, value, note: note ?? h.note } : x))
+                    })() }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
                       <Pencil size={14} />
                     </button>
                     <button onClick={() => setHealthRecs(healthRecs.filter(x => x.id !== h.id))} className="p-1 text-gray-300 hover:text-red-400">
@@ -281,10 +285,10 @@ return (
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-sm text-gray-700">{p.title}</span>
                           <div className="flex items-center gap-1">
-                            <button onClick={() => {
-                              const title = prompt('修改计划', p.title ?? ''); if (title === null || !title.trim()) return
+                            <button onClick={() => { void (async () => {
+                              const title = await askText('修改计划', p.title ?? ''); if (title === null || !title.trim()) return
                               setPlans(plans.map(x => x.id === p.id ? { ...x, title: title.trim() } : x))
-                            }} className="text-gray-300 hover:text-blue-500" title="编辑">
+                            })() }} className="text-gray-300 hover:text-blue-500" title="编辑">
                               <Pencil size={12} />
                             </button>
                             <button onClick={() => setPlans(plans.filter(x => x.id !== p.id))} className="text-gray-300 hover:text-red-400">
@@ -337,12 +341,12 @@ return (
                       >
                         <Check size={16} />
                       </button>
-                      <button onClick={() => {
-                      const title = prompt('修改愿望', w.title ?? ''); if (title === null || !title.trim()) return
-                      setWishes(wishes.map(x => x.id === w.id ? { ...x, title: title.trim() } : x))
-                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
-                      <Pencil size={14} />
-                    </button>
+                      <button onClick={() => { void (async () => {
+                        const title = await askText('修改愿望', w.title ?? ''); if (title === null || !title.trim()) return
+                        setWishes(wishes.map(x => x.id === w.id ? { ...x, title: title.trim() } : x))
+                      })() }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                        <Pencil size={14} />
+                      </button>
                     <button onClick={() => setWishes(wishes.filter(x => x.id !== w.id))} className="p-1 text-gray-300 hover:text-red-400">
                         <Trash2 size={14} />
                       </button>
@@ -370,10 +374,10 @@ return (
                       <div className="text-xs text-gray-400 mb-1">{r.date}</div>
                       <div className="text-sm text-gray-700 whitespace-pre-wrap">{r.content}</div>
                     </div>
-                    <button onClick={() => {
-                      const content = prompt('修改记录内容', r.content ?? ''); if (content === null) return
+                    <button onClick={() => { void (async () => {
+                      const content = await askText('修改记录内容', r.content ?? ''); if (content === null) return
                       setRecords(records.map(x => x.id === r.id ? { ...x, content } : x))
-                    }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                    })() }} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
                       <Pencil size={14} />
                     </button>
                     <button onClick={() => setRecords(records.filter(x => x.id !== r.id))} className="p-1 text-gray-300 hover:text-red-400">
@@ -394,6 +398,7 @@ return (
 
   return (
     <div className="space-y-6">
+      {askModal}
       <div>
         <h1 className="text-2xl font-bold text-gray-800">🌿 生活</h1>
         <p className="text-sm text-gray-400 mt-0.5">平衡工作与生活，照顾好自己</p>
@@ -431,7 +436,7 @@ function FinanceForm({ onAdd }: { onAdd: (rec: FinanceRecord) => void }) {
 
   const submit = () => {
     if (!amount || !category) return
-    onAdd({ id: uid(), type, amount: Number(amount), category, note, date: new Date().toISOString().slice(0, 10) })
+    onAdd({ id: uid(), type, amount: Number(amount), category, note, date: localDate() })
     setAmount(''); setCategory(''); setNote('')
   }
   return (
@@ -467,7 +472,7 @@ function HealthForm({ onAdd }: { onAdd: (rec: HealthRecord) => void }) {
   ]
   const submit = () => {
     if (!value) return
-    onAdd({ id: uid(), type, value, note, date: new Date().toISOString().slice(0, 10) })
+    onAdd({ id: uid(), type, value, note, date: localDate() })
     setValue(''); setNote('')
   }
   return (
@@ -494,7 +499,7 @@ function WishForm({ onAdd }: { onAdd: (item: WishItem) => void }) {
   const emojis = ['⭐', '✈️', '🏝️', '🎁', '🎮', '📚', '🏠', '💰', '🎬', '🍜']
   const submit = () => {
     if (!title.trim()) return
-    onAdd({ id: uid(), title: title.trim(), emoji, done: false, createdAt: new Date().toISOString().slice(0, 10) })
+    onAdd({ id: uid(), title: title.trim(), emoji, done: false, createdAt: localDate() })
     setTitle('')
   }
   return (
@@ -519,7 +524,7 @@ function PlanForm({ cats, onAdd }: { cats: { key: string; label: string }[]; onA
   const [category, setCategory] = useState<LifePlan['category']>('travel')
   const submit = () => {
     if (!title.trim()) return
-    onAdd({ id: uid(), title: title.trim(), category, status: 'idea', createdAt: new Date().toISOString().slice(0, 10) })
+    onAdd({ id: uid(), title: title.trim(), category, status: 'idea', createdAt: localDate() })
     setTitle('')
   }
   return (
@@ -545,7 +550,7 @@ function RecordForm({ onAdd }: { onAdd: (rec: PersonalRecord) => void }) {
   const moods = ['😊', '😴', '😤', '🤔', '😢', '🥳', '😎', '😰']
   const submit = () => {
     if (!content.trim()) return
-    onAdd({ id: uid(), mood, content: content.trim(), date: new Date().toISOString().slice(0, 10) })
+    onAdd({ id: uid(), mood, content: content.trim(), date: localDate() })
     setContent('')
   }
   return (

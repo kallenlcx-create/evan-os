@@ -9,6 +9,7 @@ import type {
 import { loadAllObjects, createObject, updateObject as repoUpdateObject, deleteObject as repoDeleteObject } from './repositories/objectRepository'
 import { createTask as repoCreateTask, toggleTaskStatus as repoToggleTask } from './repositories/taskRepository'
 import { uid, now } from './repositories/result'
+import { localToday, localDate } from './utils/date'
 import { searchService } from './services/searchService'
 import { captureInbox as repoCaptureInbox, processInbox as repoProcessInbox, deleteInboxItem as repoDeleteInboxItem } from './repositories/inboxRepository'
 import { relationQueryService } from './services/relationQueryService'
@@ -79,13 +80,9 @@ export interface EvanStore {
   // 任务
   addTask: (data: Partial<Task>) => Promise<string>
   toggleTaskStatus: (id: string) => Promise<void>
-  reorderTasks: (ids: string[]) => Promise<void>
 
   // 项目
   updateProjectStatus: (id: string, status: Project['status']) => Promise<void>
-
-  // 目标
-  updateGoalProgress: (id: string, progress: number) => Promise<void>
 
   // 习惯
   toggleHabit: (id: string, date: string) => Promise<void>
@@ -120,11 +117,6 @@ export interface EvanStore {
 
   // 标签
   getAllTags: () => TagStats[]
-  getObjectsByTag: (tag: string) => AnyObject[]
-
-  // 知识双向链接
-  computeBacklinks: (knowledgeId: string) => string[]
-  getBacklinks: (knowledgeId: string) => Knowledge[]
 
   // 番茄钟
   addPomodoroSession: (data: Partial<PomodoroSession>) => Promise<void>
@@ -133,15 +125,10 @@ export interface EvanStore {
   // 四象限
   getQuadrantTasks: () => { q1: Task[]; q2: Task[]; q3: Task[]; q4: Task[] }
 
-  // 目标层级
-  getGoalHierarchy: () => Goal[]
-  getChildGoals: (parentId: string) => Goal[]
-
   // 查询
   getTodayTasks: () => Task[]
   getUnreadNotifications: () => Notification[]
   getRelatedObjects: (id: string) => AnyObject[]
-  searchAll: (query: string) => AnyObject[]
 }
 
 // ====== 初始种子数据 ======
@@ -266,13 +253,17 @@ function getSeedData() {
 function calcStreak(dates: string[]): number {
   if (dates.length === 0) return 0
   const sorted = [...dates].sort((a, b) => b.localeCompare(a))
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localToday()
   let current = new Date(sorted[0])
   let streak = 0
+  const seen = new Set<string>()
   if (sorted[0] > today) { current = new Date(today); sorted.shift() }
   while (sorted.length) {
-    const d = new Date(sorted[0])
-    if (d.toISOString().slice(0, 10) === current.toISOString().slice(0, 10)) {
+    const dKey = localDate(new Date(sorted[0]))
+    // 去重：同一天多条打卡记录不重复累计
+    if (seen.has(dKey)) { sorted.shift(); continue }
+    if (dKey === localDate(current)) {
+      seen.add(dKey)
       streak++; sorted.shift()
     } else break
     current.setDate(current.getDate() - 1)
@@ -560,16 +551,6 @@ export const useStore = create<EvanStore>()((set, get) => ({
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? { ...t, status: nextStatus, updatedAt: now() } : t) }))
   },
 
-  reorderTasks: async (ids) => {
-    const tasks = get().tasks
-    const updated = tasks.map(t => {
-      const idx = ids.indexOf(t.id)
-      return idx >= 0 ? { ...t, todayOrder: idx } : t
-    })
-    set({ tasks: updated })
-    await safeWrite(() => Promise.all(updated.map(t => db.tasks.put(t))))
-  },
-
   // ====== 项目 ======
   updateProjectStatus: async (id, status) => {
     const project = get().projects.find(p => p.id === id)
@@ -577,15 +558,6 @@ export const useStore = create<EvanStore>()((set, get) => ({
     const next = { ...project, status, updatedAt: now() }
     set(s => ({ projects: s.projects.map(p => p.id === id ? next : p) }))
     await safeWrite(() => db.projects.put(next))
-  },
-
-  // ====== 目标 ======
-  updateGoalProgress: async (id, progress) => {
-    const goal = get().goals.find(g => g.id === id)
-    if (!goal) return
-    const next = { ...goal, progress, updatedAt: now() }
-    set(s => ({ goals: s.goals.map(g => g.id === id ? next : g) }))
-    await safeWrite(() => db.goals.put(next))
   },
 
   // ====== 习惯 ======
@@ -737,13 +709,6 @@ export const useStore = create<EvanStore>()((set, get) => ({
       .filter(Boolean) as AnyObject[]
   },
 
-  searchAll: (query) => {
-    if (!query.trim()) return []
-    // 使用 SearchService 的快速搜索
-    const results = searchService.quickSearch(query)
-    return results.map(sr => sr.item as unknown as AnyObject)
-  },
-
   // ====== 每日日志 ======
   getDailyLog: (date) => get().dailyLogs.find(l => l.date === date),
   saveDailyLog: async (date, content, mood, energy) => {
@@ -780,7 +745,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
     await safeWrite(() => db.pomodoroSessions.add(session))
   },
   getTodayPomodoroStats: () => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localToday()
     const sessions = get().pomodoroSessions.filter(s => s.startTime.startsWith(today))
     return {
       count: sessions.length,
@@ -799,10 +764,6 @@ export const useStore = create<EvanStore>()((set, get) => ({
       q4: active.filter(t => t.priority !== 'urgent' && t.importance !== 'high'),
     }
   },
-
-  // ====== 目标层级 ======
-  getGoalHierarchy: () => get().goals.filter(g => !g.parentGoalId),
-  getChildGoals: (parentId) => get().goals.filter(g => g.parentGoalId === parentId),
 
   // ====== 标签系统 ======
   getAllTags: () => {
@@ -823,35 +784,5 @@ export const useStore = create<EvanStore>()((set, get) => ({
     return Array.from(tagMap.entries())
       .map(([tag, v]) => ({ tag, count: v.count, types: Array.from(v.types) }))
       .sort((a, b) => b.count - a.count)
-  },
-
-  getObjectsByTag: (tag) => {
-    const s = get()
-    const all: AnyObject[] = [
-      ...s.goals, ...s.projects, ...s.tasks, ...s.knowledge,
-      ...s.inspirations, ...s.questions, ...s.research,
-      ...s.experiments, ...s.decisions, ...s.reviews, ...s.processes,
-      ...s.customers, ...s.opportunities, ...s.orders, ...s.communications,
-    ]
-    return all.filter(o => o.tags.includes(tag))
-  },
-
-  // ====== 双向链接 ======
-  computeBacklinks: (knowledgeId) => {
-    const s = get()
-    const pattern = new RegExp(`\\[\\[([^\\]]*)\\]\\(knowledge:${knowledgeId}\\)`, 'g')
-    const backlinks: string[] = []
-    s.knowledge.forEach(k => {
-      if (k.id === knowledgeId) return
-      let m
-      while ((m = pattern.exec(k.content)) !== null) {
-        if (!backlinks.includes(k.id)) backlinks.push(k.id)
-      }
-    })
-    return backlinks
-  },
-  getBacklinks: (knowledgeId) => {
-    const ids = get().computeBacklinks(knowledgeId)
-    return get().knowledge.filter(k => ids.includes(k.id))
   },
 }))

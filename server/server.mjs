@@ -34,7 +34,8 @@ const pool = mysql.createPool({
 })
 
 const app = express()
-app.use(express.json({ limit: '20mb' }))
+// 认证/写入路由单独限制 body 大小（全局 20mb 过宽，易被单请求吃内存）
+app.use(express.json({ limit: '2mb' }))
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*') // 上线后建议改为你的 Pages 域名
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
@@ -42,6 +43,21 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
+
+// async 错误统一转发给兜底中间件（Express4 不捕获 async rejection）
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+
+// ---------- 登录限流（内存滑动窗口，按 IP+用户名） ----------
+const loginHits = new Map()
+const LOGIN_WINDOW_MS = 10 * 60 * 1000
+const LOGIN_MAX_ATTEMPTS = 10
+function loginRateLimited(key) {
+  const nowMs = Date.now()
+  const arr = (loginHits.get(key) ?? []).filter(t => nowMs - t < LOGIN_WINDOW_MS)
+  arr.push(nowMs)
+  loginHits.set(key, arr)
+  return arr.length > LOGIN_MAX_ATTEMPTS
+}
 
 // ---------- 初始化 ----------
 async function init() {
@@ -79,11 +95,16 @@ function signToken(username) {
 function verifyToken(token) {
   try {
     const [b64, sig] = token.split('.')
+    if (!b64 || !sig || sig.length !== crypto.createHmac('sha256', SECRET).update('x').digest('hex').length) return null
     const payload = Buffer.from(b64, 'base64url').toString()
     const expect = crypto.createHmac('sha256', SECRET).update(payload).digest('hex')
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null
-    const [username, exp] = payload.split('.')
-    if (Number(exp) < Date.now()) return null
+    // username 可能含 '.'：以最后一个 '.' 分隔（exp 恒为数字段）
+    const sep = payload.lastIndexOf('.')
+    if (sep <= 0) return null
+    const username = payload.slice(0, sep)
+    const exp = Number(payload.slice(sep + 1))
+    if (!Number.isFinite(exp) || exp < Date.now()) return null
     return username
   } catch { return null }
 }
@@ -96,9 +117,17 @@ function auth(req, res, next) {
   next()
 }
 
-app.post('/login', async (req, res) => {
+app.post('/login', wrap(async (req, res) => {
   const { username, password } = req.body ?? {}
   if (!username || !password) return res.status(400).json({ error: '需要 username/password' })
+  // 用户名白名单：字母/数字/下划线/短横线，防 '.' 等字符破坏令牌解析，也挡注入类输入
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(username))) {
+    return res.status(400).json({ error: '用户名仅允许字母、数字、_ 和 -（1-64 位）' })
+  }
+  const rlKey = `${req.socket.remoteAddress}:${username}`
+  if (loginRateLimited(rlKey)) {
+    return res.status(429).json({ error: '尝试过于频繁，请 10 分钟后再试' })
+  }
   const [rows] = await pool.query('SELECT passhash, salt FROM users WHERE username = ?', [username])
   if (rows.length === 0) {
     // 自动注册
@@ -107,14 +136,15 @@ app.post('/login', async (req, res) => {
       [username, hashPass(password, salt), salt])
   } else {
     if (rows[0].passhash !== hashPass(password, rows[0].salt)) {
-      return res.status(401).json({ error: '密码错误' })
+      // 统一失败文案，不区分「用户不存在/密码错误」，防止用户名枚举
+      return res.status(401).json({ error: '用户名或密码错误' })
     }
   }
   res.json({ token: signToken(username) })
-})
+}))
 
 // ---------- 拉取变更 ----------
-app.get('/changes', auth, async (req, res) => {
+app.get('/changes', auth, wrap(async (req, res) => {
   const since = String(req.query.since ?? '1970-01-01T00:00:00.000Z')
   const serverNow = new Date().toISOString()
 
@@ -142,10 +172,10 @@ app.get('/changes', auth, async (req, res) => {
     changes: [...changesMap.entries()].map(([table, rows]) => ({ table, rows })),
     deletions,
   })
-})
+}))
 
 // ---------- 推送行 ----------
-app.post('/upsert/:table', auth, async (req, res) => {
+app.post('/upsert/:table', auth, wrap(async (req, res) => {
   const tableName = String(req.params.table).replace(/[^a-z_]/gi, '')
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
   let accepted = 0
@@ -170,10 +200,10 @@ app.post('/upsert/:table', auth, async (req, res) => {
     accepted++
   }
   res.json({ ok: true, accepted })
-})
+}))
 
 // ---------- 推送删除 ----------
-app.post('/deletions', auth, async (req, res) => {
+app.post('/deletions', auth, wrap(async (req, res) => {
   const list = Array.isArray(req.body?.deletions) ? req.body.deletions : []
   for (const d of list.slice(0, 500)) {
     if (!d.tableName || !d.rowId) continue
@@ -191,6 +221,14 @@ app.post('/deletions', auth, async (req, res) => {
       [req.user, d.tableName, d.rowId, JSON.stringify({ _deleted: true, id: d.rowId }), deletedAt])
   }
   res.json({ ok: true })
+}))
+
+// 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('[sync-server] 错误:', err?.message ?? err)
+  if (res.headersSent) return
+  res.status(500).json({ error: '服务器内部错误' })
 })
 
 init().then(() => {

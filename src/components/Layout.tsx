@@ -11,7 +11,18 @@ import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
 
 export default function Layout() {
-  const { app, wallpaper, toggleSidebar, setMobileNav, setNotificationPanel, toggleGlobalSearch, toggleQuickCapture, backupNeeded, runBackupNow, snoozeBackupReminder } = useStore()
+  // 按需订阅：Layout 包裹全部页面，整店订阅会让任何状态变化重渲染当前页
+  const mobileNavOpen = useStore(s => s.app.mobileNavOpen)
+  const sidebarCollapsed = useStore(s => s.app.sidebarCollapsed)
+  const wallpaper = useStore(s => s.wallpaper)
+  const toggleSidebar = useStore(s => s.toggleSidebar)
+  const setMobileNav = useStore(s => s.setMobileNav)
+  const setNotificationPanel = useStore(s => s.setNotificationPanel)
+  const toggleGlobalSearch = useStore(s => s.toggleGlobalSearch)
+  const toggleQuickCapture = useStore(s => s.toggleQuickCapture)
+  const backupNeeded = useStore(s => s.backupNeeded)
+  const runBackupNow = useStore(s => s.runBackupNow)
+  const snoozeBackupReminder = useStore(s => s.snoozeBackupReminder)
   const location = useLocation()
 
   // 应用壁纸（图片或预设渐变）+ 同步 body 背景
@@ -74,11 +85,11 @@ export default function Layout() {
       {/* 移动端顶栏 */}
       <div className="md:hidden sticky top-0 z-20 h-12 flex items-center gap-2 px-3 bg-white/90 backdrop-blur border-b border-gray-100">
         <button
-          onClick={() => setMobileNav(!app.mobileNavOpen)}
+          onClick={() => setMobileNav(!mobileNavOpen)}
           className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600"
           title="菜单"
         >
-          {app.mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+          {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
         </button>
         <span className="text-sm font-bold text-gray-800">🧠 EVAN OS</span>
         <button
@@ -100,7 +111,7 @@ export default function Layout() {
       <div
         className={`relative transition-all duration-200
           ml-0
-          ${app.sidebarCollapsed ? 'md:ml-[60px]' : 'md:ml-[220px]'}`}
+          ${sidebarCollapsed ? 'md:ml-[60px]' : 'md:ml-[220px]'}`}
       >
         {/* 桌面端顶栏 */}
         <header className="hidden md:sticky md:top-0 md:z-20 md:h-12 md:flex md:items-center md:gap-3 md:px-4 bg-white/80 backdrop-blur border-b border-gray-100">

@@ -11,8 +11,9 @@ import type {
   AgentDefinition, AgentId,
 } from '../types'
 import { agentRuntime, type AgentRunContext } from './agentRuntime'
+import { localToday } from '../utils/date'
 
-const todayStr = () => new Date().toISOString().slice(0, 10)
+const todayStr = () => localToday()
 
 // ====== 启发式分类器（知识整理助手用）======
 

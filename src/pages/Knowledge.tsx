@@ -1,10 +1,11 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
+import { useAskText } from '../components/PromptModal'
 import RelationCreator from '../components/RelationCreator'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import MindMap from '../components/MindMap'
@@ -63,18 +64,7 @@ export default function KnowledgePage() {
   const [backlinks, setBacklinks] = useState<Knowledge[]>([])
 
   // 页内输入弹窗（替代原生 prompt）
-  const [askState, setAskState] = useState<{ title: string; value: string; placeholder?: string } | null>(null)
-  const askResolveRef = useRef<((v: string | null) => void) | null>(null)
-  const askText = (title: string, defaultValue = '', placeholder?: string) =>
-    new Promise<string | null>(resolve => {
-      askResolveRef.current = resolve
-      setAskState({ title, value: defaultValue, placeholder })
-    })
-  const closeAsk = (result: string | null) => {
-    askResolveRef.current?.(result)
-    askResolveRef.current = null
-    setAskState(null)
-  }
+  const [askModal, askText] = useAskText()
 
   // ====== 标签体系（v1.1）：1级分类 → 2级标签 → 3级知识条目 ======
   interface TagL1 { id: string; name: string }
@@ -485,8 +475,8 @@ export default function KnowledgePage() {
                       <span className="text-[11px] font-medium text-gray-600">{l1.name}</span>
                       <span className="text-[9px] text-gray-300">{children.length}</span>
                     </button>
-                    <button onClick={() => renameL1Category(l1)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100"><Pencil size={10} /></button>
-                    <button onClick={() => deleteL1Category(l1)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100"><Trash2 size={10} /></button>
+                    <button onClick={() => renameL1Category(l1)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-100 md:opacity-0 md:group-hover:opacity-100"><Pencil size={10} /></button>
+                    <button onClick={() => deleteL1Category(l1)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100"><Trash2 size={10} /></button>
                   </div>
                   {expanded && (
                     <div className="ml-3 pl-2 border-l border-gray-100 space-y-0.5">
@@ -501,10 +491,10 @@ export default function KnowledgePage() {
                             <span className="truncate">🏷 {l2.name}</span>
                             <span className="text-[9px] text-gray-300">{countByCategory.get(l2.name) ?? 0}</span>
                           </button>
-                          <button onClick={() => exportL2(l2, 'md')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 MD">⬇</button>
-                          <button onClick={() => exportL2(l2, 'json')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 JSON">⬇</button>
-                          <button onClick={() => renameL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-0 group-hover/l2:opacity-100"><Pencil size={9} /></button>
-                          <button onClick={() => deleteL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-0 group-hover/l2:opacity-100"><Trash2 size={9} /></button>
+                          <button onClick={() => exportL2(l2, 'md')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-100 md:opacity-0 md:group-hover/l2:opacity-100" title="导出 MD">⬇</button>
+                          <button onClick={() => exportL2(l2, 'json')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-100 md:opacity-0 md:group-hover/l2:opacity-100" title="导出 JSON">⬇</button>
+                          <button onClick={() => renameL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-blue-500 opacity-100 md:opacity-0 md:group-hover/l2:opacity-100"><Pencil size={9} /></button>
+                          <button onClick={() => deleteL2Tag(l2)} className="p-0.5 text-gray-200 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover/l2:opacity-100"><Trash2 size={9} /></button>
                         </div>
                       ))}
                       <button onClick={() => addL2Tag(l1.name)} className="w-full text-left px-2 py-1 text-[10px] text-gray-300 hover:text-blue-500">＋ 标签</button>
@@ -776,7 +766,7 @@ export default function KnowledgePage() {
                       </button>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0">
                     <button onClick={() => handleEditItem(item)} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
                       <Pencil size={13} />
                     </button>
@@ -914,30 +904,7 @@ export default function KnowledgePage() {
 
   return (
     <div className="space-y-6">
-      {/* 页内输入弹窗（替代原生 prompt） */}
-      {askState && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => closeAsk(null)}>
-          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-sm p-5 space-y-3" onClick={e => e.stopPropagation()}>
-            <h4 className="text-sm font-semibold text-gray-700">{askState.title}</h4>
-            <input
-              autoFocus
-              type="text"
-              value={askState.value}
-              placeholder={askState.placeholder}
-              onChange={e => setAskState({ ...askState, value: e.target.value })}
-              onKeyDown={e => {
-                if (e.key === 'Enter') closeAsk(askState.value)
-                if (e.key === 'Escape') closeAsk(null)
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-100"
-            />
-            <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => closeAsk(null)} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">取消</button>
-              <button onClick={() => closeAsk(askState.value)} className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">确定</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {askModal}
 
       <div className="flex items-center justify-between">
         <div>

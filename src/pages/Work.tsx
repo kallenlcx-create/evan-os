@@ -1,4 +1,4 @@
-// ====== WorkPage — 外贸与独立站工作台（v1.1 合并版）======
+﻿// ====== WorkPage — 外贸与独立站工作台（v1.1 合并版）======
 // 整合原 Work.tsx（客户/询盘/SOP/模板）与 BusinessPage（管道/独立站）
 // 数据统一走 IndexedDB；首次挂载自动迁移旧 localStorage 数据
 
@@ -16,6 +16,7 @@ import {
   getAllProducts, getRecentMetrics, analyzeMetrics, getAllSeoKeywords,
 } from '../repositories/siteRepository'
 import { useStore } from '../store'
+import { useAskText } from '../components/PromptModal'
 import type { TradeDeal, TradeStage } from '../types'
 
 // ---------- 旧数据迁移（localStorage → IndexedDB，一次性） ----------
@@ -110,6 +111,7 @@ export default function WorkPage() {
   const [sops, setSops] = useState<any[]>([])
   const [templates, setTemplates] = useState<any[]>([])
   const [copiedId, setCopiedId] = useState('')
+  const [askModal, askText] = useAskText()
 
   const refresh = useCallback(async () => {
     setDeals(await getAllTradeDeals())
@@ -180,9 +182,9 @@ export default function WorkPage() {
   }
 
   const handleNewInquiry = async () => {
-    const title = prompt('商机标题（如：LED 灯带 5000pcs 询盘）：')
+    const title = await askText('商机标题（如：LED 灯带 5000pcs 询盘）：')
     if (!title?.trim()) return
-    const valueStr = prompt('预估金额 USD（可留空）：') ?? ''
+    const valueStr = await askText('预估金额 USD（可留空）：') ?? ''
     await createTradeDeal({ title: title.trim(), value: valueStr ? Number(valueStr) : undefined, inquirySource: '手动录入', tags: ['外贸'] })
     refresh()
   }
@@ -191,6 +193,7 @@ export default function WorkPage() {
 
   return (
     <div className="p-4 md:p-6 max-w-6xl mx-auto">
+      {askModal}
       <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Globe size={22} className="text-emerald-500" />
@@ -244,7 +247,7 @@ export default function WorkPage() {
                         {!isLost && nextStageMap[d.stage] && (
                           <button
                             onClick={() => handleAdvance(d)}
-                            className="absolute inset-0 bg-emerald-500/90 text-white text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="absolute inset-0 bg-emerald-500/90 text-white text-[9px] rounded-lg opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                           >
                             推进 →
                           </button>

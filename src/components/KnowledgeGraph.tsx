@@ -49,13 +49,21 @@ export function applyForceLayout(
   height: number,
   iterations = 100
 ): PositionedNode[] {
-  const nodes: PositionedNode[] = data.nodes.map((n, i) => ({
-    ...n,
-    x: width / 2 + (Math.random() - 0.5) * 200,
-    y: height / 2 + (Math.random() - 0.5) * 200,
-    vx: 0,
-    vy: 0,
-  }))
+  // 确定性圆环初始布局：比随机散点收敛更稳定（同数据每次渲染布局一致），
+  // 且初始间距更大，力导向迭代后节点不易重叠
+  const radius = Math.min(width, height) / 3
+  const cx = width / 2
+  const cy = height / 2
+  const nodes: PositionedNode[] = data.nodes.map((n, i) => {
+    const angle = (i / Math.max(1, data.nodes.length)) * Math.PI * 2 - Math.PI / 2
+    return {
+      ...n,
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0,
+    }
+  })
 
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
 

@@ -1,7 +1,8 @@
-const fs = require('fs')
-const path = 'C:/Users/Administrator/Desktop/工作台/evan-os/dist/index.html'
+﻿const fs = require('fs')
+const path = require('path')
+const file = path.resolve(__dirname, 'dist', 'index.html')
 
-let html = fs.readFileSync(path, 'utf8')
+let html = fs.readFileSync(file, 'utf8')
 if (html.charCodeAt(0) === 0xFEFF) html = html.slice(1)
 if (!html.includes('<script type="module"')) html = html.replace('<script>', '<script type="module" crossorigin>')
 
@@ -13,7 +14,7 @@ for (const word of checks) {
   if (!ok) allOk = false
 }
 if (allOk) {
-  fs.writeFileSync(path, html, 'utf8')
+  fs.writeFileSync(file, html, 'utf8')
   console.log('DONE size:', html.length)
 } else {
   console.log('FAILED')

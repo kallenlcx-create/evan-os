@@ -7,7 +7,7 @@ import type { AnyObject, SearchKind, ObjectType, RelationRecord, EventRecord } f
 import { SearchIndex, type SearchResult, type IndexedItem } from './searchIndex'
 import { db } from '../db'
 import { getAllRelations } from '../repositories/relationRepository'
-import { getAllEvents, getTimeline } from '../repositories/eventRepository'
+import { getAllEvents } from '../repositories/eventRepository'
 
 // ====== 搜索过滤器 ======
 
@@ -237,10 +237,17 @@ export class SearchService {
     ]
 
     const objects: Record<string, any>[] = []
+    // collections 表被 9 个 filterKind 源共用：只读一次按 kind 分桶，避免同表反复全量扫描
+    let collectionRows: Record<string, any>[] | null = null
     for (const src of SOURCES) {
       try {
-        const all: Record<string, any>[] = await (db as any)[src.table].toArray()
-        const items = src.filterKind ? all.filter(r => r.kind === src.filterKind) : all
+        let items: Record<string, any>[]
+        if (src.filterKind) {
+          if (!collectionRows) collectionRows = await db.collections.toArray()
+          items = collectionRows.filter(r => r.kind === src.filterKind)
+        } else {
+          items = await (db as any)[src.table].toArray()
+        }
         for (const item of items) {
           objects.push(src.map ? src.map(item) : item)
         }

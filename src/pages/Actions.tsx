@@ -1,6 +1,8 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
+import { localToday } from '../utils/date'
+import { useAskText } from '../components/PromptModal'
 import { Plus, Check, Clock, Calendar, RotateCw, ArrowRight, Save, Smile, Timer, Grid3X3 } from 'lucide-react'
 import QuadrantView from '../components/QuadrantView'
 import PomodoroTimer from '../components/PomodoroTimer'
@@ -26,6 +28,7 @@ const moods = [
 
 export default function ActionsPage() {
   const { tasks, reviews, addTask, toggleTaskStatus, addObject, updateObject, deleteObject } = useStore()
+  const [askModal, askText] = useAskText()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('today')
   const [newTask, setNewTask] = useState('')
@@ -49,7 +52,7 @@ export default function ActionsPage() {
 
   const handleSaveReview = async () => {
     if (!reviewWell.trim() && !reviewImprove.trim()) return
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localToday()
     await addObject('review', {
       title: `${reviewType === 'daily' ? '每日' : reviewType === 'weekly' ? '每周' : reviewType === 'monthly' ? '每月' : '年度'}复盘 - ${today}`,
       emoji: reviewType === 'daily' ? '📝' : reviewType === 'weekly' ? '📊' : reviewType === 'monthly' ? '📈' : '🎯',
@@ -71,7 +74,14 @@ export default function ActionsPage() {
     setReviewMood('')
   }
 
-  const todayTasks = tasks.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayTasks = tasks.filter(t => {
+    if (t.status === 'done' || t.status === 'cancelled') return false
+    // 无日期任务始终显示
+    if (!t.dueDate) return true
+    // 有日期任务：今天或之前的才显示
+    return t.dueDate <= todayStr
+  })
   const doneTasks = tasks.filter(t => t.status === 'done')
   const recurringTasks = tasks.filter(t => t.isRecurring)
 
@@ -86,7 +96,7 @@ export default function ActionsPage() {
         for (let d = 1; d <= daysInMonth; d++) {
           cells.push(`${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`)
         }
-        const todayKey = new Date().toISOString().slice(0, 10)
+        const todayKey = localToday()
         return (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -120,7 +130,7 @@ export default function ActionsPage() {
                     </div>
                     <button
                       onClick={async () => {
-                        const title = prompt(`${ds} 添加特殊事项：`)
+                        const title = await askText(`${ds} 添加特殊事项：`)
                         if (title?.trim()) await addTask({ title: title.trim(), dueDate: ds })
                       }}
                       className="w-full text-[9px] text-gray-300 hover:text-blue-500 mt-0.5"
@@ -182,15 +192,15 @@ export default function ActionsPage() {
                             <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 rounded-full">重要</span>
                           )}
                           <button
-                            onClick={e => { e.stopPropagation(); const title = prompt('修改任务', task.title ?? ''); if (title?.trim()) updateObject('task', task.id, { title: title.trim() }) }}
-                            className="p-1 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={e => { e.stopPropagation(); void (async () => { const title = await askText('修改任务', task.title ?? ''); if (title?.trim()) updateObject('task', task.id, { title: title.trim() }) })() }}
+                            className="p-1 text-gray-200 hover:text-blue-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                             title="编辑"
                           >
                             ✏️
                           </button>
                           <button
                             onClick={e => { e.stopPropagation(); if (confirm(`删除任务「${task.title}」？`)) deleteObject('task', task.id) }}
-                            className="p-1 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="p-1 text-gray-200 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                             title="删除"
                           >
                             🗑️
@@ -282,18 +292,18 @@ export default function ActionsPage() {
                       {ruleLabels[task.recurringRule ?? ''] ?? task.recurringRule}
                     </span>
                     <button
-                      onClick={() => {
-                        const title = prompt('修改重复事项', task.title ?? ''); if (title === null || !title.trim()) return
+                      onClick={() => { void (async () => {
+                        const title = await askText('修改重复事项', task.title ?? ''); if (title === null || !title.trim()) return
                         updateObject('task', task.id, { title: title.trim() })
-                      }}
-                      className="p-1 text-gray-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      })() }}
+                      className="p-1 text-gray-300 hover:text-blue-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                       title="修改"
                     >
                       ✏️
                     </button>
                     <button
                       onClick={() => { if (confirm(`删除重复事项「${task.title}」？`)) deleteObject('task', task.id) }}
-                      className="p-1 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="p-1 text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                       title="删除"
                     >
                       🗑️
@@ -482,6 +492,7 @@ export default function ActionsPage() {
 
   return (
     <div className="space-y-6">
+      {askModal}
       <div>
         <h1 className="text-2xl font-bold text-gray-800">📅 行动</h1>
         <p className="text-sm text-gray-400 mt-0.5">管理任务、日志与复盘，让每一天都有节奏</p>

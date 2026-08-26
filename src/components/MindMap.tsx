@@ -43,7 +43,6 @@ export default function MindMap({ root = '📚 知识', branches, onLeafClick }:
         rows.push({ y, level: 3, text: title || '（空笔记）', summary: summary.slice(0, 30), branchIdx: bi, l2Idx: li, itemIdx: ii })
         y += ROW_H
       })
-      if (items.length === 0) y += ROW_H
       l2Y[`${bi}:${li}`] = (l2Start + y - ROW_H) / 2
       rows.push({ y: l2Y[`${bi}:${li}`], level: 2, text: l2.name + (l2.items.length ? ` (${l2.items.length})` : ''), branchIdx: bi, l2Idx: li, itemIdx: -1 })
       y += 8

@@ -3,6 +3,7 @@
 import { db } from '../db'
 import type { SiteMetric, SiteProduct, SeoKeyword } from '../types'
 import { uid, now, type Result, ok, err } from './result'
+import { localDate } from '../utils/date'
 
 // ---------- 产品 ----------
 
@@ -77,7 +78,7 @@ export interface SiteAnalytics {
 
 /** 近 N 天经营分析（按日期窗口过滤，无数据的天自动忽略） */
 export function analyzeMetrics(metrics: SiteMetric[], days = 7, nowMs = Date.now()): SiteAnalytics {
-  const cutoff = new Date(nowMs - days * 86400000).toISOString().slice(0, 10)
+  const cutoff = localDate(new Date(nowMs - days * 86400000))
   const sorted = [...metrics]
     .filter(m => m.date >= cutoff)
     .sort((a, b) => b.date.localeCompare(a.date))
@@ -103,7 +104,7 @@ export function analyzeMetrics(metrics: SiteMetric[], days = 7, nowMs = Date.now
 
 export async function getRecentMetrics(days = 7): Promise<SiteMetric[]> {
   try {
-    const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+    const cutoff = localDate(new Date(Date.now() - days * 86400000))
     const rows = await db.siteMetrics.where('date').aboveOrEqual(cutoff).toArray()
     return rows.sort((a, b) => b.date.localeCompare(a.date))
   } catch {

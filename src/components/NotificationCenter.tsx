@@ -16,7 +16,12 @@ function timeAgo(iso: string): string {
 }
 
 export default function NotificationCenter() {
-  const { app, setNotificationPanel, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications } = useStore()
+  const app = useStore(s => s.app)
+  const setNotificationPanel = useStore(s => s.setNotificationPanel)
+  const notifications = useStore(s => s.notifications)
+  const markNotificationRead = useStore(s => s.markNotificationRead)
+  const markAllNotificationsRead = useStore(s => s.markAllNotificationsRead)
+  const clearNotifications = useStore(s => s.clearNotifications)
   if (!app.notificationPanelOpen) return null
 
   const sorted = [...notifications].sort((a, b) => b.createdAt.localeCompare(a.createdAt))

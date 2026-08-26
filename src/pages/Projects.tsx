@@ -6,6 +6,7 @@ import {
   type DragStartEvent, type DragEndEvent,
 } from '@dnd-kit/core'
 import type { Project, ProjectStatus } from '../types'
+import { useAskText } from '../components/PromptModal'
 
 const statusColumns: { status: ProjectStatus; label: string; emoji: string; color: string }[] = [
   { status: 'idea', label: '想法', emoji: '💡', color: 'bg-yellow-50 border-yellow-200' },
@@ -26,9 +27,11 @@ const templates = [
 
 function DraggableCard({ project }: { project: Project }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: project.id, data: project })
+  const [askModal, askText] = useAskText()
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} style={style} className={`bg-white rounded-xl p-3 shadow-sm border border-gray-100 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow ${isDragging ? 'opacity-50 z-50' : ''}`}>
+      {askModal}
       <div className="flex items-center gap-2">
         <span className="text-lg">{project.emoji || '📌'}</span>
         <div className="flex-1 min-w-0">
@@ -37,12 +40,11 @@ function DraggableCard({ project }: { project: Project }) {
         </div>
         <div className="flex flex-col gap-0.5 shrink-0">
           <button
-            onClick={(e) => {
-              e.stopPropagation()
-              const title = prompt('修改项目名', project.title ?? ''); if (title === null || !title.trim()) return
-              const progress = prompt('修改进度 %（0-100）', String(project.progress ?? 0)); if (progress === null) return
+            onClick={(e) => { e.stopPropagation(); void (async () => {
+              const title = await askText('修改项目名', project.title ?? ''); if (title === null || !title.trim()) return
+              const progress = await askText('修改进度 %（0-100）', String(project.progress ?? 0)); if (progress === null) return
               useStore.getState().updateObject('project', project.id, { title: title.trim(), progress: Math.min(100, Math.max(0, Number(progress) || 0)) })
-            }}
+            })() }}
             className="p-1 text-gray-300 hover:text-blue-500" title="编辑"
           >
             <Pencil size={12} />

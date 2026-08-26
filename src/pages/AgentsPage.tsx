@@ -50,7 +50,6 @@ function AgentCard({ def, onRun }: { def: AgentDefinition; onRun: (id: string) =
 
       {/* 权限徽章行 */}
       <div className="px-4 pb-3 flex flex-wrap gap-1.5">
-        {[...new Set(def.actions.map(a => a.type))].length > 0 && null}
         {def.actions.map((a, i) => {
           const lvl =
             a.type === 'external_call' || a.type === 'destructive' ? 'L3_approval' :

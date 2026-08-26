@@ -28,7 +28,6 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/agents': { icon: Bot, label: 'Agents', emoji: '🧑‍🚀' },
   '/workflows': { icon: Zap, label: '自动化', emoji: '⚡' },
   '/integrations': { icon: Plug, label: '外部集成', emoji: '🔌' },
-  '/business': { icon: TrendingUp, label: '业务', emoji: '📈' },
   '/ai-lab': { icon: FlaskConical, label: 'AI 实验室', emoji: '🧪' },
   '/system': { icon: Database, label: '系统架构', emoji: '🗄️' },
   '/sync': { icon: CloudUpload, label: '云同步', emoji: '☁️' },
@@ -56,10 +55,15 @@ function loadCollapsed(): string[] {
 }
 
 export default function Sidebar() {
-  const { app, toggleSidebar, setMobileNav, setNotificationPanel, toggleQuickCapture, toggleGlobalSearch, getUnreadNotifications } = useStore()
+  const app = useStore(s => s.app)
+  const toggleSidebar = useStore(s => s.toggleSidebar)
+  const setMobileNav = useStore(s => s.setMobileNav)
+  const setNotificationPanel = useStore(s => s.setNotificationPanel)
+  const toggleQuickCapture = useStore(s => s.toggleQuickCapture)
+  const toggleGlobalSearch = useStore(s => s.toggleGlobalSearch)
+  const unreadCount = useStore(s => s.notifications.reduce((n, x) => n + (x.read ? 0 : 1), 0))
   const navigate = useNavigate()
   const location = useLocation()
-  const unreadCount = getUnreadNotifications().length
 
   const mobileOpen = app.mobileNavOpen
   const closeMobile = () => setMobileNav(false)

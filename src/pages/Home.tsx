@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react'
+﻿import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { Plus, Check, Clock, AlertCircle, ChevronRight, PenLine, CloudUpload, ShieldCheck, Inbox, Trash2 } from 'lucide-react'
+import { localToday } from '../utils/date'
+import { useAskText } from '../components/PromptModal'
+import { Plus, Check, Clock, ChevronRight, PenLine, Inbox } from 'lucide-react'
 import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
@@ -175,17 +177,19 @@ function ClockWork() {
 }
 
 export default function HomePage() {
-  const { projects, habits, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, getTodayPomodoroStats, toggleHabit, addHabit, updateHabit, deleteHabit, updateObject, deleteObject } = useStore()
+  const { projects, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, toggleHabit, updateObject, deleteObject } = useStore()
+  const [askModal, askText] = useAskText()
   const navigate = useNavigate()
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = localToday()
   const [newTask, setNewTask] = useState('')
   const [reviewDoneToday, setReviewDoneToday] = useState(false)
   const [inboxPending, setInboxPending] = useState(0)
   const [itemDate, setItemDate] = useState(todayStr)
   const todayItems = tasks.filter(t => {
     if (t.status === 'cancelled' || t.status === 'done') return false
-    if (t.isRecurring) return true
+    // 无日期任务（行动页快速添加）始终显示
     if (!t.dueDate) return true
+    // 所有有日期的任务（含重复事项）：今天或之前的才显示
     return t.dueDate <= todayStr
   })
 
@@ -277,10 +281,10 @@ export default function HomePage() {
       setWeatherError('天气获取失败（检查网络或定位权限）')
     }
   }, [])
-  const changeCity = () => {
-    const c = prompt('输入城市名（如：上海）')
+  const changeCity = () => { void (async () => {
+    const c = await askText('输入城市名（如：上海）')
     if (c?.trim()) { localStorage.setItem('evan-os-weather-city', c.trim()); loadWeather(c.trim()) }
-  }
+  })() }
   useEffect(() => { loadWeather() }, [loadWeather])
 
   // 今日食谱（按日轮换选 2 道 + AI 教程接口预留）
@@ -290,20 +294,23 @@ export default function HomePage() {
   const [showRecipe, setShowRecipe] = useState(false)
   const [recipeTutorialIdx, setRecipeTutorialIdx] = useState(0)
   const [tutorial, setTutorial] = useState<{ title: string; detail: string[] }>({ title: '', detail: [] })
-  const toggleTutorial = async () => {
-    const r = recipeTutorialIdx === 0 ? todayRecipe : todayRecipe2
-    if (!showRecipe && tutorial.title === '') {
-      const t = await fetchRecipeTutorial(r)
-      setTutorial(t)
+  // 打开/切换某道菜的教程：每次都按当前菜重新拉取，切换菜时内容随之更新
+  const openTutorial = async (idx: number) => {
+    if (showRecipe && recipeTutorialIdx === idx) { setShowRecipe(false); return }
+    const r = idx === 0 ? todayRecipe : todayRecipe2
+    setRecipeTutorialIdx(idx)
+    setShowRecipe(true)
+    try {
+      setTutorial(await fetchRecipeTutorial(r))
+    } catch {
+      setTutorial({ title: r.name, detail: ['教程获取失败，请稍后重试'] })
     }
-    setShowRecipe(v => !v)
   }
 
   // AI 热点（每日轮换 + AI 接口预留）
   const [aiHotspots] = useState(() => pickDailyHotspots())
 
   const todayLog = getDailyLog(todayStr)
-  const todayPomo = getTodayPomodoroStats()
 
   // AI 建议数据源：复盘状态 + 收集箱
   useEffect(() => {
@@ -326,6 +333,7 @@ export default function HomePage() {
 
   return (
     <div className="space-y-6">
+      {askModal}
       <StatusStrip />
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
@@ -456,10 +464,10 @@ export default function HomePage() {
                   key={task.id}
                   task={task}
                   onToggle={() => toggleTaskStatus(task.id)}
-                  onEdit={() => {
-                    const title = prompt('修改事项', task.title ?? ''); if (title === null || !title.trim()) return
+                  onEdit={() => { void (async () => {
+                    const title = await askText('修改事项', task.title ?? ''); if (title === null || !title.trim()) return
                     updateObject('task', task.id, { title: title.trim() })
-                  }}
+                  })() }}
                   onDelete={() => {
                     if (!confirm(`删除事项「${task.title}」？`)) return
                     deleteObject('task', task.id)
@@ -551,8 +559,8 @@ export default function HomePage() {
                   <div className="flex items-center justify-between">
                     <span className="text-[9px] text-gray-300">⏱ {r.minutes}min</span>
                     <button
-                      onClick={() => { setRecipeTutorialIdx(ri); setShowRecipe(v => !v) }}
-                      className="text-[10px] text-orange-400 hover:text-orange-600"
+                      onClick={() => { void openTutorial(ri) }}
+                      className={`text-[10px] ${showRecipe && recipeTutorialIdx === ri ? 'text-orange-600 font-semibold' : 'text-orange-400 hover:text-orange-600'}`}
                     >
                       教程 →
                     </button>
@@ -562,6 +570,7 @@ export default function HomePage() {
             </div>
             {showRecipe && (
               <div className="mt-3 bg-orange-50/60 border border-orange-100 rounded-xl p-3 space-y-1">
+                <p className="text-[11px] font-semibold text-gray-700">{tutorial.title || (recipeTutorialIdx === 0 ? todayRecipe.name : todayRecipe2.name)}</p>
                 {tutorial.detail.map((line, i) => (
                   <p key={i} className="text-[11px] text-gray-600">{line}</p>
                 ))}
