@@ -518,9 +518,11 @@ export const TABLES = {
 export type TableName = keyof typeof TABLES
 
 // ====== 清空整个数据库 ======
-export async function clearDatabase() {
+export async function clearDatabase(opts?: { keepAppState?: boolean }) {
   await Promise.all(Object.values(TABLES).map(table => table.clear()))
-  await db.appState.clear()
+  // 墓碑表不在 TABLES 中（避免被 loadAllObjects 载入内存），此处显式清理
+  await db.deletions.clear()
+  if (!opts?.keepAppState) await db.appState.clear()
 }
 
 // ====== 导出所有数据为 JSON ======
@@ -531,30 +533,38 @@ export async function exportDatabase(): Promise<string> {
       data[name] = await table.toArray()
     })
   )
+  // 墓碑随备份走：换机恢复后删除传播链不断裂
+  const deletions = await db.deletions.toArray()
   const appState = await db.appState.get('app')
   return JSON.stringify({
-    version: 8,
+    version: db.verno,
     exportedAt: new Date().toISOString(),
     appState,
+    deletions,
     data,
   }, null, 2)
 }
 
 // ====== 从 JSON 导入数据 ======
+// 注意：只恢复数据表与备份内的 UI 状态（key='app'）；
+// 本机专属的云同步配置、滚动快照、壁纸等其余 appState 键全部保留。
 export async function importDatabase(json: string): Promise<void> {
   const parsed = JSON.parse(json)
   if (!parsed.data) throw new Error('Invalid backup file')
 
-  await clearDatabase()
+  await clearDatabase({ keepAppState: true })
 
-  await Promise.all(
-    Object.entries(TABLES).map(async ([name, table]) => {
+  await Promise.all([
+    ...Object.entries(TABLES).map(async ([name, table]) => {
       const items = (parsed.data as Record<string, any[]>)[name] || []
       if (items.length > 0) {
         await (table as any).bulkPut(items)
       }
-    })
-  )
+    }),
+    Array.isArray(parsed.deletions) && parsed.deletions.length > 0
+      ? db.deletions.bulkPut(parsed.deletions)
+      : Promise.resolve(),
+  ])
 
   if (parsed.appState) {
     await db.appState.put(parsed.appState, 'app')

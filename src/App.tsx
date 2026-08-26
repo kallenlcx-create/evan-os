@@ -1,5 +1,6 @@
 ﻿import { HashRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
+import DesktopPet from './components/DesktopPet'
 import HomePage from './pages/Home'
 import GoalsPage from './pages/Goals'
 import WorkPage from './pages/Work'
@@ -26,6 +27,9 @@ export default function App() {
   return (
     <HashRouter>
       <Routes>
+        {/* 桌宠窗口（独立于主界面） */}
+        <Route path="/pet" element={<DesktopPet />} />
+        {/* 主界面 */}
         <Route path="/" element={<Layout />}>
           <Route index element={<HomePage />} />
           <Route path="inbox" element={<InboxPage />} />

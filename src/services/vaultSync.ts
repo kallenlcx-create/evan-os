@@ -110,6 +110,7 @@ export interface WritableDirHandle {
   getFileHandle(name: string, opts?: { create?: boolean }): Promise<{
     createWritable(): Promise<{ write(data: any): Promise<void>; close(): Promise<void> }>
   }>
+  getDirectoryHandle?(name: string, opts?: { create?: boolean }): Promise<WritableDirHandle>
 }
 
 export async function writeToDirectory(
@@ -118,16 +119,25 @@ export async function writeToDirectory(
   subfolder = 'EvanOS'
 ): Promise<number> {
   let folder = dir
-  try {
-    folder = await dir.getFileHandle(subfolder, { create: true } as any) as unknown as WritableDirHandle
-  } catch { /* 某些实现不支持目录嵌套，退回根目录 */ }
-  for (const f of files) {
-    const fh = await folder.getFileHandle(f.path, { create: true })
-    const w = await fh.createWritable()
-    await w.write(f.content)
-    await w.close()
+  // 子目录必须用 getDirectoryHandle；getFileHandle 会创建同名空文件并导致后续写入失败
+  if (subfolder && typeof dir.getDirectoryHandle === 'function') {
+    try {
+      folder = await dir.getDirectoryHandle(subfolder, { create: true })
+    } catch { /* 某些实现不支持目录嵌套，退回根目录 */ }
   }
-  return files.length
+  let written = 0
+  for (const f of files) {
+    try {
+      const fh = await folder.getFileHandle(f.path, { create: true })
+      const w = await fh.createWritable()
+      await w.write(f.content)
+      await w.close()
+      written++
+    } catch (e) {
+      console.warn(`[VaultSync] 写入 ${f.path} 失败:`, e)
+    }
+  }
+  return written
 }
 
 export function downloadFile(filename: string, content: string, mime = 'text/plain'): void {

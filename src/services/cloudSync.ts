@@ -11,14 +11,13 @@
 import { db } from '../db'
 import type { CloudSyncConfig, DeletionRecord } from '../types'
 import { now } from '../repositories/result'
+import { notifyKindsChanged } from '../repositories/collectionRepository'
 
-// ====== 同步表清单（排除本地态/审计噪声）======
+// ====== 同步表清单（排除本地态/审计噪声/派生表）======
 
-export const EXCLUDED_TABLES = new Set(['appState', 'deletions', 'contexts', 'events', 'pomodoroSessions'])
+export const EXCLUDED_TABLES = new Set(['appState', 'deletions', 'contexts', 'events'])
 
-export const SYNC_TABLES: string[] = Object.keys(db.tables.length ? {} : {}).length
-  ? []
-  : db.tables.map(t => t.name).filter(n => !EXCLUDED_TABLES.has(n))
+export const SYNC_TABLES: string[] = db.tables.map(t => t.name).filter(n => !EXCLUDED_TABLES.has(n))
 
 /** 每张表用于 LWW 比较的时间字段 */
 const TIME_FIELD: Record<string, string> = {
@@ -34,6 +33,14 @@ const TIME_FIELD: Record<string, string> = {
   workflows: 'updatedAt', workflowVersions: 'createdAt', workflowRuns: 'startedAt',
   approvals: 'createdAt', tradeDeals: 'updatedAt', siteProducts: 'updatedAt',
   seoKeywords: 'checkedAt', events: 'createdAt',
+  // v1.2 补齐：此前缺失导致这三张表的远端变更永远无法应用回本地
+  collections: 'updatedAt', siteMetrics: 'createdAt', workflowSteps: 'updatedAt',
+  pomodoroSessions: 'startTime',
+}
+
+// 启动断言：同步清单内的每张表必须有 LWW 时钟字段，防止再出现「只上传永下载」盲区
+for (const t of SYNC_TABLES) {
+  if (!TIME_FIELD[t]) console.warn(`[CloudSync] 表 ${t} 在 TIME_FIELD 中无映射，将退化为全量推/永不拉`)
 }
 
 function timeOf(table: string, row: Record<string, any>): string {
@@ -79,6 +86,12 @@ export const httpTransport: SyncTransport = {
       body: JSON.stringify({ rows }),
     })
     if (!r.ok) throw new Error(`推送 ${table} 失败 (${r.status})`)
+    let data: any = null
+    try { data = await r.json() } catch { /* 非 JSON 响应视为成功 */ }
+    if (data && data.ok === false) throw new Error(`推送 ${table} 被服务端拒绝`)
+    if (data && typeof data.accepted === 'number' && data.accepted < rows.length) {
+      console.info(`[CloudSync] ${table}: 服务端 LWW 拒绝了 ${rows.length - data.accepted} 行旧版本（属正常）`)
+    }
   },
 
   async pullChanges(serverUrl, token, since) {
@@ -158,13 +171,14 @@ class CloudSyncService {
   }
 
   async configure(serverUrl: string, username: string): Promise<void> {
+    const prev = await getSyncConfig()
     const cfg: CloudSyncConfig = {
-      ...(await getSyncConfig()) ?? { token: undefined },
+      ...(prev ?? { token: undefined }),
       serverUrl: serverUrl.replace(/\/+$/, ''),
       username,
-      lastPushAt: (await getSyncConfig())?.lastPushAt,
-      lastPullCursor: (await getSyncConfig())?.lastPullCursor,
-      lastSyncAt: (await getSyncConfig())?.lastSyncAt,
+      lastPushAt: prev?.lastPushAt,
+      lastPullCursor: prev?.lastPullCursor,
+      lastSyncAt: prev?.lastSyncAt,
     }
     await saveConfig(cfg)
   }
@@ -242,18 +256,22 @@ class CloudSyncService {
     const since = cfg.lastPushAt ?? '1970-01-01T00:00:00.000Z'
     const overlapSince = new Date(Date.parse(since) - 60000).toISOString() // 1 分钟重叠防漏
     let maxPushedTs = ''
+    const SENTINEL = '9999-12-31T00:00:00.000Z'
+    const PUSH_CHUNK = 400 // 服务端单请求上限 500 行，客户端分片防静默截断
 
     for (const table of SYNC_TABLES) {
       const rows: Record<string, any>[] = await (db as any)[table].toArray()
       const dirty = rows.filter(r => {
         const t = timeOf(table, r)
-        return t !== '9999-12-31T00:00:00.000Z' && t > overlapSince
+        return t !== SENTINEL && t > overlapSince
       })
       // 无时间字段的微型表：全量推（幂等）
-      const alwaysAll = rows.filter(r => timeOf(table, r) === '9999-12-31T00:00:00.000Z')
+      const alwaysAll = rows.filter(r => timeOf(table, r) === SENTINEL)
       const toPush = dirty.length > 0 ? dirty : alwaysAll
       if (toPush.length === 0) continue
-      await this.transport.push(cfg.serverUrl, cfg.token, table, toPush)
+      for (let i = 0; i < toPush.length; i += PUSH_CHUNK) {
+        await this.transport.push(cfg.serverUrl, cfg.token, table, toPush.slice(i, i + PUSH_CHUNK))
+      }
       summary.pushedRows += toPush.length
       summary.tablesPushed++
       for (const r of dirty) {
@@ -262,20 +280,30 @@ class CloudSyncService {
       }
     }
 
-    // 推送删除墓碑（服务端按 id 幂等去重）
+    // 推送删除墓碑（服务端按 id 幂等去重）；分片防服务端 slice 截断
     const tombstones = await db.deletions.toArray()
-    await this.transport.pushDeletions(cfg.serverUrl, cfg.token, tombstones)
-    // 已知悉的墓碑可以清空本地日志（服务端保留权威副本）
-    await db.deletions.clear()
+    if (tombstones.length > 0) {
+      const pushedIds = new Set(tombstones.map(t => t.id))
+      for (let i = 0; i < tombstones.length; i += PUSH_CHUNK) {
+        await this.transport.pushDeletions(cfg.serverUrl, cfg.token, tombstones.slice(i, i + PUSH_CHUNK))
+      }
+      // 只删除本次已推送的墓碑；推送期间新产生的墓碑保留，待下次同步
+      const staleIds = (await db.deletions.toArray())
+        .filter(t => pushedIds.has(t.id))
+        .map(t => t.id)
+      if (staleIds.length > 0) await db.deletions.bulkDelete(staleIds)
+    }
 
     // ---------- PULL ----------
     const cursor = cfg.lastPullCursor ?? '1970-01-01T00:00:00.000Z'
     const pulled = await this.transport.pullChanges(cfg.serverUrl, cfg.token, cursor)
 
+    let collectionsTouched = false
     for (const change of pulled.changes ?? []) {
       summary.pulledRows += change.rows.length
       const table = (db as any)[change.table]
       if (!table) continue
+      if (change.table === 'collections') collectionsTouched = true
       const timeField = TIME_FIELD[change.table]
       for (const remote of change.rows) {
         if (remote._deleted === true) continue // 删除走 deletions 通道
@@ -300,6 +328,7 @@ class CloudSyncService {
     for (const d of pulled.deletions ?? []) {
       const table = (db as any)[d.tableName]
       if (!table) continue
+      if (d.tableName === 'collections') collectionsTouched = true
       const local = await table.get(d.rowId)
       if (local) {
         const localTime = TIME_FIELD[d.tableName]
@@ -321,6 +350,10 @@ class CloudSyncService {
       lastPullCursor: pulled.serverNow ?? now(),
       lastSyncAt: now(),
     })
+
+    // collections 落地了远端变更 → 通知挂载中的页面重水合，
+    // 防止其下次「整组保存」把拉下来的行当缺席数据误删（syncKind 差异同步保护）
+    if (collectionsTouched) notifyKindsChanged()
 
     return summary
   }

@@ -131,6 +131,7 @@ export async function persistWorkflowVersion(wf: WorkflowDefinition): Promise<vo
     name: s.name,
     action: s.action,
     requireApproval: s.requireApproval ?? false,
+    updatedAt: now(),
   }))
   if (stepRows.length > 0) await db.workflowSteps.bulkPut(stepRows)
 }

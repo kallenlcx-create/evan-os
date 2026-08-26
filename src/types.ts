@@ -966,6 +966,7 @@ export interface WorkflowStepRecord {
   name: string
   action: WorkflowActionType
   requireApproval: boolean
+  updatedAt: string             // 云同步 LWW 时钟（步骤无独立时间戳会退化为永不拉取）
 }
 
 

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
-import { listByKind, migrateLSItems, syncKind } from '../repositories/collectionRepository'
+import { listByKind, migrateLSItems, syncKind, onKindsChanged } from '../repositories/collectionRepository'
 import { Plus, Globe, Bot, TrendingUp, Wrench, Clock, BookOpen, Link2, Trash2 } from 'lucide-react'
 import type { LearningPath } from '../types'
 
@@ -71,18 +71,22 @@ export default function GrowthPage() {
 
   // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
   const [hydrated, setHydrated] = useState(false)
-  useEffect(() => {
-    ;(async () => {
+  const hydrateKinds = useCallback(async (first = false) => {
+    if (first) {
       await migrateLSItems(LS_KEY, 'study_log', d => d.logs)
       await migrateLSItems(LS_KEY, 'study_resource', d => d.resources)
-      const [logs, resources] = await Promise.all([listByKind('study_log'), listByKind('study_resource')])
-      setGrowth(g => ({
-        logs: logs.length ? (logs as any) : g.logs,
-        resources: resources.length ? (resources as any) : g.resources,
-      }))
-      setHydrated(true)
-    })()
+    }
+    const [logs, resources] = await Promise.all([listByKind('study_log'), listByKind('study_resource')])
+    setGrowth(g => ({
+      logs: logs.length ? (logs as any) : g.logs,
+      resources: resources.length ? (resources as any) : g.resources,
+    }))
+    if (first) setHydrated(true)
   }, [])
+  useEffect(() => { void hydrateKinds(true) }, [hydrateKinds])
+
+  // 云同步落地远端 collections 变更后重水合，防止旧内存数组把新行当缺席误删
+  useEffect(() => onKindsChanged(() => { void hydrateKinds() }), [hydrateKinds])
 
   useEffect(() => {
     if (!hydrated) return

@@ -122,7 +122,7 @@ app.get('/changes', auth, async (req, res) => {
     'SELECT table_name, row_id, data FROM data WHERE username = ? AND updated_at > ? AND deleted = 0',
     [req.user, since])
   const [delRows] = await pool.query(
-    'SELECT table_name, row_id, updated_at FROM data WHERE username = ? AND updated_at > ? AND deleted = 1',
+    'SELECT table_name, row_id, updated_at AS deleted_at FROM data WHERE username = ? AND updated_at > ? AND deleted = 1',
     [req.user, since])
 
   const changesMap = new Map()
@@ -195,5 +195,5 @@ app.post('/deletions', auth, async (req, res) => {
 
 init().then(() => {
   app.listen(PORT, () =>
-    console.log(`[sync-server] listening on :${PORT}${SECRET ? '' : ' (WARNING: SECRET 未设置，重启后令牌失效)'}`))
+    console.log(`[sync-server] listening on :${PORT}${process.env.SECRET ? '' : ' (WARNING: SECRET 未设置，已用随机值，重启后所有令牌失效)'}`))
 })

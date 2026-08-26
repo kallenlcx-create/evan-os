@@ -9,4 +9,10 @@ export default defineConfig({
     cssCodeSplit: false,
     assetsInlineLimit: 100000000,
   },
+  // Electron 开发模式：允许 iframe 和 file:// 协议
+  server: {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
+  },
 })

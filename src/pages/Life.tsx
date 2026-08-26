@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
-import { listByKind, migrateLSList, syncKind } from '../repositories/collectionRepository'
+import { listByKind, migrateLSList, syncKind, onKindsChanged } from '../repositories/collectionRepository'
 import type { CollectionKind } from '../types'
 import { DollarSign, Heart, ListTodo, Star, FileText, Check, Plus, TrendingUp, TrendingDown, Trash2, Pencil } from 'lucide-react'
 import type { Habit } from '../types'
@@ -28,14 +28,15 @@ function useLocalData<T>(key: string, initial: T) {
     } catch { return initial }
   })
   const [hydrated, setHydrated] = useState(false)
-  useEffect(() => {
-    ;(async () => {
-      try { await migrateLSList(`evan-os-${key}`, kind) } catch { /* ignore */ }
-      const rows = await listByKind(kind)
-      if (rows.length > 0) setData(rows as T)
-      setHydrated(true)
-    })()
-  }, [key])
+  const reload = useCallback(async () => {
+    try { await migrateLSList(`evan-os-${key}`, kind) } catch { /* ignore */ }
+    const rows = await listByKind(kind)
+    if (rows.length > 0) setData(rows as T)
+    setHydrated(true)
+  }, [key, kind])
+  useEffect(() => { void reload() }, [reload])
+  // 云同步落地远端 collections 变更后重水合，防止旧内存数组把新行当缺席误删
+  useEffect(() => onKindsChanged(() => { void reload() }), [reload])
   const update = (newData: T) => {
     setData(newData)
     if (hydrated) syncKind(kind, newData as any[]).catch(() => {})

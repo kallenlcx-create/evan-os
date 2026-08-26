@@ -335,21 +335,26 @@ export const useStore = create<EvanStore>()((set, get) => ({
           // 通过 Repository 层加载所有数据
           state = await loadAllObjects()
 
-          // 种子数据：如果表为空，写入种子
-          const seedEntries = Object.entries(seed) as [string, any[]][]
-          await Promise.all(seedEntries.map(async ([name, seedItems]) => {
-            if (!state[name] || state[name].length === 0) {
-              if (seedItems.length > 0) {
-                state[name] = seedItems
-                const table = (TABLES as any)[name]
-                if (table) {
-                  await safeWrite(() => table.bulkPut(seedItems))
+          // 种子数据：仅在首次初始化（无标记）时写入一次。
+          // 之前是「表空即播种」，用户删光种子数据后每次启动都会复活。
+          const seedMark = await db.appState.get('seeded:v1')
+          if (!seedMark) {
+            const seedEntries = Object.entries(seed) as [string, any[]][]
+            await Promise.all(seedEntries.map(async ([name, seedItems]) => {
+              if (!state[name] || state[name].length === 0) {
+                if (seedItems.length > 0) {
+                  state[name] = seedItems
+                  const table = (TABLES as any)[name]
+                  if (table) {
+                    await safeWrite(() => table.bulkPut(seedItems))
+                  }
+                } else {
+                  state[name] = []
                 }
-              } else {
-                state[name] = []
               }
-            }
-          }))
+            }))
+            await safeWrite(() => db.appState.put({ key: 'seeded:v1', at: now() } as any))
+          }
 
           // 加载 UI 状态
           try {
@@ -761,6 +766,7 @@ export const useStore = create<EvanStore>()((set, get) => ({
       completed: data.completed ?? true,
     }
     set(s => ({ pomodoroSessions: [...s.pomodoroSessions, session] }))
+    await safeWrite(() => db.pomodoroSessions.add(session))
   },
   getTodayPomodoroStats: () => {
     const today = new Date().toISOString().slice(0, 10)

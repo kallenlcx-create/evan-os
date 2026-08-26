@@ -8,7 +8,7 @@ import MarkdownEditor from '../components/MarkdownEditor'
 import RelationCreator from '../components/RelationCreator'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 import MindMap from '../components/MindMap'
-import { listByKind, syncKind } from '../repositories/collectionRepository'
+import { listByKind, syncKind, onKindsChanged } from '../repositories/collectionRepository'
 import { downloadFile } from '../services/vaultSync'
 import {
   syncWikiLinkRelations,
@@ -89,6 +89,9 @@ export default function KnowledgePage() {
     setL1List(l1.map(r => ({ id: r.id, name: r.name })))
     setL2List(l2.map(r => ({ id: r.id, name: r.name, parent: r.parent })))
   }, [])
+
+  // 云同步拉到 collections 变更时重水合，防止本地旧数组把远端新标签误删
+  useEffect(() => onKindsChanged(() => { void loadTagTree() }), [loadTagTree])
 
   // 种子：等 store 从 IndexedDB 水合（knowledge 非空）后再播种，避免空数据竞态
   const seededRef = useRef(false)

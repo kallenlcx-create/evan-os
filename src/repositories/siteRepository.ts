@@ -42,8 +42,9 @@ export async function getAllProducts(): Promise<SiteProduct[]> {
 
 export async function upsertMetric(m: Partial<SiteMetric> & { date: string }): Promise<Result<SiteMetric>> {
   const existing = await db.siteMetrics.get(m.date)
+  // updatedAt 缺席，createdAt 兼任 LWW 时钟：更新必须刷新，否则跨设备同步永远判旧
   const record: SiteMetric = existing
-    ? { ...existing, ...m, id: m.date }
+    ? { ...existing, ...m, id: m.date, createdAt: now() }
     : {
         id: m.date,
         date: m.date,

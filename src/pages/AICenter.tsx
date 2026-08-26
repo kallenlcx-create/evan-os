@@ -2,14 +2,14 @@
 // 六大 AI 能力统一入口：助手 / 智能体 / 记忆 / 上下文 / 工具 / 自动化
 // 保留：提示词库 + AI 工具收藏（本地清单）
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, Lightbulb, Cpu, Bot, Brain, Zap, FlaskConical,
   MessageSquare, Eye, Plug, Copy, Trash2, Plus, ExternalLink, ArrowRight, Check,
 } from 'lucide-react'
 import { useStore } from '../store'
-import { listByKind, migrateLSItems, syncKind } from '../repositories/collectionRepository'
+import { listByKind, migrateLSItems, syncKind, onKindsChanged } from '../repositories/collectionRepository'
 
 // ---------- 本地清单（提示词/工具） ----------
 
@@ -73,18 +73,22 @@ export default function AICenterPage() {
 
   // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
   const [hydrated, setHydrated] = useState(false)
-  useEffect(() => {
-    ;(async () => {
+  const hydrateKinds = useCallback(async (first = false) => {
+    if (first) {
       await migrateLSItems(LS_KEY, 'prompt', d => d.prompts)
       await migrateLSItems(LS_KEY, 'ai_tool', d => d.tools)
-      const [prompts, tools] = await Promise.all([listByKind('prompt'), listByKind('ai_tool')])
-      setAiData(d => ({
-        prompts: prompts.length ? (prompts as any) : d.prompts,
-        tools: tools.length ? (tools as any) : d.tools,
-      }))
-      setHydrated(true)
-    })()
+    }
+    const [prompts, tools] = await Promise.all([listByKind('prompt'), listByKind('ai_tool')])
+    setAiData(d => ({
+      prompts: prompts.length ? (prompts as any) : d.prompts,
+      tools: tools.length ? (tools as any) : d.tools,
+    }))
+    if (first) setHydrated(true)
   }, [])
+  useEffect(() => { void hydrateKinds(true) }, [hydrateKinds])
+
+  // 云同步落地远端 collections 变更后重水合，防止旧内存数组把新行当缺席误删
+  useEffect(() => onKindsChanged(() => { void hydrateKinds() }), [hydrateKinds])
 
   useEffect(() => {
     if (!hydrated) return

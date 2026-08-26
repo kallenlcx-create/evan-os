@@ -48,6 +48,33 @@ export async function syncKind(kind: CollectionKind, items: Record<string, any>[
   if (removed.length > 0) await db.collections.bulkDelete(removed)
 }
 
+/** 显式删除指定条目（不经差异比较，供精确删除场景使用） */
+export async function removeFromKind(kind: CollectionKind, ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  const exist = await db.collections.where('kind').equals(kind).toArray()
+  const hit = new Set(ids.map(String))
+  const targets = exist.filter(r => hit.has(r.id)).map(r => r.id)
+  if (targets.length > 0) await db.collections.bulkDelete(targets)
+}
+
+// ====== 跨页变更通知 ======
+// 云同步把 collections 行写入 IndexedDB 后，挂载中的页面仍持有旧内存数组，
+// 其下一次「整组保存」会把拉下来的行当缺席数据误删。
+// 通过事件让页面立即重水合，闭合这条数据销毁链路。
+
+export const KINDS_CHANGED_EVENT = 'evan:kinds-changed'
+
+export function notifyKindsChanged(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(KINDS_CHANGED_EVENT))
+}
+
+export function onKindsChanged(cb: () => void): () => void {
+  if (typeof window === 'undefined') return () => {}
+  window.addEventListener(KINDS_CHANGED_EVENT, cb)
+  return () => window.removeEventListener(KINDS_CHANGED_EVENT, cb)
+}
+
 // ---------- localStorage 一次性迁移 ----------
 
 /** 迁移 LS 顶层数组（如 evan-os-finances） */
