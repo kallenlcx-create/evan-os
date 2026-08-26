@@ -5,6 +5,7 @@
 interface L2Node {
   name: string
   items: string[]
+  summaries?: string[]
 }
 
 interface Branch {
@@ -15,6 +16,7 @@ interface Branch {
 interface Props {
   root?: string
   branches: Branch[]
+  onLeafClick?: (title: string) => void
 }
 
 const ROW_H = 26
@@ -22,9 +24,9 @@ const NODE_W = { l1: 130, l2: 150, item: 190 }
 const GAP_X = { a: 60, b: 60, c: 60 }
 const PAD = 16
 
-export default function MindMap({ root = '📚 知识', branches }: Props) {
+export default function MindMap({ root = '📚 知识', branches, onLeafClick }: Props) {
   // 布局计算：叶子 = 3级条目（空 l2 按 1 个叶子算）
-  const rows: { y: number; level: 1 | 2 | 3; text: string; branchIdx: number; l2Idx: number; itemIdx: number }[] = []
+  const rows: { y: number; level: 1 | 2 | 3; text: string; summary?: string; branchIdx: number; l2Idx: number; itemIdx: number }[] = []
   let y = PAD
 
   const branchY: number[] = []
@@ -37,7 +39,8 @@ export default function MindMap({ root = '📚 知识', branches }: Props) {
       const items = l2.items.length > 0 ? l2.items : ['']
       const l2Start = y
       items.forEach((title, ii) => {
-        rows.push({ y, level: 3, text: title || '（空笔记）', branchIdx: bi, l2Idx: li, itemIdx: ii })
+        const summary = l2.summaries?.[ii] ?? ''
+        rows.push({ y, level: 3, text: title || '（空笔记）', summary: summary.slice(0, 30), branchIdx: bi, l2Idx: li, itemIdx: ii })
         y += ROW_H
       })
       if (items.length === 0) y += ROW_H
@@ -105,12 +108,17 @@ export default function MindMap({ root = '📚 知识', branches }: Props) {
           </g>
         ))}
 
-        {/* 3级条目标题 */}
+        {/* 3级条目标题 + 内容摘要（可点击） */}
         {rows.filter(r => r.level === 3 && r.text !== '（空笔记）').map((r, i) => (
-          <g key={`l3n${i}`}>
+          <g key={`l3n${i}`} className={onLeafClick ? 'cursor-pointer' : ''} onClick={() => onLeafClick?.(r.text)}>
             <text x={x3 + NODE_W.item + 26} y={r.y} textAnchor="start" dominantBaseline="central" fill="#475569" fontSize={11}>
               {r.text.length > 24 ? r.text.slice(0, 24) + '…' : r.text}
             </text>
+            {r.summary && (
+              <text x={x3 + NODE_W.item + 26} y={r.y + 12} textAnchor="start" dominantBaseline="central" fill="#94a3b8" fontSize={9}>
+                {r.summary.length > 28 ? r.summary.slice(0, 28) + '…' : r.summary}
+              </text>
+            )}
           </g>
         ))}
       </svg>

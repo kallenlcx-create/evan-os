@@ -96,7 +96,9 @@ export default function KnowledgePage() {
   // 过滤知识
   const filteredKnowledge = useMemo(() => {
     let items = knowledge
-    if (selectedTag) items = items.filter(k => k.tags.includes(selectedTag))
+    // v1.1：统一走 l2 体系过滤（category = l2.name）
+    if (selectedL2Filter && selectedL2Filter !== '__未分类__') items = items.filter(k => k.category === selectedL2Filter)
+    if (selectedL2Filter === '__未分类__') items = items.filter(k => !l2List.some(l2 => l2.name === k.category))
     if (activeTab === 'bookmark') items = items.filter(k => k.isBookmarked)
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
@@ -536,6 +538,27 @@ export default function KnowledgePage() {
           decision: { items: decisions, label: '决策', emoji: '🧩', type: 'decision' },
         }
         const info = typeMap[activeTab]
+
+        // 合并：markType 匹配的 knowledge 条目 + 对应表记录
+        const markedK = knowledge.filter(k => (k as any).markType === activeTab)
+        const tableItems: any[] = info.items.map(item => ({
+          ...item, _source: 'table', _type: info.type,
+        }))
+        const markedItems: any[] = markedK.map(k => ({
+          id: k.id, title: k.title, _source: 'knowledge', _type: 'knowledge',
+          content: k.content, createdAt: k.createdAt,
+        }))
+        const allItems = [...markedItems, ...tableItems]
+
+        const handleEditItem = async (item: any) => {
+          const title = prompt('修改标题', item.title ?? ''); if (title === null || !title.trim()) return
+          if (item._source === 'knowledge') {
+            await updateObject('knowledge', item.id, { title: title.trim() })
+          } else {
+            await updateObject(item._type, item.id, { title: title.trim() })
+          }
+        }
+
         return (
           <div className="space-y-4">
             <div className="flex gap-2">
@@ -555,23 +578,36 @@ export default function KnowledgePage() {
               </button>
             </div>
             <div className="space-y-2">
-              {info.items.map(item => (
-                <div key={item.id} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg">{info.emoji}</span>
-                    <span className="text-sm font-medium text-gray-700">{item.title}</span>
-                  </div>
-                  <button
-                    onClick={() => deleteObject(info.type, item.id)}
-                    className="text-gray-300 hover:text-red-500 transition-colors"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-              {info.items.length === 0 && (
+              {allItems.length === 0 && (
                 <div className="text-center py-8 text-gray-400 text-sm">暂无{info.label}</div>
               )}
+              {allItems.map(item => (
+                <div key={item.id} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 flex items-center justify-between group">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <span className="text-lg">{info.emoji}</span>
+                    <span className="text-sm font-medium text-gray-700 truncate">{item.title}</span>
+                    {item._source === 'knowledge' && (
+                      <button onClick={() => setViewingId(item.id)} className="text-[10px] text-blue-400 hover:text-blue-600 shrink-0" title="查看详情">
+                        📄
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <button onClick={() => handleEditItem(item)} className="p-1 text-gray-300 hover:text-blue-500" title="编辑">
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        const src = item._source === 'knowledge' ? 'knowledge' : item._type
+                        deleteObject(src, item.id)
+                      }}
+                      className="p-1 text-gray-300 hover:text-red-500"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )
@@ -777,6 +813,28 @@ export default function KnowledgePage() {
                         onClick={async () => {
                           const next = (viewingItem as any).markType === mt ? '' : mt
                           await updateObject('knowledge', viewingItem.id, { markType: next || undefined } as any)
+                          // 真实创建对应表记录 + Relation 连线（A 修复）
+                          if (next) {
+                            const typeMap: Record<string, { type: ObjectType; label: string }> = {
+                              inspiration: { type: 'inspiration', label: '灵感' },
+                              question: { type: 'question', label: '问题' },
+                              research: { type: 'research', label: '研究' },
+                              experiment: { type: 'experiment', label: '实验' },
+                              decision: { type: 'decision', label: '决策' },
+                            }
+                            const info = typeMap[mt]
+                            if (info) {
+                              const r = await addObject(info.type, {
+                                title: viewingItem.title,
+                                description: viewingItem.content?.slice(0, 100) ?? '',
+                                status: mt === 'inspiration' ? 'captured' : mt === 'question' ? 'open' : mt === 'research' ? 'planned' : 'planned',
+                              })
+                              if (typeof r === 'string') {
+                                const { createRelation } = await import('../repositories/relationRepository')
+                                await createRelation('knowledge', viewingItem.id, info.type, r, 'related_to', { createdBy: 'user', source: 'manual' })
+                              }
+                            }
+                          }
                         }}
                         className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${
                           (viewingItem as any).markType === mt
@@ -787,6 +845,68 @@ export default function KnowledgePage() {
                         {mt === 'inspiration' ? '💡 灵感' : mt === 'question' ? '❓ 问题' : mt === 'research' ? '🔬 研究' : mt === 'experiment' ? '🧪 实验' : '🧩 决策'}
                       </button>
                     ))}
+                  </div>
+
+                  {/* 转化链路按钮 */}
+                  <div className="mb-4 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-gray-400">下一步：</span>
+                    {(() => {
+                      const mt = (viewingItem as any).markType
+                      if (mt === 'inspiration') return (
+                        <button onClick={async () => {
+                          const title = prompt('问题标题：', viewingItem.title + ' → 怎么解决？')
+                          if (!title?.trim()) return
+                          const r = await addObject('question', { title: title.trim(), status: 'open' })
+                          if (typeof r === 'string') {
+                            const { createRelation } = await import('../repositories/relationRepository')
+                            await createRelation('question', r, 'knowledge', viewingItem.id, 'derived_from', { createdBy: 'user', source: 'manual' })
+                            await updateObject('knowledge', viewingItem.id, { markType: 'question' } as any)
+                            setViewingId(null); setViewingId(viewingItem.id)
+                          }
+                        }} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] hover:bg-blue-100">
+                          ❓ 转为问题
+                        </button>
+                      )
+                      if (mt === 'question') return (
+                        <button onClick={async () => {
+                          const title = prompt('研究标题：', '研究：' + viewingItem.title)
+                          if (!title?.trim()) return
+                          const r = await addObject('research', { title: title.trim(), status: 'planned', findings: viewingItem.content?.slice(0, 100) ?? '' })
+                          if (typeof r === 'string') {
+                            const { createRelation } = await import('../repositories/relationRepository')
+                            await createRelation('research', r, 'question', viewingItem.id, 'derived_from', { createdBy: 'user', source: 'manual' })
+                            await updateObject('knowledge', viewingItem.id, { markType: 'research' } as any)
+                            setViewingId(null); setViewingId(viewingItem.id)
+                          }
+                        }} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] hover:bg-blue-100">
+                          🔬 立项研究
+                        </button>
+                      )
+                      if (mt === 'research') return (
+                        <button onClick={async () => {
+                          const r = await addObject('experiment', { title: '实验：' + viewingItem.title, status: 'planned', hypothesis: viewingItem.content?.slice(0, 100) ?? '' })
+                          if (typeof r === 'string') {
+                            const { createRelation } = await import('../repositories/relationRepository')
+                            await createRelation('experiment', r, 'research', viewingItem.id, 'derived_from', { createdBy: 'user', source: 'manual' })
+                            setViewingId(null); setViewingId(viewingItem.id)
+                          }
+                        }} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] hover:bg-blue-100">
+                          🧪 创建实验
+                        </button>
+                      )
+                      if (mt === 'decision') return (
+                        <button onClick={async () => {
+                          const r = await addObject('process', { title: 'SOP：' + viewingItem.title, category: '决策沉淀', steps: [{ id: 's0', order: 0, title: viewingItem.content?.slice(0, 50) ?? '', description: '', checklist: [] }] })
+                          if (typeof r === 'string') {
+                            const { createRelation } = await import('../repositories/relationRepository')
+                            await createRelation('process', r, 'knowledge', viewingItem.id, 'derived_from', { createdBy: 'user', source: 'manual' })
+                          }
+                        }} className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] hover:bg-blue-100">
+                          📋 沉淀为 SOP
+                        </button>
+                      )
+                      return null
+                    })()}
                   </div>
 
                   <div className="prose prose-sm max-w-none mb-4 text-gray-700">

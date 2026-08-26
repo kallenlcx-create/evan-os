@@ -1,0 +1,9 @@
+      case 'decision': {
+        const typeMap: Record<string, { items: any[]; label: string; emoji: string; type: ObjectType }> = {
+          inspiration: { items: inspirations, label: '灵感', emoji: '💡', type: 'inspiration' },
+          question: { items: questions, label: '问题', emoji: '❓', type: 'question' },
+          research: { items: research, label: '研究', emoji: '🔬', type: 'research' },
+          experiment: { items: experiments, label: '实验', emoji: '🧪', type: 'experiment' },
+          decision: { items: decisions, label: '决策', emoji: '🧩', type: 'decision' },
+        }
+        const info = typeMap[activeTab]
