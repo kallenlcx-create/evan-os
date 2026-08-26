@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { X, Lightbulb, CheckSquare, Link, StickyNote, Send } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { X, Lightbulb, CheckSquare, Link, StickyNote, Send, Inbox } from 'lucide-react'
 import { useStore } from '../store'
 
 const captureTypes = [
@@ -10,6 +11,7 @@ const captureTypes = [
 ]
 
 export default function QuickCapture() {
+  const navigate = useNavigate()
   const { app, toggleQuickCapture, addToInbox, addTask } = useStore()
   const [content, setContent] = useState('')
   const [activeType, setActiveType] = useState<'quick_note' | 'task' | 'idea' | 'link'>('quick_note')
@@ -107,6 +109,14 @@ export default function QuickCapture() {
             )}
           </button>
         </div>
+
+        {/* 收件箱入口 */}
+        <button
+          onClick={() => { toggleQuickCapture(); navigate('/inbox') }}
+          className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] text-gray-300 hover:text-sky-500 transition-colors"
+        >
+          <Inbox size={11} /> 查看收件箱 · 分拣捕获内容
+        </button>
       </div>
     </div>
   )

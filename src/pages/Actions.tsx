@@ -173,7 +173,7 @@ export default function ActionsPage() {
                         <div
                           key={task.id}
                           onClick={() => toggleTaskStatus(task.id)}
-                          className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
+                          className="group flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
                         >
                           <div className="w-5 h-5 rounded-full border-2 border-gray-300 flex items-center justify-center flex-shrink-0" />
                           <span className="text-lg">{task.emoji}</span>
@@ -181,6 +181,20 @@ export default function ActionsPage() {
                           {task.priority === 'high' && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 rounded-full">重要</span>
                           )}
+                          <button
+                            onClick={e => { e.stopPropagation(); const title = prompt('修改任务', task.title ?? ''); if (title?.trim()) updateObject('task', task.id, { title: title.trim() }) }}
+                            className="p-1 text-gray-200 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="编辑"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            onClick={e => { e.stopPropagation(); if (confirm(`删除任务「${task.title}」？`)) deleteObject('task', task.id) }}
+                            className="p-1 text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="删除"
+                          >
+                            🗑️
+                          </button>
                         </div>
                       ))}
                     </div>

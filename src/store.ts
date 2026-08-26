@@ -116,6 +116,7 @@ export interface EvanStore {
   // 每日日志
   getDailyLog: (date: string) => DailyLog | undefined
   saveDailyLog: (date: string, content: string, mood: string, energy: number) => Promise<void>
+  deleteDailyLog: (date: string) => Promise<void>
 
   // 标签
   getAllTags: () => TagStats[]
@@ -733,6 +734,12 @@ export const useStore = create<EvanStore>()((set, get) => ({
       set(s => ({ dailyLogs: [...s.dailyLogs, entry] }))
       await safeWrite(() => db.dailyLogs.add(entry))
     }
+  },
+  deleteDailyLog: async (date: string) => {
+    const existing = get().dailyLogs.find(l => l.date === date)
+    if (!existing) return
+    set(s => ({ dailyLogs: s.dailyLogs.filter(l => l.date !== date) }))
+    await safeWrite(() => db.dailyLogs.delete(existing.id))
   },
 
   // ====== 番茄钟 ======

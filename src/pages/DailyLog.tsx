@@ -20,7 +20,7 @@ export default function DailyLogPage() {
   const [energy, setEnergy] = useState(5)
   const [saved, setSaved] = useState(false)
 
-  const { dailyLogs, getDailyLog, saveDailyLog, tasks } = useStore()
+  const { dailyLogs, getDailyLog, saveDailyLog, deleteDailyLog, tasks } = useStore()
 
   // 加载选中日期的日志
   useEffect(() => {
@@ -124,6 +124,42 @@ export default function DailyLogPage() {
             <ChevronRight size={20} className={isToday ? 'opacity-30' : ''} />
           </button>
         </div>
+
+        {/* 删除当前日志 */}
+        {dailyLogs.some(l => l.date === selectedDate) && (
+          <div className="mt-2 text-right">
+            <button
+              onClick={async () => {
+                if (!confirm(`删除 ${selectedDate} 的日志？此操作不可恢复`)) return
+                await deleteDailyLog(selectedDate)
+                setContent(''); setMood(''); setEnergy(5)
+              }}
+              className="text-[10px] text-gray-300 hover:text-red-500"
+            >
+              🗑 删除该日日志
+            </button>
+          </div>
+        )}
+
+        {/* 历史日志列表 */}
+        {dailyLogs.length > 1 && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="text-[10px] text-gray-300 mb-1.5">历史日志（点击跳转）</div>
+            <div className="flex gap-1.5 flex-wrap">
+              {[...dailyLogs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14).map(l => (
+                <button
+                  key={l.id}
+                  onClick={() => setSelectedDate(l.date)}
+                  className={`px-2 py-1 rounded-lg text-[10px] transition-colors ${
+                    l.date === selectedDate ? 'bg-blue-100 text-blue-600 font-medium' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                  }`}
+                >
+                  {l.date.slice(5)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 心情和能量 */}

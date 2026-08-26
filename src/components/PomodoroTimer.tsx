@@ -2,12 +2,17 @@ import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { Play, Pause, RotateCcw, Timer, Coffee, Check, X } from 'lucide-react'
 
-const FOCUS = 25 * 60
+const FOCUS = (Number(localStorage.getItem('evan-os-pomodoro-min')) || 25) * 60
 const BREAK = 5 * 60
 
 export default function PomodoroTimer() {
   const { addPomodoroSession, getTodayPomodoroStats } = useStore()
   const [seconds, setSeconds] = useState(FOCUS)
+  useEffect(() => {
+    const reload = () => setSeconds((Number(localStorage.getItem('evan-os-pomodoro-min')) || 25) * 60)
+    window.addEventListener('evan-pomodoro-min', reload)
+    return () => window.removeEventListener('evan-pomodoro-min', reload)
+  }, [])
   const [isRunning, setIsRunning] = useState(false)
   const [isBreak, setIsBreak] = useState(false)
   const [sessionStart, setSessionStart] = useState<string | null>(null)

@@ -4,9 +4,10 @@ import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell,
 import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl } from '../config/wallpapers'
 
 export default function SettingsPage() {
-  const { backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
+  const { app, toggleSidebar, backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
   const [status, setStatus] = useState<{ type: 'success' | 'error' | ''; msg: string }>({ type: '', msg: '' })
   const [importing, setImporting] = useState(false)
+  const [pomodoroMin, setPomodoroMin] = useState(() => Number(localStorage.getItem('evan-os-pomodoro-min') || 25))
   const [workHours, setWorkHoursState] = useState(() => {
     const defaults = { startAM: '09:00', endAM: '12:00', startPM: '13:30', endPM: '18:00' }
     try { return { ...defaults, ...(JSON.parse(localStorage.getItem('evan-os-work-hours') || 'null') ?? {}) } }
@@ -218,15 +219,33 @@ export default function SettingsPage() {
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-2">侧边栏默认状态</label>
               <div className="flex gap-2">
-                <button className="px-4 py-2 bg-blue-50 text-blue-700 rounded-lg text-sm border border-blue-200">展开</button>
-                <button className="px-4 py-2 bg-gray-50 text-gray-500 rounded-lg text-sm border border-gray-200">折叠</button>
+                <button
+                  onClick={() => { if (app.sidebarCollapsed) toggleSidebar() }}
+                  className={`px-4 py-2 rounded-lg text-sm border ${!app.sidebarCollapsed ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}
+                >
+                  展开
+                </button>
+                <button
+                  onClick={() => { if (!app.sidebarCollapsed) toggleSidebar() }}
+                  className={`px-4 py-2 rounded-lg text-sm border ${app.sidebarCollapsed ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}
+                >
+                  折叠
+                </button>
               </div>
             </div>
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-2">番茄钟时长（分钟）</label>
               <div className="flex gap-2">
                 {[15, 25, 30, 45, 50].map(m => (
-                  <button key={m} className={`px-3 py-1.5 rounded-lg text-sm border ${m === 25 ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                  <button
+                    key={m}
+                    onClick={() => {
+                      localStorage.setItem('evan-os-pomodoro-min', String(m))
+                      window.dispatchEvent(new Event('evan-pomodoro-min'))
+                      setPomodoroMin(m)
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-sm border ${pomodoroMin === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                  >
                     {m}
                   </button>
                 ))}
