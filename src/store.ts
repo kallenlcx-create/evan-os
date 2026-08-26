@@ -492,8 +492,13 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   updateObject: async (type, id, data) => {
     const repoUpdate = repoUpdateObject
-    await repoUpdate(type, id, data)
+    const result = await repoUpdate(type, id, data)
+    if (result && result.ok === false) {
+      get().addNotification({ title: '更新失败', message: String(result.error).slice(0, 140), type: 'system' })
+      return
+    }
     const key = getCollectionKey(type)
+    if (!(get()[key] as any[] || []).some(item => item.id === id)) return
     const updated = (get()[key] as any[] || []).map(item =>
       item.id === id ? { ...item, ...data, updatedAt: now() } : item
     )
@@ -505,7 +510,11 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   deleteObject: async (type, id) => {
     const repoDelete = repoDeleteObject
-    await repoDelete(type, id)
+    const result = await repoDelete(type, id)
+    if (result && result.ok === false) {
+      get().addNotification({ title: '删除失败', message: String(result.error).slice(0, 140), type: 'system' })
+      return
+    }
     const key = getCollectionKey(type)
     set(s => ({ [key]: (s[key] as any[] || []).filter(item => item.id !== id) } as any))
     searchService.removeObject(id, type)
@@ -541,12 +550,14 @@ export const useStore = create<EvanStore>()((set, get) => ({
 
   toggleTaskStatus: async (id) => {
     const repoToggle = repoToggleTask
-    await repoToggle(id)
-    const task = get().tasks.find(t => t.id === id)
-    if (task) {
-      const next = { ...task, status: task.status === 'done' ? 'todo' : 'done' as Task['status'], updatedAt: now() }
-      set(s => ({ tasks: s.tasks.map(t => t.id === id ? next : t) }))
+    const r = await repoToggle(id)
+    if (r.ok === false) {
+      get().addNotification({ title: '状态更新失败', message: String(r.error).slice(0, 140), type: 'system' })
+      return
     }
+    // 以 DB 侧返回的新状态为准，避免内存/DB 双取反翻转到相反状态
+    const nextStatus = r.value
+    set(s => ({ tasks: s.tasks.map(t => t.id === id ? { ...t, status: nextStatus, updatedAt: now() } : t) }))
   },
 
   reorderTasks: async (ids) => {

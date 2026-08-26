@@ -163,6 +163,7 @@ const projectAssistantDef: AgentDefinition = {
   actions: [
     { type: 'summary_generate', description: '生成项目健康报告' },
     { type: 'task_draft', description: '起草下一步任务（需确认）' },
+    { type: 'external_call', description: 'L3 外呼（如 Hermes 客户邮件发送，需人工批准并显式执行）' },
   ],
   triggers: [{ type: 'manual', description: '手动运行（选择项目）' }],
   approvalPolicy: { autoExecuteBelow: 'L1_auto', requireHumanConfirm: [] },

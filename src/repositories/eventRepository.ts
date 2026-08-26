@@ -5,6 +5,15 @@ import { uid, now } from './result'
 // ====== Event Repository ======
 // 写入事件记录，不支持删除（审计日志）
 
+// ====== 进程内订阅（供应用层把事件分发给 Agent/Workflow 触发器）======
+type EventListener = (event: EventRecord) => void
+const listeners = new Set<EventListener>()
+
+export function onEventCreated(cb: EventListener): () => void {
+  listeners.add(cb)
+  return () => { listeners.delete(cb) }
+}
+
 export async function createEvent(
   type: EventType,
   actorType: 'user' | 'system' | 'agent',
@@ -28,6 +37,9 @@ export async function createEvent(
   }
   try {
     await db.events.add(event)
+    for (const cb of listeners) {
+      try { cb(event) } catch (e) { console.warn('[EventRepo] 订阅者处理失败:', e) }
+    }
   } catch (e) {
     console.warn('[EventRepo] 写入事件失败:', e)
   }

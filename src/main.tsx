@@ -52,6 +52,10 @@ if (navigator.storage?.persist) {
 import { cloudSync } from './services/cloudSync'
 void cloudSync.startAutoSync()
 
+// 自动化触发器：事件 → Agent/Workflow；定时 → Workflow tick
+import { startEventBus } from './services/eventBus'
+startEventBus()
+
 // 历史数据清理：events/运行记录/已完结审批 保留 90 天
 import { cleanupOldRecords } from './db'
 cleanupOldRecords(90).catch(() => {})

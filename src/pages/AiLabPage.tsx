@@ -8,9 +8,8 @@ import {
   Trash2, CheckCircle2,
 } from 'lucide-react'
 import { db } from '../db'
+import { useStore } from '../store'
 import { captureInbox, processInbox } from '../repositories/inboxRepository'
-import { createKnowledge } from '../repositories/knowledgeRepository'
-import { createObject } from '../repositories/objectRepository'
 import type { InboxItem } from '../types'
 
 interface HotspotItem extends InboxItem {
@@ -24,6 +23,7 @@ const convertTargets = [
 ] as const
 
 export default function AiLabPage() {
+  const addObject = useStore(s => s.addObject)
   const [hotspots, setHotspots] = useState<HotspotItem[]>([])
   const [converted, setConverted] = useState(0)
   const [newHotspot, setNewHotspot] = useState('')
@@ -57,33 +57,32 @@ export default function AiLabPage() {
   }
 
   // 漏斗出口：转化为标准对象（知识 / 想法 / 研究），并关闭热点
+  // 经 store 写入：IndexedDB + zustand + 搜索索引三处同步
   const convert = async (item: HotspotItem, target: 'knowledge' | 'inspiration' | 'research') => {
     const summary = (item.metadata as any)?.aiSummary ?? ''
     let createdId = ''
     if (target === 'knowledge') {
-      const r = await createKnowledge({
+      createdId = await addObject('knowledge', {
         title: item.content.slice(0, 30),
         content: summary ? `摘要：${summary}\n\n原文：${item.content}` : item.content,
         category: 'ai-hotspot',
         tags: ['ai', '热点'],
         source: 'ai-lab',
+        format: 'markdown',
       })
-      if (r.ok) createdId = r.value.id
     } else if (target === 'inspiration') {
-      const r = await createObject('inspiration', {
+      createdId = await addObject('inspiration', {
         title: item.content.slice(0, 30),
         description: summary || item.content,
         status: 'captured',
         tags: ['ai', '想法'],
       })
-      if (r.ok) createdId = r.value.id
     } else {
-      const r = await createObject('research', {
+      createdId = await addObject('research', {
         title: `研究：${item.content.slice(0, 26)}`,
         status: 'planned',
         findings: summary,
       })
-      if (r.ok) createdId = r.value.id
     }
     if (createdId) {
       await processInbox(item.id, target, createdId)

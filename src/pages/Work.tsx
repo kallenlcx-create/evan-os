@@ -15,8 +15,7 @@ import {
 import {
   getAllProducts, getRecentMetrics, analyzeMetrics, getAllSeoKeywords,
 } from '../repositories/siteRepository'
-import { createObject } from '../repositories/objectRepository'
-import { createKnowledge } from '../repositories/knowledgeRepository'
+import { useStore } from '../store'
 import type { TradeDeal, TradeStage } from '../types'
 
 // ---------- 旧数据迁移（localStorage → IndexedDB，一次性） ----------
@@ -55,7 +54,7 @@ async function migrateLegacyData(): Promise<void> {
         }
       }
       for (const s of d.sops ?? []) {
-        await createObject('process', {
+        await useStore.getState().addObject('process', {
           title: s.title, category: s.category,
           steps: (s.steps ?? []).map((t: string, idx: number) => ({
             id: `s${idx}`, order: idx, title: t, description: '', checklist: [],
@@ -63,7 +62,7 @@ async function migrateLegacyData(): Promise<void> {
         })
       }
       for (const t of d.templates ?? []) {
-        await createKnowledge({
+        await useStore.getState().addObject('knowledge', {
           title: t.title, content: t.content,
           category: 'template', tags: ['模板', t.category].filter(Boolean),
         })
@@ -151,7 +150,7 @@ export default function WorkPage() {
   const [newSop, setNewSop] = useState({ title: '', category: '外贸', stepsText: '' })
   const handleAddSop = async () => {
     if (!newSop.title.trim() || !newSop.stepsText.trim()) return
-    await createObject('process', {
+    await useStore.getState().addObject('process', {
       title: newSop.title.trim(), category: newSop.category,
       steps: newSop.stepsText.split('\n').filter(Boolean).map((t, idx) => ({
         id: `s${idx}`, order: idx, title: t.trim(), description: '', checklist: [],
@@ -164,9 +163,10 @@ export default function WorkPage() {
   const [newTpl, setNewTpl] = useState({ title: '', category: '外贸', content: '' })
   const handleAddTemplate = async () => {
     if (!newTpl.title.trim() || !newTpl.content.trim()) return
-    await createKnowledge({
+    await useStore.getState().addObject('knowledge', {
       title: newTpl.title.trim(), content: newTpl.content,
       category: 'template', tags: ['模板', newTpl.category],
+      format: 'markdown',
     })
     setNewTpl({ title: '', category: '外贸', content: '' })
     refresh()

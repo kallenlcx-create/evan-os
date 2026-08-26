@@ -8,10 +8,8 @@ import {
   Lightbulb, ListTodo, Sparkles, Inbox,
 } from 'lucide-react'
 import { db } from '../db'
+import { useStore } from '../store'
 import { processInbox, deleteInboxItem } from '../repositories/inboxRepository'
-import { createTask } from '../repositories/taskRepository'
-import { createKnowledge } from '../repositories/knowledgeRepository'
-import { createObject } from '../repositories/objectRepository'
 import type { InboxItem } from '../types'
 
 const typeEmoji: Record<string, string> = {
@@ -19,6 +17,7 @@ const typeEmoji: Record<string, string> = {
 }
 
 export default function InboxPage() {
+  const addObject = useStore(s => s.addObject)
   const [items, setItems] = useState<InboxItem[]>([])
   const [busyId, setBusyId] = useState('')
 
@@ -33,29 +32,27 @@ export default function InboxPage() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // 经 store 写入：IndexedDB + zustand + 搜索索引三处同步，其他页面立即可见
   const convert = async (item: InboxItem, target: 'task' | 'knowledge' | 'inspiration') => {
     setBusyId(item.id)
     try {
       let id = ''
       if (target === 'task') {
-        const r = await createTask({ title: item.content.slice(0, 40) })
-        if (r.ok) id = r.value.id
+        id = await addObject('task', { title: item.content.slice(0, 40) })
       } else if (target === 'knowledge') {
         const aiTags = (item.metadata as any)?.aiTags ?? []
-        const r = await createKnowledge({
+        id = await addObject('knowledge', {
           title: item.content.slice(0, 30),
           content: item.content,
           category: (item.metadata as any)?.aiCategory ?? 'inbox',
           tags: aiTags,
         })
-        if (r.ok) id = r.value.id
       } else {
-        const r = await createObject('inspiration', {
+        id = await addObject('inspiration', {
           title: item.content.slice(0, 30),
           description: item.content,
           status: 'captured',
         })
-        if (r.ok) id = r.value.id
       }
       if (id) await processInbox(item.id, target, id)
     } finally {

@@ -100,6 +100,10 @@ class AgentRuntime {
     const act = async (
       type: AgentActionType, payload: Record<string, any>, summary: string
     ): Promise<AgentActionOutcome> => {
+      // 白名单：动作必须在 def.actions 中声明，防止 Runner 越权调用未授权动作
+      if (!def.actions.some(a => a.type === type)) {
+        throw new Error(`Agent ${agentId} 未声明动作: ${type}`)
+      }
       const level = ACTION_PERMISSION[type]
       // Approval Policy 校验：声明强制人工确认的动作即使 L1 也升级
       const forcedHuman = def.approvalPolicy.requireHumanConfirm.includes(type)
@@ -153,6 +157,18 @@ class AgentRuntime {
       run.status = 'failed'
       run.error = String(e).slice(0, 500)
     }
+    // 运行失败时级联驳回其未决审批，避免孤儿审批在运行结束后仍可被执行
+    if (run.status === 'failed') {
+      try {
+        const pendings = await db.approvals.where('runId').equals(run.id).toArray()
+        for (const p of pendings.filter(x => x.status === 'pending')) {
+          await db.approvals.put({
+            ...p, status: 'rejected', decidedAt: now(),
+            executionError: '所属运行失败，自动驳回',
+          })
+        }
+      } catch { /* 级联驳回失败不影响主流程 */ }
+    }
     run.finishedAt = now()
     await db.agentRuns.put(run)
     return run.status === 'completed' ? ok(run) : err(run.error ?? 'run failed')
@@ -162,7 +178,7 @@ class AgentRuntime {
 
   /**
    * 外部直接提交审批（供未来 Provider / 测试 / 高级流程使用）。
-   * 走与 act() 完全相同的门控管线。
+   * 白名单校验：Agent 必须已注册且动作在其 def.actions 中声明。
    */
   async submitApproval(a: {
     agentId: AgentId
@@ -172,6 +188,11 @@ class AgentRuntime {
     runId?: string
     level?: PermissionLevel
   }): Promise<ApprovalRecord> {
+    const def = this.definitions.get(a.agentId)
+    if (!def) throw new Error(`Agent 未注册: ${a.agentId}`)
+    if (!def.actions.some(x => x.type === a.actionType)) {
+      throw new Error(`Agent ${a.agentId} 未声明动作: ${a.actionType}`)
+    }
     return enqueueApproval({
       runId: a.runId ?? 'external',
       agentId: a.agentId,
@@ -203,51 +224,49 @@ class AgentRuntime {
    * 用户批准。
    * L2：批准即执行。
    * L3：批准只改变状态，必须再调用 executeApproved()（Human → Execute）。
+   * CAS 事务迁移 pending→approved：并发双击只有一次生效。
    */
   async approve(approvalId: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if ((a.status as string) !== 'pending') return err(`当前状态不可批准: ${a.status}`)
-
-    const approved: ApprovalRecord = { ...a, status: 'approved', decidedAt: now() }
-    await db.approvals.put(approved)
+    const claimed = await casApproval(approvalId, 'pending', 'approved')
+    if (claimed.ok === false) return err(claimed.error)
+    const a = claimed.value
+    if (a.source === 'workflow') return err('工作流审批请使用 workflowEngine 执行')
 
     if (a.level === 'L2_suggest') {
       return this.executeApproved(approvalId)
     }
-    return ok(approved) // L3 停在 approved，等待显式执行
+    return ok(a) // L3 停在 approved，等待显式执行
   }
 
   async reject(approvalId: string, reason?: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if ((a.status as string) !== 'pending') return err(`当前状态不可拒绝: ${a.status}`)
-    const rejected: ApprovalRecord = {
-      ...a, status: 'rejected', decidedAt: now(),
-      executionError: reason,
-    }
-    await db.approvals.put(rejected)
-    return ok(rejected)
+    return casApproval(approvalId, 'pending', 'rejected', { executionError: reason })
   }
 
   /**
    * 显式执行已批准的动作。
    * L3 必须携带 humanToken —— 这是 AI → Approval → Human → Execute 的最后一环。
+   * 执行前在事务内预占 executedAt（CAS），防止双击/并发导致动作重复执行。
    */
   async executeApproved(approvalId: string, humanToken?: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if (a.source === 'workflow') return err('工作流审批请使用 workflowEngine 执行')
-    if ((a.status as string) !== 'approved') return err('只有 approved 状态才能执行')
-    if (a.executedAt) return err('该审批已执行过，不可重复执行')
-
-    if (a.level === 'L3_approval' && humanToken !== 'human-confirmed') {
-      return err('L3 动作必须人工显式执行（缺少 humanToken）')
-    }
+    const claim = await db.transaction('rw', db.approvals, async (): Promise<Result<ApprovalRecord>> => {
+      const cur = await db.approvals.get(approvalId)
+      if (!cur) return err('审批不存在')
+      if (cur.source === 'workflow') return err('工作流审批请使用 workflowEngine 执行')
+      if ((cur.status as string) !== 'approved') return err('只有 approved 状态才能执行')
+      if (cur.executedAt) return err('该审批已执行过，不可重复执行')
+      if (cur.level === 'L3_approval' && humanToken !== 'human-confirmed') {
+        return err('L3 动作必须人工显式执行（缺少 humanToken）')
+      }
+      const claimed: ApprovalRecord = { ...cur, executedAt: now() }
+      await db.approvals.put(claimed)
+      return ok(claimed)
+    })
+    if (claim.ok === false) return err(claim.error)
+    const a = claim.value
 
     const impl = TOOL_IMPLS[toolForAction(a)]
     if (!impl) {
-      const failed: ApprovalRecord = { ...a, executedAt: now(), executionError: `无实现工具: ${a.actionType}` }
+      const failed: ApprovalRecord = { ...a, executionError: `无实现工具: ${a.actionType}` }
       await db.approvals.put(failed)
       return err(failed.executionError)
     }
@@ -255,18 +274,18 @@ class AgentRuntime {
     try {
       const result = await impl(a.payload, { agentId: a.agentId, runId: a.runId })
       if (result && result.ok === false) {
-        const failed: ApprovalRecord = { ...a, executedAt: now(), executionError: String(result.error) }
+        const failed: ApprovalRecord = { ...a, executionError: String(result.error) }
         await db.approvals.put(failed)
         return err(String(result.error))
       }
       const done: ApprovalRecord = {
-        ...a, executedAt: now(),
+        ...a,
         executionResult: normalizeExecResult(result),
       }
       await db.approvals.put(done)
       return ok(done)
     } catch (e) {
-      const failed: ApprovalRecord = { ...a, executedAt: now(), executionError: String(e).slice(0, 300) }
+      const failed: ApprovalRecord = { ...a, executionError: String(e).slice(0, 300) }
       await db.approvals.put(failed)
       return err(failed.executionError!)
     }
@@ -293,6 +312,27 @@ class AgentRuntime {
 
 function safeJson(v: any): string {
   try { return JSON.stringify(v)?.slice(0, 120) ?? '' } catch { return '' }
+}
+
+/** 审批状态 CAS 迁移（事务内校验 from 状态，防止并发双击双执行） */
+async function casApproval(
+  approvalId: string,
+  from: 'pending' | 'approved',
+  to: ApprovalRecord['status'],
+  extra?: Partial<ApprovalRecord>
+): Promise<Result<ApprovalRecord>> {
+  try {
+    return await db.transaction('rw', db.approvals, async (): Promise<Result<ApprovalRecord>> => {
+      const cur = await db.approvals.get(approvalId)
+      if (!cur) return err('审批不存在')
+      if ((cur.status as string) !== from) return err(`当前状态不可操作: ${cur.status}`)
+      const next: ApprovalRecord = { ...cur, status: to, decidedAt: now(), ...extra }
+      await db.approvals.put(next)
+      return ok(next)
+    })
+  } catch (e) {
+    return err(String(e))
+  }
 }
 
 /** L1 动作的立即执行实现 */

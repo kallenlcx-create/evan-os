@@ -67,20 +67,20 @@ export async function completeTask(id: string): Promise<Result<void>> {
   }
 }
 
-export async function toggleTaskStatus(id: string): Promise<Result<void>> {
+export async function toggleTaskStatus(id: string): Promise<Result<Task['status']>> {
   try {
     const task = await db.tasks.get(id)
     if (!task) return err('任务不存在')
 
-    const nextStatus = task.status === 'done' ? 'todo' : 'done'
-    const next = { ...task, status: nextStatus as Task['status'], updatedAt: now() }
+    const nextStatus: Task['status'] = task.status === 'done' ? 'todo' : 'done'
+    const next = { ...task, status: nextStatus, updatedAt: now() }
     await db.tasks.put(next)
 
     if (nextStatus === 'done') {
       await createEvent('task.completed', 'user', 'task', id, { title: task.title })
     }
 
-    return ok(undefined)
+    return ok(nextStatus)
   } catch (e) {
     return err(`更新任务状态失败: ${e}`)
   }

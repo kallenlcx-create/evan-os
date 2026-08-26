@@ -432,28 +432,21 @@ class WorkflowEngine {
    * 用户批准挂起的步骤。
    * L2（create/update object）：批准即执行并恢复后续流程。
    * L3（external_mock/delete）：批准后仍需 executeApproved(humanToken) 显式执行。
+   * CAS 事务迁移，防并发双击。
    */
   async approve(approvalId: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if (a.source !== 'workflow') return err('非工作流审批')
-    if ((a.status as string) !== 'pending') return err(`当前状态不可批准: ${a.status}`)
+    const claimed = await casWorkflowApproval(approvalId, 'pending', 'approved')
+    if (claimed.ok === false) return err(claimed.error)
+    const a = claimed.value
 
-    const approved: ApprovalRecord = { ...a, status: 'approved', decidedAt: now() }
-    await db.approvals.put(approved)
-
-    if (a.level === 'L3_approval') return ok(approved) // 等 Human 显式执行
+    if (a.level === 'L3_approval') return ok(a) // 等 Human 显式执行
     return this.executeApproved(approvalId)
   }
 
   async reject(approvalId: string, reason?: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if (a.source !== 'workflow') return err('非工作流审批')
-    if ((a.status as string) !== 'pending') return err(`当前状态不可拒绝: ${a.status}`)
-
-    const rejected: ApprovalRecord = { ...a, status: 'rejected', decidedAt: now(), executionError: reason }
-    await db.approvals.put(rejected)
+    const rejected = await casWorkflowApproval(approvalId, 'pending', 'rejected', { executionError: reason })
+    if (rejected.ok === false) return err(rejected.error)
+    const a = rejected.value
 
     // 拒绝 = 取消整个运行
     if (a.workflowRunId) {
@@ -465,19 +458,26 @@ class WorkflowEngine {
         await db.workflowRuns.put(run)
       }
     }
-    return ok(rejected)
+    return ok(a)
   }
 
-  /** L3 显式执行 + 恢复后续步骤 */
+  /** L3 显式执行 + 恢复后续步骤；事务内预占 executedAt 防重复执行 */
   async executeApproved(approvalId: string, humanToken?: string): Promise<Result<ApprovalRecord>> {
-    const a = await db.approvals.get(approvalId)
-    if (!a) return err('审批不存在')
-    if (a.source !== 'workflow') return err('非工作流审批')
-    if ((a.status as string) !== 'approved') return err('只有 approved 状态才能执行')
-    if (a.executedAt) return err('该审批已执行过，不可重复执行')
-    if (a.level === 'L3_approval' && humanToken !== 'human-confirmed') {
-      return err('高风险动作必须人工显式执行（缺少 humanToken）')
-    }
+    const claim = await db.transaction('rw', db.approvals, async (): Promise<Result<ApprovalRecord>> => {
+      const cur = await db.approvals.get(approvalId)
+      if (!cur) return err('审批不存在')
+      if (cur.source !== 'workflow') return err('非工作流审批')
+      if ((cur.status as string) !== 'approved') return err('只有 approved 状态才能执行')
+      if (cur.executedAt) return err('该审批已执行过，不可重复执行')
+      if (cur.level === 'L3_approval' && humanToken !== 'human-confirmed') {
+        return err('高风险动作必须人工显式执行（缺少 humanToken）')
+      }
+      const claimed: ApprovalRecord = { ...cur, executedAt: now() }
+      await db.approvals.put(claimed)
+      return ok(claimed)
+    })
+    if (claim.ok === false) return err(claim.error)
+    const a = claim.value
 
     const wf = a.workflowId ? await db.workflows.get(a.workflowId) : undefined
     const run = a.workflowRunId ? await db.workflowRuns.get(a.workflowRunId) : undefined
@@ -498,7 +498,7 @@ class WorkflowEngine {
         log.result = result
         log.finishedAt = now()
       }
-      const done: ApprovalRecord = { ...a, executedAt: now(), executionResult: result }
+      const done: ApprovalRecord = { ...a, executionResult: result }
       await db.approvals.put(done)
 
       // 恢复后续步骤
@@ -508,13 +508,19 @@ class WorkflowEngine {
       await db.workflowRuns.put(run)
       try {
         await this.runSteps(wf, run, run.contextSnapshot, startIndex)
-      } catch { /* runSteps 内部已处理状态 */ }
+      } catch (e) {
+        // 连续第二个审批门控会再次抛出挂起信号：运行保持 awaiting，不得盖上结束时间
+        if (!(e instanceof AWAITING_APPROVAL_SIGNAL)) {
+          run.status = 'failed'
+          run.error = String(e).slice(0, 500)
+        }
+      }
       if ((run.status as string) === 'running') run.status = 'completed'
-      run.finishedAt = now()
+      if ((run.status as string) !== 'awaiting_approval') run.finishedAt = now()
       await db.workflowRuns.put(run)
       return ok(done)
     } catch (e) {
-      const failed: ApprovalRecord = { ...a, executedAt: now(), executionError: String(e).slice(0, 300) }
+      const failed: ApprovalRecord = { ...a, executionError: String(e).slice(0, 300) }
       await db.approvals.put(failed)
       run.status = 'failed'
       run.error = String(e).slice(0, 500)
@@ -547,6 +553,28 @@ class WorkflowEngine {
 // ====== 辅助 ======
 
 class AWAITING_APPROVAL_SIGNAL extends Error {}
+
+/** 工作流审批状态 CAS 迁移（事务内校验 from 状态，防并发双击） */
+async function casWorkflowApproval(
+  approvalId: string,
+  from: 'pending' | 'approved',
+  to: ApprovalRecord['status'],
+  extra?: Partial<ApprovalRecord>
+): Promise<Result<ApprovalRecord>> {
+  try {
+    return await db.transaction('rw', db.approvals, async (): Promise<Result<ApprovalRecord>> => {
+      const cur = await db.approvals.get(approvalId)
+      if (!cur) return err('审批不存在')
+      if (cur.source !== 'workflow') return err('非工作流审批')
+      if ((cur.status as string) !== from) return err(`当前状态不可操作: ${cur.status}`)
+      const next: ApprovalRecord = { ...cur, status: to, decidedAt: now(), ...extra }
+      await db.approvals.put(next)
+      return ok(next)
+    })
+  } catch (e) {
+    return err(String(e))
+  }
+}
 class STEP_FAILURE_SIGNAL extends Error {}
 
 function sleep(ms: number): Promise<void> {

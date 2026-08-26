@@ -3,8 +3,9 @@
 // L1 工具可被 Agent 直接调用；L2/L3 工具只能由审批流程触发执行
 
 import { db } from '../db'
-import type { PermissionLevel } from '../types'
+import type { PermissionLevel, Task } from '../types'
 import type { Result } from '../repositories/result'
+import { now } from '../repositories/result'
 import {
   createKnowledge, getBacklinks,
 } from '../repositories/knowledgeRepository'
@@ -12,7 +13,7 @@ import { createProject } from '../repositories/projectRepository'
 import { createTask } from '../repositories/taskRepository'
 import { createRelation, getTasksForProject } from '../repositories/relationRepository'
 import { createObject, getObject } from '../repositories/objectRepository'
-import { getAllEvents } from '../repositories/eventRepository'
+import { createEvent, getAllEvents } from '../repositories/eventRepository'
 import { MEMORY_AI_CONFIDENCE_CAP } from '../repositories/memoryRepository'
 
 // ====== 工具描述符 ======
@@ -226,7 +227,15 @@ export const TOOL_IMPLS: Record<string, (args: any, tctx: ToolExecutionContext) 
     return r.value
   },
   'task.status': async (args) => {
-    await db.tasks.update(args.id, { status: args.status })
+    const task = await db.tasks.get(args.id)
+    if (!task) return { ok: false, error: '任务不存在' }
+    const VALID: Task['status'][] = ['todo', 'in_progress', 'done', 'cancelled']
+    if (!VALID.includes(args.status)) return { ok: false, error: `非法状态: ${args.status}` }
+    // 直写也必须维护 LWW 时钟并落审计事件（与 repository 写路径一致）
+    await db.tasks.update(args.id, { status: args.status, updatedAt: now() })
+    await createEvent('object.updated', 'agent', 'task', args.id, {
+      via: 'tool:task.status', changedFields: ['status'],
+    })
     return { ok: true }
   },
 
@@ -254,11 +263,15 @@ async function deleteObjectSafe(type: string, id: string) {
   return { ok: true, deleted: id }
 }
 
+const OBJECT_TABLES: Record<string, string> = {
+  goal: 'goals', project: 'projects', task: 'tasks', knowledge: 'knowledge',
+  inspiration: 'inspirations', question: 'questions', research: 'research',
+  experiment: 'experiments', decision: 'decisions', review: 'reviews', process: 'processes',
+}
+
+/** 严格白名单：未知/系统表名一律拒绝，防止 payload.type 触达审计等系统表 */
 function objTableName(type: string): string {
-  const map: Record<string, string> = {
-    goal: 'goals', project: 'projects', task: 'tasks', knowledge: 'knowledge',
-    inspiration: 'inspirations', question: 'questions', research: 'research',
-    experiment: 'experiments', decision: 'decisions', review: 'reviews', process: 'processes',
-  }
-  return map[type] ?? type
+  const t = OBJECT_TABLES[type]
+  if (!t) throw new Error(`不允许操作的对象类型: ${type}`)
+  return t
 }
