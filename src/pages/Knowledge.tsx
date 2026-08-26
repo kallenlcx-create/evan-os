@@ -1,4 +1,6 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
@@ -8,6 +10,11 @@ import KnowledgeGraph from '../components/KnowledgeGraph'
 import MindMap from '../components/MindMap'
 import { listByKind, syncKind } from '../repositories/collectionRepository'
 import { downloadFile } from '../services/vaultSync'
+import {
+  syncWikiLinkRelations,
+  getWikiBacklinks,
+  migrateWikiLinksOnRename,
+} from '../repositories/knowledgeRepository'
 import type { Knowledge, ObjectType } from '../types'
 
 const tabs = [
@@ -35,9 +42,8 @@ const categories = [
 
 export default function KnowledgePage() {
   const navigate = useNavigate()
-  const { knowledge, inspirations, questions, research, experiments, decisions, addObject, updateObject, deleteObject, getAllTags, getBacklinks } = useStore()
+  const { knowledge, inspirations, questions, research, experiments, decisions, addObject, updateObject, deleteObject, getAllTags } = useStore()
   const [activeTab, setActiveTab] = useState('all')
-  const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [newTitle, setNewTitle] = useState('')
@@ -47,11 +53,28 @@ export default function KnowledgePage() {
   const [newFormat, setNewFormat] = useState<Knowledge['format']>('markdown')
   const [editContent, setEditContent] = useState('')
   const [editTitle, setEditTitle] = useState('')
+  const [editCategory, setEditCategory] = useState('')
+  const [editFormat, setEditFormat] = useState<Knowledge['format']>('markdown')
   const [editTags, setEditTags] = useState('')
   const [viewingId, setViewingId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [graphDepth, setGraphDepth] = useState(1)
   const [graphCenterId, setGraphCenterId] = useState<string | undefined>(undefined)
+  const [backlinks, setBacklinks] = useState<Knowledge[]>([])
+
+  // 页内输入弹窗（替代原生 prompt）
+  const [askState, setAskState] = useState<{ title: string; value: string; placeholder?: string } | null>(null)
+  const askResolveRef = useRef<((v: string | null) => void) | null>(null)
+  const askText = (title: string, defaultValue = '', placeholder?: string) =>
+    new Promise<string | null>(resolve => {
+      askResolveRef.current = resolve
+      setAskState({ title, value: defaultValue, placeholder })
+    })
+  const closeAsk = (result: string | null) => {
+    askResolveRef.current?.(result)
+    askResolveRef.current = null
+    setAskState(null)
+  }
 
   // ====== 标签体系（v1.1）：1级分类 → 2级标签 → 3级知识条目 ======
   interface TagL1 { id: string; name: string }
@@ -67,8 +90,11 @@ export default function KnowledgePage() {
     setL2List(l2.map(r => ({ id: r.id, name: r.name, parent: r.parent })))
   }, [])
 
-  // 种子：首次进入时从现有知识的 category / tags 生成标签树
+  // 种子：等 store 从 IndexedDB 水合（knowledge 非空）后再播种，避免空数据竞态
+  const seededRef = useRef(false)
   useEffect(() => {
+    if (seededRef.current || knowledge.length === 0) return
+    seededRef.current = true
     ;(async () => {
       const l1 = await listByKind('tag_l1')
       if (l1.length === 0) {
@@ -88,10 +114,17 @@ export default function KnowledgePage() {
       }
       await loadTagTree()
     })()
-  }, [knowledge.length === 0]) // 仅在知识为空判断一次；后续由操作函数手动刷新
+  }, [knowledge]) // 播种一次后由操作函数手动刷新
   // eslint-disable-next-line react-hooks/exhaustive-deps
 
   const allTags = useMemo(() => getAllTags(), [knowledge, inspirations, questions, research, experiments, decisions])
+
+  // 分类计数：一次遍历建 Map，替代侧边栏逐节点全量扫描
+  const countByCategory = useMemo(() => {
+    const m = new Map<string, number>()
+    knowledge.forEach(k => { if (k.category) m.set(k.category, (m.get(k.category) || 0) + 1) })
+    return m
+  }, [knowledge])
 
   // 过滤知识
   const filteredKnowledge = useMemo(() => {
@@ -109,12 +142,12 @@ export default function KnowledgePage() {
       )
     }
     return items
-  }, [knowledge, selectedTag, activeTab, searchQuery])
+  }, [knowledge, l2List, selectedL2Filter, activeTab, searchQuery])
 
   const handleAddKnowledge = async () => {
     if (!newTitle.trim()) return
     const tags = newTags.split(',').map(t => t.trim()).filter(Boolean)
-    await addObject('knowledge', {
+    const id = await addObject('knowledge', {
       title: newTitle.trim(),
       description: '',
       content: newContent,
@@ -122,6 +155,7 @@ export default function KnowledgePage() {
       tags,
       format: newFormat,
     })
+    await syncWikiLinkRelations(id, newContent)
     setNewTitle('')
     setNewContent('')
     setNewTags('')
@@ -137,8 +171,19 @@ export default function KnowledgePage() {
   }
 
   const handleSaveEdit = async (id: string) => {
+    const title = editTitle.trim()
+    if (!title) return
     const tags = editTags.split(',').map(t => t.trim()).filter(Boolean)
-    await updateObject('knowledge', id, { title: editTitle, content: editContent, tags } as any)
+    const old = knowledge.find(k => k.id === id)
+    await updateObject('knowledge', id, {
+      title,
+      content: editContent,
+      tags,
+      category: editCategory,
+      format: editFormat,
+    } as any)
+    if (old && old.title !== title) await migrateWikiLinksOnRename(old.title, title)
+    await syncWikiLinkRelations(id, editContent)
     setEditingId(null)
   }
 
@@ -155,7 +200,14 @@ export default function KnowledgePage() {
   }
 
   const viewingItem = viewingId ? knowledge.find(k => k.id === viewingId) : null
-  const backlinks = viewingId ? getBacklinks(viewingId) : []
+
+  // 反向链接：从 Relation 表动态加载（references 关系）
+  useEffect(() => {
+    let cancelled = false
+    if (!viewingId) { setBacklinks([]); return }
+    getWikiBacklinks(viewingId).then(list => { if (!cancelled) setBacklinks(list) })
+    return () => { cancelled = true }
+  }, [viewingId, knowledge])
 
   // ====== 标签树 CRUD 与导入导出 ======
   const saveL1 = async (list: TagL1[]) => {
@@ -167,14 +219,14 @@ export default function KnowledgePage() {
     await syncKind('tag_l2', list.map(x => ({ id: x.id, name: x.name, parent: x.parent })))
   }
   const addL1Category = async () => {
-    const name = prompt('新增一级分类名（如：业务 / 运营 / 生活）')
+    const name = await askText('新增一级分类名（如：业务 / 运营 / 生活）')
     if (!name?.trim()) return
     if (l1List.some(l => l.name === name.trim())) { alert('分类已存在'); return }
     await saveL1([...l1List, { id: 'l1-' + name.trim(), name: name.trim() }])
     setExpandedL1('l1-' + name.trim()) // 自动展开，方便立即添加 2级标签
   }
   const renameL1Category = async (l1: TagL1) => {
-    const name = prompt('重命名一级分类', l1.name)
+    const name = await askText(`重命名一级分类「${l1.name}」`, l1.name)
     if (!name?.trim() || name.trim() === l1.name) return
     await saveL1(l1List.map(x => x.id === l1.id ? { ...x, name: name.trim() } : x))
     await saveL2(l2List.map(x => x.parent === l1.name ? { ...x, parent: name.trim() } : x))
@@ -186,13 +238,13 @@ export default function KnowledgePage() {
     await saveL2(l2List.filter(x => x.parent !== l1.name))
   }
   const addL2Tag = async (parent: string) => {
-    const name = prompt(`在分类「${parent}」下添加标签：`)
+    const name = await askText(`在分类「${parent}」下添加标签：`)
     if (!name?.trim()) return
     if (l2List.some(l => l.name === name.trim())) { alert('标签已存在'); return }
     await saveL2([...l2List, { id: 'l2-' + name.trim(), name: name.trim(), parent }])
   }
   const renameL2Tag = async (l2: TagL2) => {
-    const name = prompt('重命名标签', l2.name)
+    const name = await askText(`重命名标签「${l2.name}」`, l2.name)
     if (!name?.trim() || name.trim() === l2.name) return
     await saveL2(l2List.map(x => x.id === l2.id ? { ...x, name: name.trim() } : x))
     for (const k of knowledge.filter(kk => kk.category === l2.name)) {
@@ -205,12 +257,24 @@ export default function KnowledgePage() {
     await saveL2(l2List.filter(x => x.id !== l2.id))
     if (selectedL2Filter === l2.name) setSelectedL2Filter(null)
   }
+  const knowledgeExportItem = (k: Knowledge) => ({
+    id: k.id,
+    title: k.title,
+    content: k.content,
+    tags: k.tags,
+    category: k.category,
+    format: k.format,
+    isBookmarked: k.isBookmarked,
+    markType: (k as any).markType,
+    createdAt: k.createdAt,
+    updatedAt: k.updatedAt,
+  })
   const exportL2 = (l2: TagL2, fmt: 'md' | 'json') => {
     const items = knowledge.filter(k => k.category === l2.name)
     if (fmt === 'json') {
       downloadFile(
         `evan-tags-${l2.name}.json`,
-        JSON.stringify({ name: l2.name, parent: l2.parent, items: items.map(k => ({ title: k.title, content: k.content, tags: k.tags, format: k.format })) }, null, 2),
+        JSON.stringify({ name: l2.name, parent: l2.parent, items: items.map(knowledgeExportItem) }, null, 2),
         'application/json'
       )
     } else {
@@ -224,46 +288,104 @@ export default function KnowledgePage() {
       JSON.stringify({
         l1: l1List.map(l => l.name),
         l2: l2List.map(l => ({ name: l.name, parent: l.parent })),
-        items: knowledge.map(k => ({ title: k.title, content: k.content, tags: k.tags, category: k.category, format: k.format })),
+        items: knowledge.map(knowledgeExportItem),
       }, null, 2),
       'application/json'
     )
   }
+
+  // 按 id 或「标题+分类」去重；文件内部重复也只导入第一条
+  const makeImportDedup = () => {
+    const seen = new Set<string>()
+    for (const k of knowledge) {
+      seen.add(`${k.id}`)
+      seen.add(`${k.title}|${k.category}`)
+    }
+    return (it: any, category?: string): boolean => {
+      const key = it?.id ? `${it.id}` : `${String(it?.title ?? '')}|${category ?? ''}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }
+  }
+
   const importTagsFile = async (file: File, parentL1: string) => {
     try {
       const text = await file.text()
       if (file.name.endsWith('.json')) {
         const parsed = JSON.parse(text)
         if (parsed.name && parsed.items) {
-          // 标签级导入：确保父级 l1 存在
+          // 标签级导入：确保父级 l1 存在；合并而非覆盖
           const parent = parsed.parent || parentL1 || '通用'
           if (!l1List.some(l => l.name === parent)) {
             await saveL1([...l1List, { id: 'l1-' + parent, name: parent }])
           }
-          await saveL2([...l2List.filter(x => x.id !== 'l2-' + parsed.name), { id: 'l2-' + parsed.name, name: parsed.name, parent }])
+          await saveL2([...l2List.filter(x => x.name !== parsed.name), { id: 'l2-' + parsed.name, name: parsed.name, parent }])
+          const shouldImport = makeImportDedup()
+          let imported = 0, skipped = 0
           for (const it of parsed.items) {
-            await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: parsed.name, format: it.format ?? 'markdown' })
+            if (!it?.title || !shouldImport(it, parsed.name)) { skipped++; continue }
+            await addObject('knowledge', {
+              ...(it.id ? { id: String(it.id) } : {}),
+              title: it.title, content: it.content ?? '', tags: it.tags ?? [],
+              category: parsed.name, format: it.format ?? 'markdown',
+              isBookmarked: !!it.isBookmarked,
+            })
+            imported++
           }
-          setSelectedL2Filter(parsed.name) // 自动选中新导入的标签
+          setSelectedL2Filter(parsed.name)
+          alert(`导入完成 ✓ 新增 ${imported} 条${skipped ? `，跳过重复 ${skipped} 条` : ''}`)
         } else if (parsed.l1 && parsed.l2) {
-          // 全量导入
-          await saveL1(parsed.l1.map((n: string) => ({ id: 'l1-' + n, name: n })))
-          await saveL2(parsed.l2.map((x: any) => ({ id: 'l2-' + x.name, name: x.name, parent: x.parent })))
+          // 全量导入：合并模式 —— 只增改，绝不删除现有标签/条目
+          const l1Incoming = (parsed.l1 as string[]).filter(Boolean).map((n: string) => ({ id: 'l1-' + n, name: n }))
+          const l1Map = new Map(l1List.map(x => [x.id, x]))
+          for (const inc of l1Incoming) l1Map.set(inc.id, { ...l1Map.get(inc.id), ...inc } as TagL1)
+          await saveL1(Array.from(l1Map.values()))
+
+          const l2Incoming = (parsed.l2 as any[]).filter(x => x?.name).map((x: any) => ({ id: 'l2-' + x.name, name: x.name, parent: x.parent }))
+          const l2Map = new Map(l2List.map(x => [x.id, x]))
+          for (const inc of l2Incoming) l2Map.set(inc.id, { ...l2Map.get(inc.id), ...inc } as TagL2)
+          await saveL2(Array.from(l2Map.values()))
+
+          const shouldImport = makeImportDedup()
+          let imported = 0, skipped = 0
           for (const it of parsed.items ?? []) {
-            await addObject('knowledge', { title: it.title, content: it.content, tags: it.tags ?? [], category: it.category ?? parsed.l2[0]?.name, format: it.format ?? 'markdown' })
+            const category = it.category ?? parsed.l2[0]?.name
+            if (!it?.title || !shouldImport(it, category)) { skipped++; continue }
+            await addObject('knowledge', {
+              ...(it.id ? { id: String(it.id) } : {}),
+              title: it.title, content: it.content ?? '', tags: it.tags ?? [],
+              category, format: it.format ?? 'markdown',
+              isBookmarked: !!it.isBookmarked,
+            })
+            imported++
           }
           if (parsed.l2.length > 0) setSelectedL2Filter(parsed.l2[0].name)
+          alert(`导入完成 ✓ 新增 ${imported} 条${skipped ? `，跳过重复 ${skipped} 条` : ''}（合并模式，未删除任何现有数据）`)
+        } else {
+          alert('导入失败：JSON 结构无法识别。\n支持两种格式：\n① 单标签导出 {name, parent, items}\n② 全量导出 {l1, l2, items}')
+          return
         }
-        alert('导入完成 ✓ 刷新页面查看所有数据')
         await loadTagTree()
       } else {
+        const firstLine = text.split('\n')[0]?.replace(/^#\s*/, '').trim() ?? ''
+        const tagMatch = firstLine.match(/^(.*?)\s*标签导出$/)
+        const tagName = tagMatch?.[1]?.trim()
+        const category = tagName || parentL1
+        if (tagName && !l2List.some(l => l.name === tagName)) {
+          await saveL2([...l2List, { id: 'l2-' + tagName, name: tagName, parent: parentL1 }])
+        }
+        let imported = 0
         const sections = text.split(/\n## /).slice(1)
         for (const sec of sections) {
           const title = sec.split('\n')[0].replace(/^## /, '').trim()
           const content = sec.split('\n').slice(1).join('\n').trim()
-          if (title) await addObject('knowledge', { title, content, category: parentL1, tags: ['导入'], format: 'markdown' })
+          if (title) {
+            await addObject('knowledge', { title, content, category, tags: ['导入'], format: 'markdown' })
+            imported++
+          }
         }
-        alert('Markdown 导入完成')
+        alert(`Markdown 导入完成 ✓ 新增 ${imported} 条，归类到「${category}」`)
         await loadTagTree()
       }
     } catch (e) {
@@ -271,27 +393,49 @@ export default function KnowledgePage() {
     }
   }
 
-  // 解析 [[...]] 链接
-  const parseContent = (content: string) => {
-    const parts = content.split(/(\[\[([^\]]+)\]\])/g)
-    return parts.map((part, i) => {
-      if (i % 3 === 0) return <span key={i}>{part}</span>
-      const name = parts[i + 1]
-      if (!name) return <span key={i}>{part}</span>
-      const linked = knowledge.find(k => k.title === name)
-      if (linked) {
-        return (
-          <button
-            key={i}
-            onClick={() => setViewingId(linked.id)}
-            className="text-blue-600 underline hover:text-blue-800"
-          >
-            {name}
-          </button>
-        )
-      }
-      return <span key={i} className="text-gray-400">{part}</span>
-    })
+  // Markdown 查看：[[标题]] 转内部链接，其余走 react-markdown 完整渲染
+  const renderMarkdown = (content: string) => {
+    const md = content.replace(/\[\[([^\]]+)\]\]/g, (_m, p1) => `[${p1}](#wiki:${encodeURIComponent(String(p1).trim())})`)
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: (props: any) => {
+            const href = String(props.href ?? '')
+            if (href.startsWith('#wiki:')) {
+              const name = decodeURIComponent(href.slice(6))
+              const linked = knowledge.find(k => k.title === name)
+              if (linked) {
+                return (
+                  <button onClick={() => setViewingId(linked.id)} className="text-blue-600 underline hover:text-blue-800">
+                    {props.children}
+                  </button>
+                )
+              }
+              return <span className="text-gray-400" title={`未找到笔记「${name}」`}>{props.children}</span>
+            }
+            return <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline hover:text-blue-800">{props.children}</a>
+          },
+        }}
+      >
+        {md}
+      </ReactMarkdown>
+    )
+  }
+
+  // 搜索关键词高亮（首个匹配）
+  const highlight = (text: string) => {
+    const q = searchQuery.trim()
+    if (!q) return text
+    const idx = text.toLowerCase().indexOf(q.toLowerCase())
+    if (idx === -1) return text
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark className="bg-yellow-100 text-inherit rounded px-0.5">{text.slice(idx, idx + q.length)}</mark>
+        {text.slice(idx + q.length)}
+      </>
+    )
   }
 
   const renderContent = () => {
@@ -303,7 +447,6 @@ export default function KnowledgePage() {
           children: l2List.filter(l2 => l2.parent === l1.name),
         }))
         const uncategorized = knowledge.filter(k => !l2List.some(l2 => l2.name === k.category))
-        const countByL2 = (name: string) => knowledge.filter(k => k.category === name).length
         const visibleItems = selectedL2Filter
           ? filteredKnowledge.filter(k => k.category === selectedL2Filter)
           : filteredKnowledge
@@ -330,7 +473,7 @@ export default function KnowledgePage() {
 
             {l2sByL1.map(({ l1, children }) => {
               const expanded = expandedL1 === l1.id
-              const l1Count = knowledge.filter(k => k.category && l2List.some(l2 => l2.name === k.category && l2.parent === l1.name)).length
+              const l1Count = children.reduce((s, l2) => s + (countByCategory.get(l2.name) ?? 0), 0)
               return (
                 <div key={l1.id}>
                   <div className="flex items-center gap-1 px-1 py-1 group">
@@ -353,7 +496,7 @@ export default function KnowledgePage() {
                             }`}
                           >
                             <span className="truncate">🏷 {l2.name}</span>
-                            <span className="text-[9px] text-gray-300">{countByL2(l2.name)}</span>
+                            <span className="text-[9px] text-gray-300">{countByCategory.get(l2.name) ?? 0}</span>
                           </button>
                           <button onClick={() => exportL2(l2, 'md')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 MD">⬇</button>
                           <button onClick={() => exportL2(l2, 'json')} className="p-0.5 text-gray-200 hover:text-gray-500 opacity-0 group-hover/l2:opacity-100" title="导出 JSON">⬇</button>
@@ -441,14 +584,15 @@ export default function KnowledgePage() {
                       onChange={e => {
                         if (e.target.value === '__add_new__') {
                           const parent = l1List[0]?.name ?? '通用'
-                          const name = prompt('新标签名称（将创建在「' + parent + '」分类下）：')
-                          if (name?.trim()) {
+                          void (async () => {
+                            const name = await askText('新标签名称（将创建在「' + parent + '」分类下）：')
+                            if (!name?.trim()) return
                             const id = 'l2-' + name.trim()
                             if (!l2List.some(l => l.id === id)) {
-                              saveL2([...l2List, { id, name: name.trim(), parent }])
+                              await saveL2([...l2List, { id, name: name.trim(), parent }])
                               setNewCategory(name.trim())
                             }
-                          }
+                          })()
                         } else {
                           setNewCategory(e.target.value)
                         }
@@ -523,7 +667,7 @@ export default function KnowledgePage() {
                   }`}
                 >
                   <span className="text-base">{k.emoji || '📄'}</span>
-                  <span className="text-sm text-gray-700 truncate flex-1">{k.title}</span>
+                  <span className="text-sm text-gray-700 truncate flex-1">{highlight(k.title)}</span>
                   {(k as any).markType && (
                     <span className="text-[9px] px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded">{(k as any).markType}</span>
                   )}
@@ -587,7 +731,8 @@ export default function KnowledgePage() {
         const allItems = [...markedItems, ...tableItems]
 
         const handleEditItem = async (item: any) => {
-          const title = prompt('修改标题', item.title ?? ''); if (title === null || !title.trim()) return
+          const title = await askText('修改标题', item.title ?? '')
+          if (title === null || !title.trim()) return
           if (item._source === 'knowledge') {
             await updateObject('knowledge', item.id, { title: title.trim() })
           } else {
@@ -684,10 +829,14 @@ export default function KnowledgePage() {
           name: l1.name,
           children: l2List
             .filter(l2 => l2.parent === l1.name)
-            .map(l2 => ({
-              name: l2.name,
-              items: knowledge.filter(k => k.category === l2.name).map(k => k.title),
-            })),
+            .map(l2 => {
+              const items = knowledge.filter(k => k.category === l2.name)
+              return {
+                name: l2.name,
+                items: items.map(k => k.title),
+                summaries: items.map(k => (k.content || '').replace(/[#*`\[\]]/g, '').slice(0, 30)),
+              }
+            }),
         }))
         const totalItems = branches.reduce((s, b) => s + b.children.reduce((s2, c) => s2 + c.items.length, 0), 0)
         return (
@@ -713,6 +862,14 @@ export default function KnowledgePage() {
               <MindMap
                 root="📚 知识"
                 branches={branches}
+                onLeafClick={(title) => {
+                  const k = knowledge.find(x => x.title === title)
+                  if (k) {
+                    setActiveTab('all')
+                    setSelectedL2Filter(null)
+                    setViewingId(k.id)
+                  }
+                }}
               />
             )}
             {/* 关系图谱保留入口 */}
@@ -737,6 +894,7 @@ export default function KnowledgePage() {
                   depth={graphDepth}
                   height={450}
                   onNodeClick={(node) => {
+                    setGraphCenterId(node.id)
                     if (node.type === 'knowledge') {
                       setViewingId(node.id)
                       setActiveTab('all')
@@ -753,6 +911,31 @@ export default function KnowledgePage() {
 
   return (
     <div className="space-y-6">
+      {/* 页内输入弹窗（替代原生 prompt） */}
+      {askState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => closeAsk(null)}>
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-sm p-5 space-y-3" onClick={e => e.stopPropagation()}>
+            <h4 className="text-sm font-semibold text-gray-700">{askState.title}</h4>
+            <input
+              autoFocus
+              type="text"
+              value={askState.value}
+              placeholder={askState.placeholder}
+              onChange={e => setAskState({ ...askState, value: e.target.value })}
+              onKeyDown={e => {
+                if (e.key === 'Enter') closeAsk(askState.value)
+                if (e.key === 'Escape') closeAsk(null)
+              }}
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-100"
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => closeAsk(null)} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">取消</button>
+              <button onClick={() => closeAsk(askState.value)} className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">确定</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">🧠 知识与思考</h1>
@@ -803,13 +986,57 @@ export default function KnowledgePage() {
                     onChange={e => setEditTitle(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
                   />
-                  <input
-                    type="text"
-                    value={editTags}
-                    onChange={e => setEditTags(e.target.value)}
-                    placeholder="标签（逗号分隔）"
-                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
-                  />
+                  <div className="flex gap-2 flex-wrap">
+                    <select
+                      value={editCategory}
+                      onChange={e => {
+                        if (e.target.value === '__add_new__') {
+                          const parent = l1List[0]?.name ?? '通用'
+                          void (async () => {
+                            const name = await askText('新标签名称（将创建在「' + parent + '」分类下）：')
+                            if (!name?.trim()) return
+                            const id = 'l2-' + name.trim()
+                            if (!l2List.some(l => l.id === id)) {
+                              await saveL2([...l2List, { id, name: name.trim(), parent }])
+                              setEditCategory(name.trim())
+                            }
+                          })()
+                        } else {
+                          setEditCategory(e.target.value)
+                        }
+                      }}
+                      className="px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
+                    >
+                      {l1List.map(l1 => {
+                        const children = l2List.filter(l2 => l2.parent === l1.name)
+                        if (children.length === 0) return null
+                        return (
+                          <optgroup key={l1.id} label={l1.name}>
+                            {children.map(l2 => (
+                              <option key={l2.id} value={l2.name}>{l2.name}</option>
+                            ))}
+                          </optgroup>
+                        )
+                      })}
+                      <option value="__add_new__">＋ 新建标签…</option>
+                    </select>
+                    <select
+                      value={editFormat}
+                      onChange={e => setEditFormat(e.target.value as Knowledge['format'])}
+                      className="px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
+                    >
+                      <option value="markdown">Markdown</option>
+                      <option value="json">JSON</option>
+                      <option value="plain">纯文本</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={editTags}
+                      onChange={e => setEditTags(e.target.value)}
+                      placeholder="标签（逗号分隔）"
+                      className="flex-1 min-w-[120px] px-3 py-2 rounded-xl border border-gray-200 text-sm outline-none"
+                    />
+                  </div>
                   <MarkdownEditor
                     value={editContent}
                     onChange={setEditContent}
@@ -890,7 +1117,7 @@ export default function KnowledgePage() {
                       const mt = (viewingItem as any).markType
                       if (mt === 'inspiration') return (
                         <button onClick={async () => {
-                          const title = prompt('问题标题：', viewingItem.title + ' → 怎么解决？')
+                          const title = await askText('问题标题：', viewingItem.title + ' → 怎么解决？')
                           if (!title?.trim()) return
                           const r = await addObject('question', { title: title.trim(), status: 'open' })
                           if (typeof r === 'string') {
@@ -905,7 +1132,7 @@ export default function KnowledgePage() {
                       )
                       if (mt === 'question') return (
                         <button onClick={async () => {
-                          const title = prompt('研究标题：', '研究：' + viewingItem.title)
+                          const title = await askText('研究标题：', '研究：' + viewingItem.title)
                           if (!title?.trim()) return
                           const r = await addObject('research', { title: title.trim(), status: 'planned', findings: viewingItem.content?.slice(0, 100) ?? '' })
                           if (typeof r === 'string') {
@@ -950,8 +1177,12 @@ export default function KnowledgePage() {
                       <pre className="bg-gray-900 text-green-100 rounded-xl p-4 text-[11px] overflow-x-auto whitespace-pre-wrap">
                         {(() => { try { return JSON.stringify(JSON.parse(viewingItem.content), null, 2) } catch { return viewingItem.content } })()}
                       </pre>
-                    ) : viewingItem.content ? parseContent(viewingItem.content) : (
+                    ) : !viewingItem.content ? (
                       <p className="text-gray-300 italic">暂无内容</p>
+                    ) : viewingItem.format === 'plain' ? (
+                      <p className="whitespace-pre-wrap">{viewingItem.content}</p>
+                    ) : (
+                      renderMarkdown(viewingItem.content)
                     )}
                   </div>
 
@@ -961,6 +1192,8 @@ export default function KnowledgePage() {
                         setEditingId(viewingItem.id)
                         setEditTitle(viewingItem.title)
                         setEditContent(viewingItem.content)
+                        setEditCategory(viewingItem.category)
+                        setEditFormat(viewingItem.format)
                         setEditTags(viewingItem.tags.join(', '))
                       }}
                       className="flex items-center gap-1 px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200"

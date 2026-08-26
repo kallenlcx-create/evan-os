@@ -202,24 +202,33 @@ export default function HomePage() {
 
   // 久坐提醒（50 分钟一次，仅工作时间）
   const [sedentaryMin, setSedentaryMin] = useState(0)
+  const [sedentaryNotified, setSedentaryNotified] = useState(false)
   useEffect(() => {
+    // 首次加载时请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
     const tick = () => {
       const last = Number(localStorage.getItem('evan-os-sedentary-last') || Date.now())
-      setSedentaryMin(Math.floor((Date.now() - last) / 60000))
-      if (isWorkNow() && Date.now() - last >= 50 * 60000) {
+      const min = Math.floor((Date.now() - last) / 60000)
+      setSedentaryMin(min)
+      if (isWorkNow() && min >= 50 && !sedentaryNotified) {
+        setSedentaryNotified(true)
         localStorage.setItem('evan-os-sedentary-last', String(Date.now()))
         if ('Notification' in window && Notification.permission === 'granted') {
           try { new Notification('Evan OS', { body: '久坐 50 分钟啦，起来接杯水活动一下 💧' }) } catch { /* ignore */ }
         }
       }
+      if (min < 50) setSedentaryNotified(false)
     }
     tick()
     const t = setInterval(tick, 30_000)
     return () => clearInterval(t)
-  }, [])
+  }, [sedentaryNotified])
   const resetSedentary = () => {
     localStorage.setItem('evan-os-sedentary-last', String(Date.now()))
     setSedentaryMin(0)
+    setSedentaryNotified(false)
   }
 
   // 天气
@@ -381,8 +390,12 @@ export default function HomePage() {
             )}
           </div>
           <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-xs">
-            <span className="text-gray-500">🪑 久坐 {sedentaryMin} 分钟</span>
-            <button onClick={resetSedentary} className="px-2 py-1 bg-gray-100 rounded-lg text-[10px] text-gray-500 hover:bg-gray-200">
+            <span className={sedentaryMin >= 50 ? 'text-red-500 font-bold animate-pulse' : sedentaryMin >= 40 ? 'text-amber-500 font-medium' : 'text-gray-500'}>
+              🪑 久坐 {sedentaryMin} 分钟
+              {sedentaryMin >= 50 && ' ⚠️'}
+              {sedentaryMin >= 40 && sedentaryMin < 50 && ` · 还剩 ${50 - sedentaryMin} 分钟`}
+            </span>
+            <button onClick={resetSedentary} className={`px-2 py-1 rounded-lg text-[10px] ${sedentaryMin >= 40 ? 'bg-amber-100 text-amber-600 hover:bg-amber-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
               刚活动过
             </button>
           </div>
