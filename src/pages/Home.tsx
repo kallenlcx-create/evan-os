@@ -8,6 +8,111 @@ import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
 import { pickDaily, RECIPES, fetchRecipeTutorial, pickDailyHotspots } from '../config/dailyContent'
+
+// ====== 每日学习卡片数据 ======
+const DAILY_WORDS = [
+  { word: 'serendipity', phonetic: '/ˌserənˈdɪpəti/', meaning: '意外发现的美好', example: 'Finding that book was pure serendipity.' },
+  { word: 'ephemeral', phonetic: '/ɪˈfemərəl/', meaning: '短暂的，转瞬即逝的', example: 'The beauty of cherry blossoms is ephemeral.' },
+  { word: 'resilience', phonetic: '/rɪˈzɪliəns/', meaning: '韧性，恢复力', example: 'Her resilience inspired everyone around her.' },
+  { word: 'ubiquitous', phonetic: '/juːˈbɪkwɪtəs/', meaning: '无处不在的', example: 'Smartphones have become ubiquitous.' },
+  { word: 'eloquent', phonetic: '/ˈeləkwənt/', meaning: '雄辩的，有说服力的', example: 'She gave an eloquent speech about climate change.' },
+  { word: 'nostalgia', phonetic: '/nɒˈstældʒə/', meaning: '怀旧，乡愁', example: 'The smell of cookies filled her with nostalgia.' },
+  { word: 'paradigm', phonetic: '/ˈpærədaɪm/', meaning: '范式，典范', example: 'AI is creating a new paradigm in education.' },
+  { word: 'lucid', phonetic: '/ˈluːsɪd/', meaning: '清晰的，清醒的', example: 'He gave a lucid explanation of the theory.' },
+]
+
+const DAILY_SENTENCES = [
+  { en: 'The early bird catches the worm.', zh: '早起的鸟儿有虫吃。', tag: '谚语' },
+  { en: 'Actions speak louder than words.', zh: '行动胜于言语。', tag: '谚语' },
+  { en: 'Could you clarify what you mean by that?', zh: '你能澄清一下你的意思吗？', tag: '商务' },
+  { en: 'I would like to schedule a meeting for next week.', zh: '我想安排下周开个会。', tag: '商务' },
+  { en: 'Let me think about it and get back to you.', zh: '让我考虑一下再回复你。', tag: '日常' },
+  { en: 'What are your thoughts on this proposal?', zh: '你对这个提案有什么想法？', tag: '商务' },
+]
+
+const DAILY_GRAMMAR = [
+  { title: '虚拟语气 (If I were...)', rule: 'If I were you, I would accept the offer.', note: '与现在事实相反，be 动词用 were' },
+  { title: '现在完成进行时', rule: 'I have been working on this project for two months.', note: '强调从过去持续到现在的动作' },
+  { title: '被动语态', rule: 'The report was completed by the team.', note: 'be + 过去分词' },
+  { title: '定语从句', rule: 'The book that I borrowed was very interesting.', note: 'that/which 引导修饰名词' },
+]
+
+function DailyLearningCard() {
+  const [flipped, setFlipped] = useState(false)
+  const [cardType, setCardType] = useState<'word' | 'sentence' | 'grammar'>('word')
+  const dayIdx = Math.floor(Date.now() / 86400000)
+
+  const word = DAILY_WORDS[dayIdx % DAILY_WORDS.length]
+  const sentence = DAILY_SENTENCES[dayIdx % DAILY_SENTENCES.length]
+  const grammar = DAILY_GRAMMAR[dayIdx % DAILY_GRAMMAR.length]
+
+  return (
+    <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+          <span>📚</span> 每日学习
+        </h2>
+        <div className="flex gap-1">
+          {(['word', 'sentence', 'grammar'] as const).map(t => (
+            <button key={t} onClick={() => { setCardType(t); setFlipped(false) }}
+              className={`px-2 py-0.5 rounded text-[10px] ${cardType === t ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
+              {t === 'word' ? '单词' : t === 'sentence' ? '句型' : '语法'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="min-h-[120px] cursor-pointer" onClick={() => setFlipped(v => !v)}>
+        {cardType === 'word' && (
+          <div className={`transition-all duration-300 ${flipped ? 'rotate-y-180' : ''}`}>
+            {!flipped ? (
+              <div className="text-center py-4">
+                <div className="text-2xl font-bold text-gray-800 mb-1">{word.word}</div>
+                <div className="text-xs text-gray-400">{word.phonetic}</div>
+              </div>
+            ) : (
+              <div className="text-center py-4">
+                <div className="text-lg font-bold text-blue-600 mb-1">{word.meaning}</div>
+                <div className="text-xs text-gray-500 italic mt-2">"{word.example}"</div>
+              </div>
+            )}
+          </div>
+        )}
+        {cardType === 'sentence' && (
+          <div className={`transition-all duration-300 ${flipped ? 'rotate-y-180' : ''}`}>
+            {!flipped ? (
+              <div className="py-3">
+                <span className="px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded text-[9px] mb-2 inline-block">{sentence.tag}</span>
+                <div className="text-sm font-medium text-gray-800 mt-1">{sentence.en}</div>
+              </div>
+            ) : (
+              <div className="py-3">
+                <div className="text-sm font-bold text-blue-600">{sentence.zh}</div>
+                <div className="text-xs text-gray-400 mt-2">{sentence.en}</div>
+              </div>
+            )}
+          </div>
+        )}
+        {cardType === 'grammar' && (
+          <div className={`transition-all duration-300 ${flipped ? 'rotate-y-180' : ''}`}>
+            {!flipped ? (
+              <div className="py-3">
+                <div className="text-xs font-semibold text-purple-600 mb-1">{grammar.title}</div>
+                <div className="text-sm text-gray-800">{grammar.rule}</div>
+              </div>
+            ) : (
+              <div className="py-3">
+                <div className="text-xs font-semibold text-gray-500 mb-1">要点</div>
+                <div className="text-sm text-blue-600">{grammar.note}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <p className="text-[9px] text-gray-300 text-center">点击卡片翻转查看答案</p>
+    </div>
+  )
+}
 import type { Task } from '../types'
 
 // ====== 状态聚合条（登录 / 审批 / 收集 / 同步 / 备份）======
@@ -58,9 +163,16 @@ function StatusStrip() {
   )
 }
 
-// ====== 时钟 + 美国时区 + 下班倒计时 ======
+// ====== 时钟 + 美国时区 + 天气 + 下班倒计时 ======
 
-function ClockWork() {
+interface ClockWorkProps {
+  weather: { temp: number; desc: string; emoji: string; city: string } | null
+  weatherError: string
+  loadWeather: () => void
+  changeCity: () => void
+}
+
+function ClockWork({ weather, weatherError, loadWeather, changeCity }: ClockWorkProps) {
   const [now, setNow] = useState(new Date())
   const [hours, setHours] = useState(readWorkHours)
   const notifiedRef = useRef('')
@@ -78,12 +190,12 @@ function ClockWork() {
   }, [])
 
   const localTime = now.toLocaleTimeString('zh-CN', { hour12: false })
-  const fmtTz = (tz: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
+  const fmtTz = (tz: string) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
   const zones = [
-    { flag: '🇺🇸', label: '美东', tz: 'America/New_York' },
-    { flag: '🇺🇸', label: '中部', tz: 'America/Chicago' },
-    { flag: '🇺🇸', label: '山区', tz: 'America/Denver' },
-    { flag: '🇺🇸', label: '太平洋', tz: 'America/Los_Angeles' },
+    { label: 'EST', tz: 'America/New_York' },
+    { label: 'CST', tz: 'America/Chicago' },
+    { label: 'MST', tz: 'America/Denver' },
+    { label: 'PST', tz: 'America/Los_Angeles' },
   ]
 
   const todayAt = (s: string) => { const [h, m] = s.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d }
@@ -134,7 +246,8 @@ function ClockWork() {
     <div className={`rounded-2xl px-5 py-4 shadow-sm border relative overflow-hidden h-full flex flex-col justify-center ${cardBg}`}>
       <div className="absolute top-0 right-0 w-16 h-16 bg-white/30 rounded-bl-full pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-10 h-10 bg-white/20 rounded-tr-full pointer-events-none" />
-      <div className="flex items-center justify-between gap-3 relative">
+      <div className="flex items-center justify-between gap-4 relative">
+        {/* 左：时间 + 倒计时 */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm text-indigo-400 font-medium">🕐 {localTime}</span>
@@ -160,12 +273,29 @@ function ClockWork() {
             {scheduleNote && <span className="ml-1 text-purple-400">· {scheduleNote}</span>}
           </div>
         </div>
+
+        {/* 中：天气 */}
+        <div className="flex-shrink-0 text-center px-3">
+          {weather ? (
+            <div className="cursor-pointer" onClick={changeCity} title="点击更换城市">
+              <span className="text-2xl">{weather.emoji}</span>
+              <div className="text-sm font-bold text-gray-700">{weather.temp}°C</div>
+              <div className="text-[10px] text-gray-400">{weather.desc}</div>
+            </div>
+          ) : weatherError ? (
+            <div className="text-[10px] text-gray-300 cursor-pointer" onClick={loadWeather}>{weatherError}</div>
+          ) : (
+            <div className="text-[10px] text-gray-300 cursor-pointer" onClick={loadWeather}>加载天气…</div>
+          )}
+        </div>
+
+        {/* 右：美国时区 */}
         <div className="text-right shrink-0">
-          <div className="text-[11px] text-indigo-300 font-medium mb-1">🇺🇸</div>
+          <div className="text-[11px] text-indigo-300 font-medium mb-1">US</div>
           <div className="space-y-0.5">
             {zones.map(z => (
               <div key={z.tz} className="flex items-center justify-end gap-1.5 text-xs">
-                <span className="text-gray-400 w-8">{z.label}</span>
+                <span className="text-gray-400 w-7">{z.label}</span>
                 <span className="font-mono text-gray-600 tabular-nums bg-white/50 px-1.5 py-0.5 rounded">{fmtTz(z.tz)}</span>
               </div>
             ))}
@@ -352,10 +482,10 @@ export default function HomePage() {
         </button>
       </div>
 
-      {/* 顶部：时钟卡 + 补水卡 并排 */}
+      {/* 顶部：时钟卡(含天气) + 补水卡 并排 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
         <div className="lg:col-span-2">
-          <ClockWork />
+          <ClockWork weather={weather} weatherError={weatherError} loadWeather={() => loadWeather()} changeCity={changeCity} />
         </div>
         {/* 补水 & 久坐卡片 */}
         <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
@@ -512,33 +642,10 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* 右列：天气 + 食谱 + AI 热点 */}
+        {/* 右列：每日学习 + 食谱 + AI 热点 */}
         <div className="space-y-6">
-          {/* 天气 */}
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                <span>🌤️</span> 天气
-              </h2>
-              <button onClick={() => loadWeather()} className="text-[10px] text-gray-300 hover:text-gray-500">刷新</button>
-            </div>
-            {weather ? (
-              <div className="flex items-center gap-3">
-                <span className="text-4xl">{weather.emoji}</span>
-                <div>
-                  <div className="text-2xl font-bold text-gray-800">{weather.temp}°C</div>
-                  <div className="text-xs text-gray-400">{weather.desc} · {weather.city}</div>
-                </div>
-              </div>
-            ) : weatherError ? (
-              <p className="text-xs text-gray-400">{weatherError}</p>
-            ) : (
-              <p className="text-xs text-gray-400">获取中…</p>
-            )}
-            <button onClick={changeCity} className="mt-3 text-[10px] text-gray-300 hover:text-gray-500">
-              📍 {weather?.city === '当前位置' ? '设置城市名' : '更换城市'}
-            </button>
-          </div>
+          {/* 每日学习 */}
+          <DailyLearningCard />
 
           {/* 今日食谱（2道菜） */}
           <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
