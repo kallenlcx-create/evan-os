@@ -129,40 +129,40 @@ function ClockWork() {
     : 'bg-gradient-to-br from-orange-50 to-amber-50 border-amber-100'
 
   return (
-    <div className={`rounded-2xl px-4 py-3 shadow-sm border relative overflow-hidden ${cardBg}`}>
+    <div className={`rounded-2xl px-5 py-4 shadow-sm border relative overflow-hidden h-full flex flex-col justify-center ${cardBg}`}>
       <div className="absolute top-0 right-0 w-16 h-16 bg-white/30 rounded-bl-full pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-10 h-10 bg-white/20 rounded-tr-full pointer-events-none" />
       <div className="flex items-center justify-between gap-3 relative">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-xs text-indigo-400 font-medium">🕐 {localTime}</span>
-            <span className="text-[10px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}</span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-sm text-indigo-400 font-medium">🕐 {localTime}</span>
+            <span className="text-xs text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}</span>
           </div>
           {isResting ? (
-            <div className="text-base font-bold text-emerald-500">{label}</div>
+            <div className="text-lg font-bold text-emerald-500">{label}</div>
           ) : (
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-gray-400">{label}</span>
-                <span className="text-base font-bold text-amber-600 tabular-nums">{cd}</span>
+                <span className="text-xs text-gray-400">{label}</span>
+                <span className="text-lg font-bold text-amber-600 tabular-nums">{cd}</span>
               </div>
               {cdPct > 0 && (
-                <div className="mt-1 w-full h-1.5 bg-white/50 rounded-full overflow-hidden">
+                <div className="mt-1.5 w-full h-2 bg-white/50 rounded-full overflow-hidden">
                   <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: cdPct + '%' }} />
                 </div>
               )}
             </div>
           )}
-          <div className="text-[10px] text-gray-300 mt-0.5">
+          <div className="text-[11px] text-gray-300 mt-1">
             {hours.startAM}–{hours.endAM} · {hours.startPM}–{hours.endPM}
             {scheduleNote && <span className="ml-1 text-purple-400">· {scheduleNote}</span>}
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-[10px] text-indigo-300 font-medium mb-0.5">🇺🇸</div>
+          <div className="text-[11px] text-indigo-300 font-medium mb-1">🇺🇸</div>
           <div className="space-y-0.5">
             {zones.map(z => (
-              <div key={z.tz} className="flex items-center justify-end gap-1.5 text-[11px]">
+              <div key={z.tz} className="flex items-center justify-end gap-1.5 text-xs">
                 <span className="text-gray-400 w-8">{z.label}</span>
                 <span className="font-mono text-gray-600 tabular-nums bg-white/50 px-1.5 py-0.5 rounded">{fmtTz(z.tz)}</span>
               </div>
@@ -336,7 +336,7 @@ export default function HomePage() {
       </div>
 
       {/* 顶部：时钟卡 + 补水卡 并排 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
         <div className="lg:col-span-2">
           <ClockWork />
         </div>
