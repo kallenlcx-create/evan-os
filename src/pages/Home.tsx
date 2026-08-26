@@ -129,51 +129,46 @@ function ClockWork() {
     : 'bg-gradient-to-br from-orange-50 to-amber-50 border-amber-100'
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      {/* 合并卡：本地时间 + 美国四时区（渐变背景 + 装饰） */}
-      <div className="md:col-span-2 rounded-2xl p-5 shadow-sm border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-purple-50 relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-28 h-28 bg-gradient-to-bl from-indigo-100/60 to-transparent rounded-bl-full pointer-events-none" />
-        <div className="absolute bottom-0 left-0 w-20 h-20 bg-gradient-to-tr from-purple-50/50 to-transparent rounded-tr-full pointer-events-none" />
-        <div className="flex items-start justify-between relative">
-          <div>
-            <div className="text-[10px] text-indigo-400 mb-1 font-medium">🕐 本地时间</div>
-            <div className="text-3xl font-bold text-gray-800 tabular-nums tracking-tight">{localTime}</div>
-            <div className="text-[10px] text-gray-300 mt-0.5">{now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</div>
+    <div className={`rounded-2xl p-4 shadow-sm border relative overflow-hidden ${cardBg}`}>
+      <div className="absolute top-0 right-0 w-20 h-20 bg-white/30 rounded-bl-full pointer-events-none" />
+      <div className="absolute bottom-0 left-0 w-14 h-14 bg-white/20 rounded-tr-full pointer-events-none" />
+      <div className="flex items-start justify-between gap-3 relative">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-[10px] text-indigo-400 font-medium">🕐 {localTime}</span>
+            <span className="text-[9px] text-gray-300">{now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}</span>
           </div>
-          <div className="text-right">
-            <div className="text-[10px] text-indigo-300 mb-1.5 font-medium">🇺🇸 美国时间</div>
-            <div className="space-y-1">
-              {zones.map(z => (
-                <div key={z.tz} className="flex items-center justify-end gap-2 text-[11px]">
-                  <span className="text-gray-400 w-10">{z.label}</span>
-                  <span className="font-mono text-gray-600 tabular-nums bg-white/60 px-1.5 py-0.5 rounded">{fmtTz(z.tz)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 工作状态卡（渐变背景 + 进度条 + 装饰） */}
-      <div className={'rounded-2xl p-4 shadow-sm border relative overflow-hidden ' + cardBg}>
-        <div className="absolute top-0 right-0 w-16 h-16 bg-white/40 rounded-bl-full pointer-events-none" />
-        <div className="text-[10px] text-gray-400 mb-1">
-          💼 工作状态 {scheduleNote && <span className="text-purple-400">· {scheduleNote}</span>}
-        </div>
-        {isResting ? (
-          <div className="text-lg font-bold text-emerald-500">{label}</div>
-        ) : (
-          <>
-            <div className="text-[10px] text-gray-400">{label}</div>
-            <div className="text-xl font-bold text-gray-800 tabular-nums">{cd}</div>
-            {cdPct > 0 && (
-              <div className="mt-1.5 w-full h-1 bg-white/60 rounded-full overflow-hidden">
-                <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: cdPct + '%' }} />
+          {isResting ? (
+            <div className="text-sm font-bold text-emerald-500">{label}</div>
+          ) : (
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-gray-400">{label}</span>
+                <span className="text-sm font-bold text-amber-600 tabular-nums">{cd}</span>
               </div>
-            )}
-          </>
-        )}
-        <div className="text-[9px] text-gray-300 mt-1">{hours.startAM}-{hours.endAM} · {hours.startPM}-{hours.endPM}</div>
+              {cdPct > 0 && (
+                <div className="mt-1 w-full h-1.5 bg-white/50 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: cdPct + '%' }} />
+                </div>
+              )}
+            </div>
+          )}
+          <div className="text-[9px] text-gray-300 mt-1">
+            {hours.startAM}–{hours.endAM} · {hours.startPM}–{hours.endPM}
+            {scheduleNote && <span className="ml-1 text-purple-400">· {scheduleNote}</span>}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[9px] text-indigo-300 font-medium mb-0.5">🇺🇸</div>
+          <div className="space-y-0">
+            {zones.map(z => (
+              <div key={z.tz} className="flex items-center justify-end gap-1 text-[10px]">
+                <span className="text-gray-400 w-7">{z.label}</span>
+                <span className="font-mono text-gray-600 tabular-nums bg-white/50 px-1 rounded">{fmtTz(z.tz)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -188,11 +183,9 @@ export default function HomePage() {
   const [inboxPending, setInboxPending] = useState(0)
   const [itemDate, setItemDate] = useState(todayStr)
   const todayItems = tasks.filter(t => {
-    if (t.status === 'cancelled') return false
+    if (t.status === 'cancelled' || t.status === 'done') return false
     if (t.isRecurring) return true
-    // 无日期任务（行动页添加）始终显示
     if (!t.dueDate) return true
-    // 有日期任务：今天或之前的都显示
     return t.dueDate <= todayStr
   })
 
@@ -353,7 +346,7 @@ export default function HomePage() {
                 <span>📋</span> 今日事项
               </h2>
               <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
-                {todayItems.filter(t => t.status === 'done').length}/{todayItems.length} 完成
+                {todayItems.length} 项
               </span>
             </div>
 
@@ -598,7 +591,7 @@ export default function HomePage() {
                 if (learningPaths.length === 0) {
                   tips.push({ emoji: '📚', title: '设置学习目标', desc: '在成长模块创建你的第一个学习路径', path: '/growth' })
                 }
-                const openTasks = todayItems.filter(t => t.status !== 'done').length
+                const openTasks = todayItems.length
                 if (openTasks > 0) {
                   tips.push({ emoji: '⏰', title: `还有 ${openTasks} 个今日任务`, desc: '完成它们，然后好好休息', path: '/actions' })
                 }
