@@ -129,7 +129,7 @@ function ClockWork() {
     : 'bg-gradient-to-br from-orange-50 to-amber-50 border-amber-100'
 
   return (
-    <div className={`rounded-2xl px-4 py-2.5 shadow-sm border relative overflow-hidden ${cardBg}`}>
+    <div className={`rounded-2xl px-4 py-3 shadow-sm border relative overflow-hidden ${cardBg}`}>
       <div className="absolute top-0 right-0 w-16 h-16 bg-white/30 rounded-bl-full pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-10 h-10 bg-white/20 rounded-tr-full pointer-events-none" />
       <div className="flex items-center justify-between gap-3 relative">
@@ -318,37 +318,13 @@ export default function HomePage() {
   return (
     <div className="space-y-6">
       <StatusStrip />
-      <ClockWork />
       {/* 页面标题 */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">🏠 首页</h1>
           <p className="text-sm text-gray-400 mt-0.5">
             {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
           </p>
-        </div>
-        {/* 补水 & 久坐 */}
-        <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-2 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-1.5">
-            {(water as any).am.map((v: boolean, i: number) => (
-              <button key={`am${i}`} onClick={() => toggleCup('am', i)}
-                title={`上午第 ${i + 1} 杯`}
-                className={`w-7 h-7 rounded-full text-xs transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
-                💧
-              </button>
-            ))}
-            {(water as any).pm.map((v: boolean, i: number) => (
-              <button key={`pm${i}`} onClick={() => toggleCup('pm', i)}
-                title={`下午第 ${i + 1} 杯`}
-                className={`w-7 h-7 rounded-full text-xs transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
-                💧
-              </button>
-            ))}
-          </div>
-          <div className="text-[10px] text-gray-400 border-l border-gray-100 pl-3">
-            <span className="text-sky-500 font-medium">{(water as any).am.filter(Boolean).length + (water as any).pm.filter(Boolean).length}</span>/4 杯
-            {isWorkNow() && <span className="ml-2 text-gray-300">🪑 {sedentaryMin}分</span>}
-          </div>
         </div>
         <button
           onClick={() => navigate('/journal')}
@@ -359,6 +335,61 @@ export default function HomePage() {
         </button>
       </div>
 
+      {/* 顶部：时钟卡 + 补水卡 并排 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <ClockWork />
+        </div>
+        {/* 补水 & 久坐卡片 */}
+        <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-3">
+              <span>💧</span> 补水 & 久坐
+            </h2>
+            {isWorkNow() ? (
+              <>
+                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1.5 px-0.5">
+                  <span>上午 ×2</span>
+                  <span>下午 ×2</span>
+                </div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex gap-1.5">
+                    {(water as any).am.map((v: boolean, i: number) => (
+                      <button key={`am${i}`} onClick={() => toggleCup('am', i)}
+                        title={`上午第 ${i + 1} 杯`}
+                        className={`w-9 h-9 rounded-full text-sm transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                        💧
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-1.5">
+                    {(water as any).pm.map((v: boolean, i: number) => (
+                      <button key={`pm${i}`} onClick={() => toggleCup('pm', i)}
+                        title={`下午第 ${i + 1} 杯`}
+                        className={`w-9 h-9 rounded-full text-sm transition-colors ${v ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-300 border border-sky-200 hover:border-sky-400'}`}>
+                        💧
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-300 text-right">
+                  今日 {(water as any).am.filter(Boolean).length + (water as any).pm.filter(Boolean).length} / 4 杯
+                </div>
+              </>
+            ) : (
+              <p className="text-[11px] text-gray-400">当前非工作时间，提醒已暂停</p>
+            )}
+          </div>
+          <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-xs">
+            <span className="text-gray-500">🪑 久坐 {sedentaryMin} 分钟</span>
+            <button onClick={resetSedentary} className="px-2 py-1 bg-gray-100 rounded-lg text-[10px] text-gray-500 hover:bg-gray-200">
+              刚活动过
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 下方：今日事项 + 天气/食谱 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 左列：今日重点 + 待办 */}
         <div className="lg:col-span-2 space-y-6">
