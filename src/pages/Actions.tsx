@@ -118,14 +118,25 @@ export default function ActionsPage() {
                     </div>
                     <div className="space-y-0.5">
                       {dayItems.map(it => (
-                        <button
-                          key={it.id}
-                          onClick={() => toggleTaskStatus(it.id)}
-                          title={`${it.title}（点击切换完成）`}
-                          className={`block w-full text-left text-[9px] px-1 py-0.5 rounded truncate ${it.status === 'done' ? 'bg-green-100 text-green-600 line-through' : 'bg-blue-100 text-blue-700'}`}
-                        >
-                          {it.title}
-                        </button>
+                        <div key={it.id} className="group flex items-center gap-0.5">
+                          <button
+                            onClick={() => toggleTaskStatus(it.id)}
+                            title={`${it.title}（点击切换完成）`}
+                            className={`flex-1 text-left text-[9px] px-1 py-0.5 rounded truncate ${it.status === 'done' ? 'bg-green-100 text-green-600 line-through' : 'bg-blue-100 text-blue-700'}`}
+                          >
+                            {it.title}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); void (async () => { const title = await askText('修改任务', it.title ?? ''); if (title?.trim()) updateObject('task', it.id, { title: title.trim() }) })() }}
+                            className="w-3.5 h-3.5 flex items-center justify-center text-[8px] text-gray-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="编辑"
+                          >✎</button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); if (confirm(`删除「${it.title}」？`)) deleteObject('task', it.id) }}
+                            className="w-3.5 h-3.5 flex items-center justify-center text-[8px] text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="删除"
+                          >✕</button>
+                        </div>
                       ))}
                     </div>
                     <button
