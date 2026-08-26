@@ -362,7 +362,17 @@ export const useStore = create<EvanStore>()((set, get) => ({
           // 加载壁纸（设备本地偏好）
           try {
             const wp = (await db.appState.get('wallpaper')) as any
-            if (wp && wp.type) state.wallpaper = { type: wp.type, presetId: wp.presetId, imageDataUrl: wp.imageDataUrl, dim: Number(wp.dim ?? 0) }
+            if (wp && wp.type) state.wallpaper = {
+              type: wp.type,
+              presetId: wp.presetId,
+              imageDataUrl: wp.imageDataUrl,
+              dim: Number(wp.dim ?? 0),
+              sidebarType: wp.sidebarType,
+              sidebarPresetId: wp.sidebarPresetId,
+              sidebarImageDataUrl: wp.sidebarImageDataUrl,
+              sidebarDim: Number(wp.sidebarDim ?? 0.15),
+              contentCardOpacity: Number(wp.contentCardOpacity ?? 1),
+            }
           } catch (err) {
             console.warn('[EvanOS] 读取壁纸失败:', err)
           }

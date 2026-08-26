@@ -11,8 +11,16 @@ export interface WallpaperConfig {
   type: 'none' | 'preset' | 'image'
   presetId?: string
   imageDataUrl?: string
-  /** 黑色遮罩透明度 0-0.6，保证白色卡片内容可读 */
+  /** 内容区黑色遮罩透明度 0-0.6 */
   dim: number
+  /** 侧边栏壁纸（独立于内容区） */
+  sidebarType?: 'none' | 'preset' | 'image'
+  sidebarPresetId?: string
+  sidebarImageDataUrl?: string
+  /** 侧边栏背景透明度 0-1，越大越透明（展示壁纸） */
+  sidebarDim?: number
+  /** 内容区卡片透明度 0-1，越大越透明（展示壁纸） */
+  contentCardOpacity?: number
 }
 
 export const WALLPAPER_PRESETS: WallpaperPreset[] = [
@@ -27,7 +35,7 @@ export const WALLPAPER_PRESETS: WallpaperPreset[] = [
   { id: 'slate', name: '石墨', css: 'linear-gradient(135deg,#485563 0%,#29323c 100%)' },
 ]
 
-export const DEFAULT_WALLPAPER: WallpaperConfig = { type: 'none', dim: 0 }
+export const DEFAULT_WALLPAPER: WallpaperConfig = { type: 'none', dim: 0, sidebarDim: 0.15, contentCardOpacity: 1 }
 
 export function getPresetCss(presetId?: string): string | undefined {
   return WALLPAPER_PRESETS.find(p => p.id === presetId)?.css

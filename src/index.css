@@ -52,6 +52,18 @@
 :root {
   --sidebar-width: 220px;
   --header-height: 48px;
+  --card-bg-opacity: 1;
+}
+
+/* 内容区卡片透明度（壁纸透出） */
+.card-opacity-active .bg-white {
+  background-color: rgba(255, 255, 255, var(--card-bg-opacity));
+}
+.card-opacity-active .bg-white\/90 {
+  background-color: rgba(255, 255, 255, calc(var(--card-bg-opacity) * 0.9));
+}
+.card-opacity-active .bg-white\/80 {
+  background-color: rgba(255, 255, 255, calc(var(--card-bg-opacity) * 0.8));
 }
 
 * {

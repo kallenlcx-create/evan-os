@@ -6,7 +6,7 @@ import {
   Plug, TrendingUp, FlaskConical, Database, CloudUpload,
   ChevronDown, Layers
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
 import { getSyncConfig } from '../services/cloudSync'
@@ -64,12 +64,26 @@ export default function Sidebar() {
   const mobileOpen = app.mobileNavOpen
   const closeMobile = () => setMobileNav(false)
 
-  // 壁纸激活时侧边栏毛玻璃化，让背景透出
+  // 壁纸：侧边栏独立壁纸 + 透明度
   const wp = useStore(s => s.wallpaper)
-  const hasWallpaper =
-    (wp.type === 'image' && !!wp.imageDataUrl) ||
-    (wp.type === 'preset' && !!getPresetCss(wp.presetId))
-  const sidebarBg = hasWallpaper ? 'bg-white/85 backdrop-blur-md' : 'bg-white'
+  const hasSidebarWp =
+    (wp.sidebarType === 'image' && !!wp.sidebarImageDataUrl) ||
+    (wp.sidebarType === 'preset' && !!getPresetCss(wp.sidebarPresetId))
+  const sidebarDim = wp.sidebarDim ?? 0.15
+  // 侧边栏背景：有壁纸时用壁纸 + 透明度，无壁纸时白底
+  const sidebarStyle: React.CSSProperties = {}
+  if (hasSidebarWp) {
+    if (wp.sidebarType === 'image' && wp.sidebarImageDataUrl) {
+      sidebarStyle.backgroundImage = `url(${wp.sidebarImageDataUrl})`
+    } else if (wp.sidebarType === 'preset') {
+      sidebarStyle.backgroundImage = getPresetCss(wp.sidebarPresetId)
+    }
+    sidebarStyle.backgroundSize = 'cover'
+    sidebarStyle.backgroundPosition = 'center'
+  }
+  const sidebarBgClass = hasSidebarWp
+    ? `bg-white/${Math.round((1 - sidebarDim) * 100)} backdrop-blur-md`
+    : 'bg-white'
 
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>(loadCollapsed)
 
@@ -125,12 +139,13 @@ export default function Sidebar() {
       )}
 
       <aside
+        style={sidebarStyle}
         className={`fixed left-0 top-0 h-full border-r border-gray-200 flex flex-col z-40
           w-[240px] transition-transform duration-200 ease-out
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
           md:translate-x-0 md:transition-all
           ${app.sidebarCollapsed ? 'md:w-[60px]' : 'md:w-[220px]'}
-          ${sidebarBg}`}
+          ${sidebarBgClass}`}
       >
       {/* Logo */}
       <div className="h-12 flex items-center px-3 border-b border-gray-100 shrink-0">

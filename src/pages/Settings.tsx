@@ -429,7 +429,8 @@ export default function SettingsPage() {
             </div>
 
             <div className="pt-4 border-t border-gray-100">
-              <label className="text-sm font-medium text-gray-700 block mb-3">背景壁纸</label>
+              {/* ====== 内容区壁纸 ====== */}
+              <label className="text-sm font-medium text-gray-700 block mb-3">内容区壁纸</label>
 
               {/* 预览 */}
               <div
@@ -454,7 +455,7 @@ export default function SettingsPage() {
               {/* 预设 */}
               <div className="grid grid-cols-5 gap-2 mb-4">
                 <button
-                  onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER })}
+                  onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
                   className={`h-12 rounded-lg border-2 bg-[#f5f5f7] text-[10px] text-gray-400 flex items-center justify-center ${
                     wallpaper.type === 'none' ? 'border-blue-500' : 'border-gray-200 hover:border-gray-300'
                   }`}
@@ -464,7 +465,7 @@ export default function SettingsPage() {
                 {WALLPAPER_PRESETS.map(p => (
                   <button
                     key={p.id}
-                    onClick={() => setWallpaper({ type: 'preset', presetId: p.id, dim: wallpaper.dim })}
+                    onClick={() => setWallpaper({ type: 'preset', presetId: p.id, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
                     title={p.name}
                     className={`h-12 rounded-lg border-2 ${
                       wallpaper.type === 'preset' && wallpaper.presetId === p.id ? 'border-blue-500' : 'border-transparent hover:border-gray-300'
@@ -487,7 +488,7 @@ export default function SettingsPage() {
                       if (!file) return
                       try {
                         const dataUrl = await fileToWallpaperDataUrl(file)
-                        setWallpaper({ type: 'image', imageDataUrl: dataUrl, dim: wallpaper.dim })
+                        setWallpaper({ type: 'image', imageDataUrl: dataUrl, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })
                       } catch (err) {
                         alert('图片处理失败：' + String(err).slice(0, 80))
                       }
@@ -497,7 +498,7 @@ export default function SettingsPage() {
                 </label>
                 {wallpaper.type !== 'none' && (
                   <button
-                    onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER })}
+                    onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
                     className="px-3 py-1.5 text-gray-400 text-xs hover:text-red-500"
                   >
                     清除壁纸
@@ -507,7 +508,7 @@ export default function SettingsPage() {
               </div>
 
               {/* 遮罩调节 */}
-              <div>
+              <div className="mb-4">
                 <label className="text-[11px] text-gray-400 block mb-1">
                   暗色遮罩（提升文字可读性）：<span className="text-gray-600">{Math.round(wallpaper.dim * 100)}%</span>
                 </label>
@@ -515,6 +516,107 @@ export default function SettingsPage() {
                   type="range" min={0} max={60} step={5}
                   value={Math.round(wallpaper.dim * 100)}
                   onChange={e => setWallpaper({ ...wallpaper, dim: Number(e.target.value) / 100 })}
+                  className="w-full accent-blue-500"
+                />
+              </div>
+
+              {/* 内容区卡片透明度 */}
+              <div className="mb-6">
+                <label className="text-[11px] text-gray-400 block mb-1">
+                  卡片透明度（越大越透出壁纸）：<span className="text-gray-600">{Math.round((wallpaper.contentCardOpacity ?? 1) * 100)}%</span>
+                </label>
+                <input
+                  type="range" min={0} max={100} step={5}
+                  value={Math.round((wallpaper.contentCardOpacity ?? 1) * 100)}
+                  onChange={e => setWallpaper({ ...wallpaper, contentCardOpacity: Number(e.target.value) / 100 })}
+                  className="w-full accent-blue-500"
+                />
+              </div>
+
+              {/* ====== 侧边栏壁纸 ====== */}
+              <label className="text-sm font-medium text-gray-700 block mb-3">侧边栏壁纸</label>
+
+              {/* 侧边栏预览 */}
+              <div
+                className="h-16 rounded-xl border border-gray-200 mb-4 relative overflow-hidden bg-[#f5f5f7]"
+                style={wallpaper.sidebarType === 'image' && wallpaper.sidebarImageDataUrl
+                  ? { backgroundImage: `url(${wallpaper.sidebarImageDataUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                  : wallpaper.sidebarType === 'preset'
+                    ? { backgroundImage: getPresetCss(wallpaper.sidebarPresetId) }
+                    : undefined}
+              >
+                <div className="absolute inset-0 flex items-center px-3">
+                  <div className="flex gap-1.5">
+                    {[1,2,3].map(i => (
+                      <div key={i} className="w-6 h-4 bg-white/80 rounded" />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 侧边栏预设 */}
+              <div className="grid grid-cols-5 gap-2 mb-4">
+                <button
+                  onClick={() => setWallpaper({ ...wallpaper, sidebarType: 'none', sidebarPresetId: undefined, sidebarImageDataUrl: undefined })}
+                  className={`h-10 rounded-lg border-2 bg-[#f5f5f7] text-[10px] text-gray-400 flex items-center justify-center ${
+                    !wallpaper.sidebarType || wallpaper.sidebarType === 'none' ? 'border-blue-500' : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  无
+                </button>
+                {WALLPAPER_PRESETS.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => setWallpaper({ ...wallpaper, sidebarType: 'preset', sidebarPresetId: p.id })}
+                    title={p.name}
+                    className={`h-10 rounded-lg border-2 ${
+                      wallpaper.sidebarType === 'preset' && wallpaper.sidebarPresetId === p.id ? 'border-blue-500' : 'border-transparent hover:border-gray-300'
+                    }`}
+                    style={{ backgroundImage: p.css }}
+                  />
+                ))}
+              </div>
+
+              {/* 侧边栏自定义图片 */}
+              <div className="flex items-center gap-2 mb-4">
+                <label className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs cursor-pointer hover:bg-gray-200">
+                  🖼️ 上传侧边栏图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async e => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      try {
+                        const dataUrl = await fileToWallpaperDataUrl(file)
+                        setWallpaper({ ...wallpaper, sidebarType: 'image', sidebarImageDataUrl: dataUrl })
+                      } catch (err) {
+                        alert('图片处理失败：' + String(err).slice(0, 80))
+                      }
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
+                {wallpaper.sidebarType && wallpaper.sidebarType !== 'none' && (
+                  <button
+                    onClick={() => setWallpaper({ ...wallpaper, sidebarType: 'none', sidebarPresetId: undefined, sidebarImageDataUrl: undefined })}
+                    className="px-3 py-1.5 text-gray-400 text-xs hover:text-red-500"
+                  >
+                    清除壁纸
+                  </button>
+                )}
+              </div>
+
+              {/* 侧边栏透明度 */}
+              <div>
+                <label className="text-[11px] text-gray-400 block mb-1">
+                  侧边栏透明度（越大越透出壁纸）：<span className="text-gray-600">{Math.round((wallpaper.sidebarDim ?? 0.15) * 100)}%</span>
+                </label>
+                <input
+                  type="range" min={0} max={100} step={5}
+                  value={Math.round((wallpaper.sidebarDim ?? 0.15) * 100)}
+                  onChange={e => setWallpaper({ ...wallpaper, sidebarDim: Number(e.target.value) / 100 })}
                   className="w-full accent-blue-500"
                 />
               </div>

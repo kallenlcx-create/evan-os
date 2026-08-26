@@ -35,6 +35,8 @@ export default function Layout() {
     document.body.style.background = hasWallpaper ? (bgStyle.backgroundImage ?? '') : ''
     document.body.style.backgroundSize = hasWallpaper ? 'cover' : ''
     document.body.style.backgroundAttachment = hasWallpaper ? 'fixed' : ''
+    // 设置卡片透明度 CSS 变量
+    document.documentElement.style.setProperty('--card-bg-opacity', String(wallpaper.contentCardOpacity ?? 1))
     return () => { document.body.style.background = '' }
   }, [hasWallpaper, wallpaper])
 
@@ -139,7 +141,7 @@ export default function Layout() {
         )}
 
         {/* 主内容区 */}
-        <main className="p-4 md:p-6 max-w-7xl">
+        <main className={`p-4 md:p-6 max-w-7xl ${(wallpaper.contentCardOpacity ?? 1) < 1 ? 'card-opacity-active' : ''}`}>
           <PageErrorBoundary key={location.pathname}>
             <Outlet />
           </PageErrorBoundary>
