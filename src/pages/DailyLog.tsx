@@ -1,20 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
+import { useConfirm } from '../components/ConfirmModal'
 import { format } from 'date-fns'
-import { ChevronLeft, ChevronRight, Save, Calendar, Smile, Frown, Meh, Zap } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Save, Calendar, Smile, Zap } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
 
-const moods = [
-  { value: 'great', emoji: '😄', label: '很棒', color: 'bg-green-100 text-green-700' },
-  { value: 'good', emoji: '😊', label: '不错', color: 'bg-blue-100 text-blue-700' },
-  { value: 'ok', emoji: '😐', label: '一般', color: 'bg-gray-100 text-gray-700' },
-  { value: 'tired', emoji: '😫', label: '疲惫', color: 'bg-orange-100 text-orange-700' },
-  { value: 'bad', emoji: '😞', label: '不好', color: 'bg-red-100 text-red-700' },
-]
+import { MOODS, MOOD_COLORS, type MoodValue } from '../config/constants'
 
 export default function DailyLogPage() {
   const today = format(new Date(), 'yyyy-MM-dd')
   const [selectedDate, setSelectedDate] = useState(today)
+  const [confirmModal, confirm] = useConfirm()
   const [content, setContent] = useState('')
   const [mood, setMood] = useState('')
   const [energy, setEnergy] = useState(5)
@@ -77,6 +73,7 @@ export default function DailyLogPage() {
 
   return (
     <div className="space-y-6" onKeyDown={handleKeyDown}>
+      {confirmModal}
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
         <div>
@@ -130,7 +127,7 @@ export default function DailyLogPage() {
           <div className="mt-2 text-right">
             <button
               onClick={async () => {
-                if (!confirm(`删除 ${selectedDate} 的日志？此操作不可恢复`)) return
+                if (!await confirm(`删除 ${selectedDate} 的日志？此操作不可恢复`)) return
                 await deleteDailyLog(selectedDate)
                 setContent(''); setMood(''); setEnergy(5)
               }}
@@ -170,13 +167,13 @@ export default function DailyLogPage() {
             <Smile size={16} /> 今日心情
           </h3>
           <div className="flex gap-2 flex-wrap">
-            {moods.map(m => (
+            {MOODS.map(m => (
               <button
                 key={m.value}
                 onClick={() => setMood(mood === m.value ? '' : m.value)}
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition-all border ${
                   mood === m.value
-                    ? `${m.color} border-current`
+                    ? `${MOOD_COLORS[m.value as MoodValue]} border-current`
                     : 'border-gray-200 text-gray-400 hover:border-gray-300'
                 }`}
               >

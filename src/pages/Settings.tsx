@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useStore } from '../store'
+import { useConfirm } from '../components/ConfirmModal'
 import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell, Palette, Info, BellOff } from 'lucide-react'
-import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl } from '../config/wallpapers'
+import { WALLPAPER_PRESETS, CARD_BG_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl, hexToRgb } from '../config/wallpapers'
 
 export default function SettingsPage() {
   const { app, toggleSidebar, backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
+  const [confirmModal, confirm] = useConfirm()
   const [status, setStatus] = useState<{ type: 'success' | 'error' | ''; msg: string }>({ type: '', msg: '' })
   const [importing, setImporting] = useState(false)
   const [pomodoroMin, setPomodoroMin] = useState(() => Number(localStorage.getItem('evan-os-pomodoro-min') || 25))
@@ -58,8 +60,8 @@ export default function SettingsPage() {
     input.click()
   }
   const handleReset = async () => {
-    if (!window.confirm('确定要清空所有数据吗？此操作不可撤销！')) return
-    if (!window.confirm('再次确认：所有目标、项目、任务、知识、习惯等数据将被永久删除！')) return
+    if (!await confirm('确定要清空所有数据吗？此操作不可撤销！')) return
+    if (!await confirm('再次确认：所有目标、项目、任务、知识、习惯等数据将被永久删除！')) return
     try { const { clearDatabase } = await import('../db'); await clearDatabase(); window.location.reload() }
     catch { showMsg('error', '重置失败') }
   }
@@ -73,6 +75,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      {confirmModal}
       <h1 className="text-2xl font-bold text-gray-800">⚙️ 设置</h1>
 
       {status.type && (
@@ -85,10 +88,13 @@ export default function SettingsPage() {
       )}
 
       {/* Tab 切换 */}
-      <div className="flex gap-2 flex-wrap">
+      <div role="tablist" className="flex gap-2 flex-wrap">
         {sections.map(s => (
           <button
             key={s.key}
+            role="tab"
+            aria-selected={activeSection === s.key}
+            tabIndex={activeSection === s.key ? 0 : -1}
             onClick={() => setActiveSection(s.key)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm transition-colors ${
               activeSection === s.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
@@ -176,7 +182,7 @@ export default function SettingsPage() {
                 <button onClick={markAllNotificationsRead} className="text-xs text-blue-600 hover:text-blue-700">
                   全部已读
                 </button>
-                <button onClick={() => { if (window.confirm('清空所有通知？')) clearNotifications() }} className="text-xs text-red-500 hover:text-red-600">
+                <button onClick={async () => { if (await confirm('清空所有通知？')) clearNotifications() }} className="text-xs text-red-500 hover:text-red-600">
                   清空
                 </button>
               </div>
@@ -445,9 +451,13 @@ export default function SettingsPage() {
                   <div className="absolute inset-0 bg-black" style={{ opacity: wallpaper.dim }} />
                 )}
                 <div className="absolute left-3 bottom-2 right-3">
-                  <div className="h-6 bg-white rounded-lg shadow-sm flex items-center px-2">
+                  <div
+                    className="h-6 rounded-lg shadow-sm flex items-center px-2 border border-white/40"
+                    style={{ backgroundColor: `rgba(${hexToRgb(wallpaper.contentCardColor ?? '#ffffff')}, ${wallpaper.contentCardOpacity ?? 1})` }}
+                  >
                     <div className="w-2 h-2 rounded-full bg-blue-400 mr-1.5" />
-                    <div className="h-1.5 w-16 bg-gray-200 rounded-full" />
+                    <div className="h-1.5 w-16 bg-gray-300/40 rounded-full" />
+                    <span className="ml-auto text-[8px] text-gray-400">卡片预览</span>
                   </div>
                 </div>
               </div>
@@ -455,7 +465,7 @@ export default function SettingsPage() {
               {/* 预设 */}
               <div className="grid grid-cols-5 gap-2 mb-4">
                 <button
-                  onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
+                  onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity, contentCardColor: wallpaper.contentCardColor ?? '#ffffff' })}
                   className={`h-12 rounded-lg border-2 bg-[#f5f5f7] text-[10px] text-gray-400 flex items-center justify-center ${
                     wallpaper.type === 'none' ? 'border-blue-500' : 'border-gray-200 hover:border-gray-300'
                   }`}
@@ -465,7 +475,7 @@ export default function SettingsPage() {
                 {WALLPAPER_PRESETS.map(p => (
                   <button
                     key={p.id}
-                    onClick={() => setWallpaper({ type: 'preset', presetId: p.id, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
+                    onClick={() => setWallpaper({ type: 'preset', presetId: p.id, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity, contentCardColor: wallpaper.contentCardColor ?? '#ffffff' })}
                     title={p.name}
                     className={`h-12 rounded-lg border-2 ${
                       wallpaper.type === 'preset' && wallpaper.presetId === p.id ? 'border-blue-500' : 'border-transparent hover:border-gray-300'
@@ -488,7 +498,7 @@ export default function SettingsPage() {
                       if (!file) return
                       try {
                         const dataUrl = await fileToWallpaperDataUrl(file)
-                        setWallpaper({ type: 'image', imageDataUrl: dataUrl, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })
+                        setWallpaper({ type: 'image', imageDataUrl: dataUrl, dim: wallpaper.dim, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity, contentCardColor: wallpaper.contentCardColor ?? '#ffffff' })
                       } catch (err) {
                         alert('图片处理失败：' + String(err).slice(0, 80))
                       }
@@ -498,7 +508,7 @@ export default function SettingsPage() {
                 </label>
                 {wallpaper.type !== 'none' && (
                   <button
-                    onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity })}
+                    onClick={() => setWallpaper({ ...DEFAULT_WALLPAPER, sidebarType: wallpaper.sidebarType, sidebarPresetId: wallpaper.sidebarPresetId, sidebarImageDataUrl: wallpaper.sidebarImageDataUrl, sidebarDim: wallpaper.sidebarDim, contentCardOpacity: wallpaper.contentCardOpacity, contentCardColor: wallpaper.contentCardColor ?? '#ffffff' })}
                     className="px-3 py-1.5 text-gray-400 text-xs hover:text-red-500"
                   >
                     清除壁纸
@@ -521,7 +531,7 @@ export default function SettingsPage() {
               </div>
 
               {/* 内容区卡片透明度 */}
-              <div className="mb-6">
+              <div className="mb-4">
                 <label className="text-[11px] text-gray-400 block mb-1">
                   卡片透明度（越大越透出壁纸）：<span className="text-gray-600">{Math.round((wallpaper.contentCardOpacity ?? 1) * 100)}%</span>
                 </label>
@@ -531,6 +541,86 @@ export default function SettingsPage() {
                   onChange={e => setWallpaper({ ...wallpaper, contentCardOpacity: Number(e.target.value) / 100 })}
                   className="w-full accent-blue-500"
                 />
+              </div>
+
+              {/* 内容区卡片背景颜色（所有卡片统一生效，与透明度叠加） */}
+              <div className="mb-6">
+                <label className="text-[11px] text-gray-400 block mb-2">
+                  卡片背景颜色（所有卡片统一生效，与透明度叠加）：<span className="text-gray-600">{(wallpaper.contentCardColor ?? '#ffffff').toUpperCase()}</span>
+                </label>
+                {/* 预览条 */}
+                <div className="flex items-center gap-3 mb-3">
+                  <div
+                    className="flex-1 h-10 rounded-lg border border-gray-200 flex items-center px-3 gap-2"
+                    style={{ backgroundColor: `rgba(${hexToRgb(wallpaper.contentCardColor ?? '#ffffff')}, ${wallpaper.contentCardOpacity ?? 1})` }}
+                  >
+                    <div className="w-2 h-2 rounded-full bg-blue-400" />
+                    <div className="h-1.5 w-16 bg-gray-300/50 rounded-full" />
+                    <span className="ml-auto text-[10px] text-gray-500">实时预览 · 叠加透明度 {Math.round((wallpaper.contentCardOpacity ?? 1)*100)}%</span>
+                  </div>
+                  <button
+                    onClick={() => setWallpaper({ ...wallpaper, contentCardColor: '#ffffff' })}
+                    className="px-3 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 shrink-0"
+                  >
+                    重置纯白
+                  </button>
+                </div>
+                {/* 预设色板 */}
+                <div className="grid grid-cols-8 gap-2 mb-3">
+                  {CARD_BG_PRESETS.map(p => {
+                    const active = (wallpaper.contentCardColor ?? '#ffffff').toLowerCase() === p.color.toLowerCase()
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => setWallpaper({ ...wallpaper, contentCardColor: p.color })}
+                        title={`${p.name} ${p.color}`}
+                        className={`group relative h-9 rounded-lg border-2 flex items-center justify-center transition-all ${active ? 'border-blue-500 ring-2 ring-blue-100' : 'border-gray-200 hover:border-gray-300'}`}
+                        style={{ backgroundColor: p.color }}
+                      >
+                        <span className={`text-[9px] font-medium px-1 rounded ${p.id === 'white' ? 'text-gray-400 bg-white/80' : 'text-gray-600 bg-white/70'} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                          {p.name}
+                        </span>
+                        {active && <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full flex items-center justify-center text-[7px] text-white">✓</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+                {/* 自定义取色 */}
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 rounded-lg text-xs text-gray-600 cursor-pointer hover:bg-gray-200 border border-gray-200">
+                    <input
+                      type="color"
+                      value={wallpaper.contentCardColor ?? '#ffffff'}
+                      onChange={e => setWallpaper({ ...wallpaper, contentCardColor: e.target.value })}
+                      className="w-5 h-5 rounded border-0 p-0 bg-transparent cursor-pointer"
+                    />
+                    自定义颜色
+                  </label>
+                  <span className="text-[10px] text-gray-300">点击左侧色块选任意颜色；预设一键套用，所有首页/工作台/知识等卡片即时生效</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5 mt-2">
+                  {[
+                    { label: '推荐·暖棕壁纸', colors: ['#ffffff', '#fffaf0', '#fdf6ec', '#fff7ed'] },
+                    { label: '清新', colors: ['#f0fdf4', '#f0faf4', '#f5f3ff', '#eff6ff'] },
+                    { label: '柔粉', colors: ['#fff1f2', '#fef2f2', '#faf5ff', '#fefce8'] },
+                    { label: '极简', colors: ['#ffffff', '#f8fafc', '#f1f5f9', '#fef9c3'] },
+                  ].map(g => (
+                    <div key={g.label} className="text-[10px] text-gray-400">
+                      <div className="mb-1">{g.label}</div>
+                      <div className="flex gap-1">
+                        {g.colors.map(c => (
+                          <button
+                            key={c}
+                            onClick={() => setWallpaper({ ...wallpaper, contentCardColor: c })}
+                            className={`w-5 h-5 rounded-full border ${ (wallpaper.contentCardColor ?? '#ffffff').toLowerCase() === c.toLowerCase() ? 'border-blue-500 ring-1 ring-blue-200' : 'border-gray-200'}`}
+                            style={{ backgroundColor: c }}
+                            title={c}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* ====== 侧边栏壁纸 ====== */}

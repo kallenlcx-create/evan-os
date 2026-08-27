@@ -1,7 +1,132 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
+import { useConfirm } from '../components/ConfirmModal'
 import { Plus, Target, Trash2, Check, ChevronDown, ChevronRight, X } from 'lucide-react'
 import type { Goal, KeyResult } from '../types'
+
+/**
+ * KR 行：本地受控 + IME 合成隔离 + 防抖入库
+ * 修复：中文打字时拼音串被当正文插入导致乱码（如 s'dffkk...）
+ * 原理：composition 期间只改本地 draft，compositionEnd / blur / 防抖后才调 handleUpdateKR
+ */
+function KRRow({
+  goalId,
+  kr,
+  onUpdate,
+  onDelete,
+}: {
+  goalId: string
+  kr: KeyResult
+  onUpdate: (goalId: string, krId: string, field: keyof KeyResult, value: string | number) => void
+  onDelete: (goalId: string, krId: string) => void
+}) {
+  const [draftTitle, setDraftTitle] = useState(kr.title)
+  const [draftUnit, setDraftUnit] = useState(kr.unit)
+  const isComposingTitle = useRef(false)
+  const isComposingUnit = useRef(false)
+  const debounceTitle = useRef<number | null>(null)
+  const debounceUnit = useRef<number | null>(null)
+
+  // 外部重置（如撤销/同步）时跟随
+  useEffect(() => { setDraftTitle(kr.title) }, [kr.title])
+  useEffect(() => { setDraftUnit(kr.unit) }, [kr.unit])
+
+  useEffect(() => {
+    return () => {
+      if (debounceTitle.current) window.clearTimeout(debounceTitle.current)
+      if (debounceUnit.current) window.clearTimeout(debounceUnit.current)
+    }
+  }, [])
+
+  const commitTitle = (v: string) => {
+    if (v !== kr.title) onUpdate(goalId, kr.id, 'title', v)
+  }
+  const commitUnit = (v: string) => {
+    if (v !== kr.unit) onUpdate(goalId, kr.id, 'unit', v)
+  }
+
+  const krProgress = Math.min(100, Math.round((kr.current / kr.target) * 100))
+
+  return (
+    <div className="bg-white rounded-xl p-3 border border-gray-100">
+      <div className="flex items-center gap-2 mb-2">
+        <input
+          type="text"
+          value={draftTitle}
+          onCompositionStart={() => { isComposingTitle.current = true }}
+          onCompositionEnd={e => {
+            isComposingTitle.current = false
+            const v = (e.target as HTMLInputElement).value
+            setDraftTitle(v)
+            if (debounceTitle.current) { window.clearTimeout(debounceTitle.current); debounceTitle.current = null }
+            commitTitle(v)
+          }}
+          onChange={e => {
+            const v = e.target.value
+            setDraftTitle(v)
+            if (isComposingTitle.current) return
+            if (debounceTitle.current) window.clearTimeout(debounceTitle.current)
+            debounceTitle.current = window.setTimeout(() => commitTitle(v), 400) as unknown as number
+          }}
+          onBlur={() => {
+            if (debounceTitle.current) { window.clearTimeout(debounceTitle.current); debounceTitle.current = null }
+            commitTitle(draftTitle)
+          }}
+          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+          placeholder="关键结果标题..."
+          className="flex-1 text-sm font-medium text-gray-700 bg-transparent outline-none border-b border-transparent focus:border-blue-300"
+        />
+        <button onClick={() => onDelete(goalId, kr.id)} className="p-1 text-gray-300 hover:text-red-500">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          value={kr.current}
+          onChange={e => onUpdate(goalId, kr.id, 'current', Number(e.target.value))}
+          className="w-16 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
+        />
+        <span className="text-xs text-gray-400">/</span>
+        <input
+          type="number"
+          value={kr.target}
+          onChange={e => onUpdate(goalId, kr.id, 'target', Number(e.target.value))}
+          className="w-16 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
+        />
+        <input
+          type="text"
+          value={draftUnit}
+          onCompositionStart={() => { isComposingUnit.current = true }}
+          onCompositionEnd={e => {
+            isComposingUnit.current = false
+            const v = (e.target as HTMLInputElement).value
+            setDraftUnit(v)
+            if (debounceUnit.current) { window.clearTimeout(debounceUnit.current); debounceUnit.current = null }
+            commitUnit(v)
+          }}
+          onChange={e => {
+            const v = e.target.value
+            setDraftUnit(v)
+            if (isComposingUnit.current) return
+            if (debounceUnit.current) window.clearTimeout(debounceUnit.current)
+            debounceUnit.current = window.setTimeout(() => commitUnit(v), 400) as unknown as number
+          }}
+          onBlur={() => {
+            if (debounceUnit.current) { window.clearTimeout(debounceUnit.current); debounceUnit.current = null }
+            commitUnit(draftUnit)
+          }}
+          className="w-12 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
+        />
+        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${krProgress}%` }} />
+        </div>
+        <span className="text-xs text-gray-500 w-8 text-right">{krProgress}%</span>
+        {krProgress >= 100 && <Check size={14} className="text-green-500" />}
+      </div>
+    </div>
+  )
+}
 
 const levelLabels: Record<Goal['level'], string> = {
   vision: '人生愿景',
@@ -23,6 +148,7 @@ const levelOrder: Goal['level'][] = ['vision', 'three_year', 'one_year', '90_day
 
 export default function GoalsPage() {
   const { goals, addObject, updateObject, deleteObject } = useStore()
+  const [confirmModal, confirm] = useConfirm()
   const [showForm, setShowForm] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newLevel, setNewLevel] = useState<Goal['level']>('current')
@@ -76,13 +202,14 @@ export default function GoalsPage() {
     updateObject('goal', goalId, { keyResults: goal.keyResults.filter(kr => kr.id !== krId) })
   }
 
-  const handleDeleteGoal = (id: string) => {
-    if (!window.confirm('确定删除这个目标？相关关键结果也会一起删除。')) return
+  const handleDeleteGoal = async (id: string) => {
+    if (!await confirm('确定删除这个目标？相关关键结果也会一起删除。')) return
     deleteObject('goal', id)
   }
 
   return (
     <div className="space-y-6">
+      {confirmModal}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">🎯 目标</h1>
@@ -233,56 +360,9 @@ export default function GoalsPage() {
                             暂无关键结果，点击上方添加
                           </div>
                         )}
-                        {goal.keyResults.map(kr => {
-                          const krProgress = Math.min(100, Math.round((kr.current / kr.target) * 100))
-                          return (
-                            <div key={kr.id} className="bg-white rounded-xl p-3 border border-gray-100">
-                              <div className="flex items-center gap-2 mb-2">
-                                <input
-                                  type="text"
-                                  value={kr.title}
-                                  onChange={e => handleUpdateKR(goal.id, kr.id, 'title', e.target.value)}
-                                  className="flex-1 text-sm font-medium text-gray-700 bg-transparent outline-none border-b border-transparent focus:border-blue-300"
-                                />
-                                <button
-                                  onClick={() => handleDeleteKR(goal.id, kr.id)}
-                                  className="p-1 text-gray-300 hover:text-red-500"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="number"
-                                  value={kr.current}
-                                  onChange={e => handleUpdateKR(goal.id, kr.id, 'current', Number(e.target.value))}
-                                  className="w-16 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
-                                />
-                                <span className="text-xs text-gray-400">/</span>
-                                <input
-                                  type="number"
-                                  value={kr.target}
-                                  onChange={e => handleUpdateKR(goal.id, kr.id, 'target', Number(e.target.value))}
-                                  className="w-16 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
-                                />
-                                <input
-                                  type="text"
-                                  value={kr.unit}
-                                  onChange={e => handleUpdateKR(goal.id, kr.id, 'unit', e.target.value)}
-                                  className="w-12 px-2 py-1 text-sm text-center bg-gray-50 rounded border border-gray-200 outline-none focus:ring-1 focus:ring-blue-200"
-                                />
-                                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-blue-500 rounded-full transition-all"
-                                    style={{ width: `${krProgress}%` }}
-                                  />
-                                </div>
-                                <span className="text-xs text-gray-500 w-8 text-right">{krProgress}%</span>
-                                {krProgress >= 100 && <Check size={14} className="text-green-500" />}
-                              </div>
-                            </div>
-                          )
-                        })}
+                        {goal.keyResults.map(kr => (
+                          <KRRow key={kr.id} goalId={goal.id} kr={kr} onUpdate={handleUpdateKR} onDelete={handleDeleteKR} />
+                        ))}
                       </div>
                     )}
                   </div>

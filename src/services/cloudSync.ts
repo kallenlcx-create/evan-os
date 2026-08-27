@@ -119,24 +119,37 @@ function jsonHeaders(token: string): Record<string, string> {
 
 // ====== 配置存取（appState 表 key='cloud'）======
 
+// ====== 同步配置缓存（避免每次路由变化都查 IndexedDB）======
+let _syncConfigCache: { value: CloudSyncConfig | null; ts: number } | null = null
+const SYNC_CONFIG_TTL = 5 * 60 * 1000 // 5 分钟
+
 export async function getSyncConfig(): Promise<CloudSyncConfig | null> {
+  if (_syncConfigCache && Date.now() - _syncConfigCache.ts < SYNC_CONFIG_TTL) {
+    return _syncConfigCache.value
+  }
   try {
     const rec = (await db.appState.get('cloud')) as any
-    if (!rec) return null
-    const { key, ...cfg } = rec
-    void key
-    return cfg as CloudSyncConfig
+    const cfg = rec ? (({ key, ...rest }) => rest)(rec) as CloudSyncConfig : null
+    _syncConfigCache = { value: cfg, ts: Date.now() }
+    return cfg
   } catch {
     return null
   }
 }
 
+/** 供 clearSyncConfig / saveConfig 等写操作后调用，立即失效缓存 */
+export function invalidateSyncConfigCache() {
+  _syncConfigCache = null
+}
+
 async function saveConfig(cfg: CloudSyncConfig): Promise<void> {
   await db.appState.put({ ...cfg, key: 'cloud' } as any)
+  invalidateSyncConfigCache()
 }
 
 export async function clearSyncConfig(): Promise<void> {
   await db.appState.delete('cloud')
+  invalidateSyncConfigCache()
 }
 
 // ====== 结果类型 ======

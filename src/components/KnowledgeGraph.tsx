@@ -161,8 +161,9 @@ export default function KnowledgeGraph({
         data = await relationQueryService.getKnowledgeGraph(undefined, depth)
       }
       setGraphData(data)
-      // 计算布局
-      const positioned = applyForceLayout(data, width, height)
+      // 计算布局 —— 小图减少迭代次数
+      const iters = data.nodes.length < 20 ? 40 : data.nodes.length < 50 ? 70 : 100
+      const positioned = applyForceLayout(data, width, height, iters)
       setPositioned(positioned)
     } catch (e) {
       console.warn('[KnowledgeGraph] 加载失败:', e)
@@ -175,7 +176,15 @@ export default function KnowledgeGraph({
     loadGraph()
   }, [loadGraph])
 
-  // 鼠标交互
+  // 清理 rAF
+  useEffect(() => {
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+  }, [])
+
+  // 鼠标交互 —— 用 rAF 节流避免每像素 re-render
+  const rafRef = useRef<number>(0)
+  const pendingPan = useRef({ x: 0, y: 0 })
+
   const handleMouseDown = (e: React.MouseEvent) => {
     isDragging.current = true
     dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }
@@ -183,10 +192,13 @@ export default function KnowledgeGraph({
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDragging.current) return
-    setPan({
-      x: e.clientX - dragStart.current.x,
-      y: e.clientY - dragStart.current.y,
-    })
+    pendingPan.current = { x: e.clientX - dragStart.current.x, y: e.clientY - dragStart.current.y }
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        setPan(pendingPan.current)
+        rafRef.current = 0
+      })
+    }
   }
 
   const handleMouseUp = () => {

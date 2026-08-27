@@ -202,6 +202,7 @@ route('email.send', async (payload, cmd) => {
 
 export class IntegrationCommandBus {
   private auditLog: IntegrationCommand[] = []
+  private static readonly MAX_AUDIT = 200
 
   /** 外部适配器写入业务数据的唯一入口 */
   async execute(
@@ -219,6 +220,9 @@ export class IntegrationCommandBus {
       createdAt: now(),
     }
     this.auditLog.push(cmd)
+    if (this.auditLog.length > IntegrationCommandBus.MAX_AUDIT) {
+      this.auditLog = this.auditLog.slice(-IntegrationCommandBus.MAX_AUDIT)
+    }
 
     try {
       const result = await handler(payload, cmd)

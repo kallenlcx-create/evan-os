@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
-import { Plus, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { useConfirm } from '../components/ConfirmModal'
+import { Plus, Pencil, Trash2 } from 'lucide-react'
 import {
   DndContext, closestCorners, DragOverlay, useDraggable, useDroppable,
   type DragStartEvent, type DragEndEvent,
@@ -25,13 +26,11 @@ const templates = [
   { title: '客户开发', desc: '开发新客户、维护老客户', tags: ['外贸', '客户'] },
 ]
 
-function DraggableCard({ project }: { project: Project }) {
+function DraggableCard({ project, askText, confirm }: { project: Project; askText: (title: string, defaultValue?: string) => Promise<string | null>; confirm: (msg: string) => Promise<boolean> }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: project.id, data: project })
-  const [askModal, askText] = useAskText()
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} style={style} className={`bg-white rounded-xl p-3 shadow-sm border border-gray-100 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow ${isDragging ? 'opacity-50 z-50' : ''}`}>
-      {askModal}
       <div className="flex items-center gap-2">
         <span className="text-lg">{project.emoji || '📌'}</span>
         <div className="flex-1 min-w-0">
@@ -40,6 +39,7 @@ function DraggableCard({ project }: { project: Project }) {
         </div>
         <div className="flex flex-col gap-0.5 shrink-0">
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); void (async () => {
               const title = await askText('修改项目名', project.title ?? ''); if (title === null || !title.trim()) return
               const progress = await askText('修改进度 %（0-100）', String(project.progress ?? 0)); if (progress === null) return
@@ -50,9 +50,10 @@ function DraggableCard({ project }: { project: Project }) {
             <Pencil size={12} />
           </button>
           <button
-            onClick={(e) => {
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={async (e) => {
               e.stopPropagation()
-              if (!confirm(`删除项目「${project.title}」？此操作不可恢复`)) return
+              if (!await confirm(`删除项目「${project.title}」？此操作不可恢复`)) return
               useStore.getState().deleteObject('project', project.id)
             }}
             className="p-1 text-gray-300 hover:text-red-500" title="删除"
@@ -95,6 +96,8 @@ export default function ProjectsPage() {
   const [showForm, setShowForm] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [activeProject, setActiveProject] = useState<Project | null>(null)
+  const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
 
   const handleAdd = (title?: string, tags?: string[], desc?: string) => {
     const t = title || newTitle.trim()
@@ -120,6 +123,8 @@ export default function ProjectsPage() {
 
   return (
     <div className="space-y-6">
+      {askModal}
+      {confirmModal}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">🚀 项目</h1>
@@ -163,7 +168,7 @@ export default function ProjectsPage() {
           {grouped.map(col => (
             <DroppableColumn key={col.status} col={col}>
               {col.items.map(project => (
-                <DraggableCard key={project.id} project={project} />
+                <DraggableCard key={project.id} project={project} askText={askText} confirm={confirm} />
               ))}
             </DroppableColumn>
           ))}

@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 import { localToday } from '../utils/date'
 import { useAskText } from '../components/PromptModal'
-import { Plus, Check, Clock, Calendar, RotateCw, ArrowRight, Save, Smile, Timer, Grid3X3 } from 'lucide-react'
+import { useConfirm } from '../components/ConfirmModal'
+import { Plus, Check, Clock, Calendar, RotateCw, ArrowRight, Save, Timer, Grid3X3 } from 'lucide-react'
 import QuadrantView from '../components/QuadrantView'
 import PomodoroTimer from '../components/PomodoroTimer'
 import type { Task } from '../types'
@@ -18,17 +19,12 @@ const tabs = [
   { key: 'review', label: '🔄 复盘', icon: RotateCw },
 ]
 
-const moods = [
-  { value: 'great', emoji: '😄', label: '很棒' },
-  { value: 'good', emoji: '😊', label: '不错' },
-  { value: 'ok', emoji: '😐', label: '一般' },
-  { value: 'tired', emoji: '😫', label: '疲惫' },
-  { value: 'bad', emoji: '😞', label: '不好' },
-]
+import { MOODS } from '../config/constants'
 
 export default function ActionsPage() {
   const { tasks, reviews, addTask, toggleTaskStatus, addObject, updateObject, deleteObject } = useStore()
   const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('today')
   const [newTask, setNewTask] = useState('')
@@ -132,7 +128,7 @@ export default function ActionsPage() {
                             title="编辑"
                           >✎</button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); if (confirm(`删除「${it.title}」？`)) deleteObject('task', it.id) }}
+                            onClick={async (e) => { e.stopPropagation(); if (await confirm(`删除「${it.title}」？`)) deleteObject('task', it.id) }}
                             className="w-3.5 h-3.5 flex items-center justify-center text-[8px] text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                             title="删除"
                           >✕</button>
@@ -210,7 +206,7 @@ export default function ActionsPage() {
                             ✏️
                           </button>
                           <button
-                            onClick={e => { e.stopPropagation(); if (confirm(`删除任务「${task.title}」？`)) deleteObject('task', task.id) }}
+                            onClick={async e => { e.stopPropagation(); if (await confirm(`删除任务「${task.title}」？`)) deleteObject('task', task.id) }}
                             className="p-1 text-gray-200 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                             title="删除"
                           >
@@ -313,7 +309,7 @@ export default function ActionsPage() {
                       ✏️
                     </button>
                     <button
-                      onClick={() => { if (confirm(`删除重复事项「${task.title}」？`)) deleteObject('task', task.id) }}
+                      onClick={async () => { if (await confirm(`删除重复事项「${task.title}」？`)) deleteObject('task', task.id) }}
                       className="p-1 text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
                       title="删除"
                     >
@@ -386,7 +382,7 @@ export default function ActionsPage() {
                   <div>
                     <label className="text-xs font-semibold text-gray-500 mb-2 block">今日心情</label>
                     <div className="flex gap-2">
-                      {moods.map(m => (
+                      {MOODS.map(m => (
                         <button
                           key={m.value}
                           onClick={() => setReviewMood(m.value)}
@@ -479,7 +475,7 @@ export default function ActionsPage() {
                       <span className="text-sm font-medium text-gray-800">{r.title}</span>
                       <span className="text-[10px] text-gray-400">{r.period}</span>
                       {r.mood && (
-                        <span className="text-xs">{moods.find(m => m.value === r.mood)?.emoji}</span>
+                        <span className="text-xs">{MOODS.find(m => m.value === r.mood)?.emoji}</span>
                       )}
                     </div>
                     <p className="text-xs text-gray-500 line-clamp-2">
@@ -504,16 +500,20 @@ export default function ActionsPage() {
   return (
     <div className="space-y-6">
       {askModal}
+      {confirmModal}
       <div>
         <h1 className="text-2xl font-bold text-gray-800">📅 行动</h1>
         <p className="text-sm text-gray-400 mt-0.5">管理任务、日志与复盘，让每一天都有节奏</p>
       </div>
 
       {/* 标签页 */}
-      <div className="flex gap-2 overflow-x-auto pb-2">
+      <div role="tablist" className="flex gap-2 overflow-x-auto pb-2">
         {tabs.map(tab => (
           <button
             key={tab.key}
+            role="tab"
+            aria-selected={activeTab === tab.key}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             onClick={() => setActiveTab(tab.key)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
               activeTab === tab.key

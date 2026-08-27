@@ -17,6 +17,12 @@ export default function PomodoroTimer() {
   const [isBreak, setIsBreak] = useState(false)
   const [sessionStart, setSessionStart] = useState<string | null>(null)
   const intervalRef = useRef<number | null>(null)
+  const isBreakRef = useRef(false)
+  const sessionStartRef = useRef<string | null>(null)
+
+  // 同步 ref
+  useEffect(() => { isBreakRef.current = isBreak }, [isBreak])
+  useEffect(() => { sessionStartRef.current = sessionStart }, [sessionStart])
 
   const stats = getTodayPomodoroStats()
 
@@ -28,20 +34,22 @@ export default function PomodoroTimer() {
   const tick = () => {
     setSeconds(s => {
       if (s <= 1) {
-        // 计时结束
-        if (sessionStart) {
+        // 计时结束 —— 用 ref 确保读到最新值
+        const curBreak = isBreakRef.current
+        const curStart = sessionStartRef.current
+        if (curStart) {
           addPomodoroSession({
-            startTime: sessionStart,
+            startTime: curStart,
             endTime: new Date().toISOString(),
-            duration: isBreak ? 5 : 25,
-            type: isBreak ? 'break' : 'focus',
+            duration: curBreak ? 5 : 25,
+            type: curBreak ? 'break' : 'focus',
             completed: true,
           })
         }
         setIsRunning(false)
         setSessionStart(null)
         if (intervalRef.current) clearInterval(intervalRef.current)
-        return isBreak ? FOCUS : BREAK
+        return curBreak ? FOCUS : BREAK
       }
       return s - 1
     })
@@ -66,20 +74,22 @@ export default function PomodoroTimer() {
   }
 
   const skip = () => {
-    if (sessionStart) {
+    const curBreak = isBreakRef.current
+    const curStart = sessionStartRef.current
+    if (curStart) {
       addPomodoroSession({
-        startTime: sessionStart,
+        startTime: curStart,
         endTime: new Date().toISOString(),
-        duration: Math.round((isBreak ? BREAK : FOCUS - seconds) / 60),
-        type: isBreak ? 'break' : 'focus',
+        duration: Math.round((curBreak ? BREAK : FOCUS - seconds) / 60),
+        type: curBreak ? 'break' : 'focus',
         completed: false,
       })
     }
     setIsRunning(false)
     if (intervalRef.current) clearInterval(intervalRef.current)
     setSessionStart(null)
-    setIsBreak(!isBreak)
-    setSeconds(isBreak ? FOCUS : BREAK)
+    setIsBreak(!curBreak)
+    setSeconds(curBreak ? FOCUS : BREAK)
   }
 
   const mins = Math.floor(seconds / 60)

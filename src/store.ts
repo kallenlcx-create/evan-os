@@ -275,7 +275,7 @@ function calcStreak(dates: string[]): number {
 // 修复版：customer/opportunity/order/communication 不再映射到 goals
 function getCollectionKey(type: ObjectType): string {
   const map: Record<ObjectType, string> = {
-    goal: 'goals', domain: 'goals',
+    goal: 'goals', domain: 'domains',
     project: 'projects', task: 'tasks',
     customer: 'customers',        // ✅ 修复
     opportunity: 'opportunities', // ✅ 修复
@@ -321,77 +321,73 @@ export const useStore = create<EvanStore>()((set, get) => ({
     let state: any = {}
 
     try {
-      await Promise.race([
-        (async () => {
-          // 通过 Repository 层加载所有数据
-          state = await loadAllObjects()
+      // 通过 Repository 层加载所有数据
+      state = await loadAllObjects()
 
-          // 种子数据：仅在首次初始化（无标记）时写入一次。
-          // 之前是「表空即播种」，用户删光种子数据后每次启动都会复活。
-          const seedMark = await db.appState.get('seeded:v1')
-          if (!seedMark) {
-            const seedEntries = Object.entries(seed) as [string, any[]][]
-            await Promise.all(seedEntries.map(async ([name, seedItems]) => {
-              if (!state[name] || state[name].length === 0) {
-                if (seedItems.length > 0) {
-                  state[name] = seedItems
-                  const table = (TABLES as any)[name]
-                  if (table) {
-                    await safeWrite(() => table.bulkPut(seedItems))
-                  }
-                } else {
-                  state[name] = []
-                }
+      // 种子数据：仅在首次初始化（无标记）时写入一次。
+      // 之前是「表空即播种」，用户删光种子数据后每次启动都会复活。
+      const seedMark = await db.appState.get('seeded:v1')
+      if (!seedMark) {
+        const seedEntries = Object.entries(seed) as [string, any[]][]
+        await Promise.all(seedEntries.map(async ([name, seedItems]) => {
+          if (!state[name] || state[name].length === 0) {
+            if (seedItems.length > 0) {
+              state[name] = seedItems
+              const table = (TABLES as any)[name]
+              if (table) {
+                await safeWrite(() => table.bulkPut(seedItems))
               }
-            }))
-            await safeWrite(() => db.appState.put({ key: 'seeded:v1', at: now() } as any))
-          }
-
-          // 加载 UI 状态
-          try {
-            const appState = await db.appState.get('app')
-            if (appState) state.app = appState
-          } catch (err) {
-            console.warn('[EvanOS] 读取 UI 状态失败:', err)
-          }
-
-          // 加载壁纸（设备本地偏好）
-          try {
-            const wp = (await db.appState.get('wallpaper')) as any
-            if (wp && wp.type) state.wallpaper = {
-              type: wp.type,
-              presetId: wp.presetId,
-              imageDataUrl: wp.imageDataUrl,
-              dim: Number(wp.dim ?? 0),
-              sidebarType: wp.sidebarType,
-              sidebarPresetId: wp.sidebarPresetId,
-              sidebarImageDataUrl: wp.sidebarImageDataUrl,
-              sidebarDim: Number(wp.sidebarDim ?? 0.15),
-              contentCardOpacity: Number(wp.contentCardOpacity ?? 1),
+            } else {
+              state[name] = []
             }
-          } catch (err) {
-            console.warn('[EvanOS] 读取壁纸失败:', err)
           }
+        }))
+        await safeWrite(() => db.appState.put({ key: 'seeded:v1', at: now() } as any))
+      }
 
-          // 备份提醒 + 每周滚动快照（存于 appState，用于误操作恢复）
-          try {
-            const lastRec = (await db.appState.get('backup:lastAt')) as any
-            const lastAt = Number(lastRec?.value ?? 0)
-            const snoozeRec = (await db.appState.get('backup:snooze')) as any
-            const snoozedUntil = Number(snoozeRec?.value ?? 0)
-            if (Date.now() - lastAt > BACKUP_REMIND_MS && Date.now() > snoozedUntil) {
-              state.backupNeeded = true
-            }
-            if (Date.now() - lastAt > BACKUP_SNAPSHOT_MS) {
-              await rotateBackupSnapshot()
-              await db.appState.put({ key: 'backup:lastAt', value: Date.now() })
-            }
-          } catch (err) {
-            console.warn('[EvanOS] 备份快照失败:', err)
-          }
-        })(),
-        new Promise(resolve => setTimeout(resolve, 4000)),
-      ])
+      // 加载 UI 状态
+      try {
+        const appState = await db.appState.get('app')
+        if (appState) state.app = appState
+      } catch (err) {
+        console.warn('[EvanOS] 读取 UI 状态失败:', err)
+      }
+
+      // 加载壁纸（设备本地偏好）
+      try {
+        const wp = (await db.appState.get('wallpaper')) as any
+        if (wp && wp.type) state.wallpaper = {
+          type: wp.type,
+          presetId: wp.presetId,
+          imageDataUrl: wp.imageDataUrl,
+          dim: Number(wp.dim ?? 0),
+          sidebarType: wp.sidebarType,
+          sidebarPresetId: wp.sidebarPresetId,
+          sidebarImageDataUrl: wp.sidebarImageDataUrl,
+          sidebarDim: Number(wp.sidebarDim ?? 0.15),
+          contentCardOpacity: Number(wp.contentCardOpacity ?? 1),
+          contentCardColor: typeof wp.contentCardColor === 'string' ? wp.contentCardColor : '#ffffff',
+        }
+      } catch (err) {
+        console.warn('[EvanOS] 读取壁纸失败:', err)
+      }
+
+      // 备份提醒 + 每周滚动快照（存于 appState，用于误操作恢复）
+      try {
+        const lastRec = (await db.appState.get('backup:lastAt')) as any
+        const lastAt = Number(lastRec?.value ?? 0)
+        const snoozeRec = (await db.appState.get('backup:snooze')) as any
+        const snoozedUntil = Number(snoozeRec?.value ?? 0)
+        if (Date.now() - lastAt > BACKUP_REMIND_MS && Date.now() > snoozedUntil) {
+          state.backupNeeded = true
+        }
+        if (Date.now() - lastAt > BACKUP_SNAPSHOT_MS) {
+          await rotateBackupSnapshot()
+          await db.appState.put({ key: 'backup:lastAt', value: Date.now() })
+        }
+      } catch (err) {
+        console.warn('[EvanOS] 备份快照失败:', err)
+      }
     } catch (err) {
       console.warn('[EvanOS] 数据库初始化失败，使用种子数据:', err)
     }

@@ -1,5 +1,6 @@
 ﻿import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { useConfirm } from '../components/ConfirmModal'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
@@ -65,6 +66,7 @@ export default function KnowledgePage() {
 
   // 页内输入弹窗（替代原生 prompt）
   const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
 
   // ====== 标签体系（v1.1）：1级分类 → 2级标签 → 3级知识条目 ======
   interface TagL1 { id: string; name: string }
@@ -181,7 +183,7 @@ export default function KnowledgePage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (window.confirm('确定删除这条知识？')) {
+    if (await confirm('确定删除这条知识？')) {
       await deleteObject('knowledge', id)
       if (viewingId === id) setViewingId(null)
       if (editingId === id) setEditingId(null)
@@ -226,7 +228,7 @@ export default function KnowledgePage() {
   }
   const deleteL1Category = async (l1: TagL1) => {
     const childCount = l2List.filter(x => x.parent === l1.name).length
-    if (!confirm(`删除分类「${l1.name}」？${childCount ? `其下 ${childCount} 个标签将变为未分类` : ''}`)) return
+    if (!await confirm(`删除分类「${l1.name}」？${childCount ? `其下 ${childCount} 个标签将变为未分类` : ''}`)) return
     await saveL1(l1List.filter(x => x.id !== l1.id))
     await saveL2(l2List.filter(x => x.parent !== l1.name))
   }
@@ -246,7 +248,7 @@ export default function KnowledgePage() {
   }
   const deleteL2Tag = async (l2: TagL2) => {
     const count = knowledge.filter(k => k.category === l2.name).length
-    if (!confirm(`删除标签「${l2.name}」？${count ? `其下 ${count} 条知识将变为未分类` : ''}`)) return
+    if (!await confirm(`删除标签「${l2.name}」？${count ? `其下 ${count} 条知识将变为未分类` : ''}`)) return
     await saveL2(l2List.filter(x => x.id !== l2.id))
     if (selectedL2Filter === l2.name) setSelectedL2Filter(null)
   }
@@ -905,6 +907,7 @@ export default function KnowledgePage() {
   return (
     <div className="space-y-6">
       {askModal}
+      {confirmModal}
 
       <div className="flex items-center justify-between">
         <div>
@@ -914,10 +917,13 @@ export default function KnowledgePage() {
       </div>
 
       {/* 标签页 */}
-      <div className="flex gap-1 overflow-x-auto pb-1">
+      <div role="tablist" className="flex gap-1 overflow-x-auto pb-1">
         {tabs.map(tab => (
           <button
             key={tab.key}
+            role="tab"
+            aria-selected={activeTab === tab.key}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             onClick={() => { setActiveTab(tab.key); setViewingId(null); setEditingId(null) }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { memoryService } from '../services/memoryService'
 import { useAskText } from '../components/PromptModal'
+import { useConfirm } from '../components/ConfirmModal'
 import type { Memory, MemoryStatus, MemoryType } from '../types'
 
 const typeLabels: Record<MemoryType, string> = {
@@ -47,7 +48,7 @@ function timeAgo(iso?: string): string {
 
 function MemoryCard({
   memory,
-  onUpdate, onConfirm, onForget, onArchive, onReactivate,
+  onUpdate, onConfirm, onForget, onArchive, onReactivate, confirm,
 }: {
   memory: Memory
   onUpdate: (id: string, content: string) => void
@@ -55,6 +56,7 @@ function MemoryCard({
   onForget: (id: string) => void
   onArchive: (id: string) => void
   onReactivate: (id: string) => void
+  confirm: (msg: string) => Promise<boolean>
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(memory.content)
@@ -184,8 +186,8 @@ function MemoryCard({
             </button>
           )}
           <button
-            onClick={() => {
-              if (confirm('确定要彻底遗忘这条记忆吗？此操作不可恢复。')) onForget(memory.id)
+            onClick={async () => {
+              if (await confirm('确定要彻底遗忘这条记忆吗？此操作不可恢复。')) onForget(memory.id)
             }}
             className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg"
             title="删除"
@@ -202,6 +204,7 @@ function MemoryCard({
 
 export default function MemoryPage() {
   const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
   const [memories, setMemories] = useState<Memory[]>([])
   const [tab, setTab] = useState<MemoryStatus>('candidate')
   const [loading, setLoading] = useState(true)
@@ -314,6 +317,7 @@ export default function MemoryPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {askModal}
+      {confirmModal}
       {/* 标题栏 */}
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
@@ -341,10 +345,13 @@ export default function MemoryPage() {
       </p>
 
       {/* Tab 栏 */}
-      <div className="flex items-center gap-1 mb-4 border-b border-gray-100 pb-px overflow-x-auto">
+      <div role="tablist" className="flex items-center gap-1 mb-4 border-b border-gray-100 pb-px overflow-x-auto">
         {tabs.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
+            role="tab"
+            aria-selected={tab === key}
+            tabIndex={tab === key ? 0 : -1}
             onClick={() => setTab(key)}
             className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 transition-colors whitespace-nowrap ${
               tab === key
@@ -384,6 +391,7 @@ export default function MemoryPage() {
               onForget={handleForget}
               onArchive={handleArchive}
               onReactivate={handleReactivate}
+              confirm={confirm}
             />
           ))}
         </div>

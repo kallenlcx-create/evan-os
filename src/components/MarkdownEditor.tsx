@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeSanitize from 'rehype-sanitize'
 import { Eye, Edit3 } from 'lucide-react'
 
 interface Props {
@@ -47,7 +48,7 @@ export default function MarkdownEditor({ value, onChange, placeholder, minHeight
           style={{ minHeight }}
         >
           {value.trim() ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
               {value}
             </ReactMarkdown>
           ) : (

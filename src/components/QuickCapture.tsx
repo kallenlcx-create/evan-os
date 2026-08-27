@@ -24,6 +24,12 @@ export default function QuickCapture() {
     }
   }, [app.quickCaptureOpen])
 
+  const timerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [])
+
   const handleSubmit = () => {
     if (!content.trim()) return
     if (activeType === 'task') {
@@ -33,9 +39,10 @@ export default function QuickCapture() {
     }
     setContent('')
     setToast(true)
-    setTimeout(() => {
+    timerRef.current = window.setTimeout(() => {
       setToast(false)
       toggleQuickCapture()
+      timerRef.current = null
     }, 600)
   }
 

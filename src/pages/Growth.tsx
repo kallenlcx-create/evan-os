@@ -1,6 +1,6 @@
-﻿import { useState, useEffect, useCallback } from 'react'
+﻿import { useState } from 'react'
 import { useStore } from '../store'
-import { listByKind, migrateLSItems, syncKind, onKindsChanged } from '../repositories/collectionRepository'
+import { useCollectionData } from '../hooks/useCollectionData'
 import { localDate } from '../utils/date'
 import { Plus, Globe, Bot, TrendingUp, Wrench, Clock, BookOpen, Link2, Trash2 } from 'lucide-react'
 import type { LearningPath } from '../types'
@@ -39,24 +39,6 @@ interface Resource {
 
 const LS_KEY = 'evan-os-growth-data'
 
-function loadGrowth(): { logs: StudyLog[]; resources: Resource[] } {
-  try {
-    const raw = localStorage.getItem(LS_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  return {
-    logs: [
-      { id: 'l1', date: localDate(), subject: '英语听力', duration: 30, notes: 'BBC 6 Minute English，完成2集' },
-      { id: 'l2', date: localDate(), subject: 'Shopify 主题开发', duration: 45, notes: '学习 Liquid 模板语法' },
-    ],
-    resources: [
-      { id: 'r1', title: 'Shopify 官方文档', url: 'https://shopify.dev', category: 'shopify', bookmarked: true },
-      { id: 'r2', title: 'BBC Learning English', url: 'https://bbc.co.uk/learningenglish', category: 'english', bookmarked: true },
-      { id: 'r3', title: 'AI for Work (提示词库)', url: 'https://aiforwork.com', category: 'ai', bookmarked: true },
-    ],
-  }
-}
-
 type SubTab = 'paths' | 'logs' | 'resources'
 
 export default function GrowthPage() {
@@ -66,34 +48,26 @@ export default function GrowthPage() {
   const [showForm, setShowForm] = useState(false)
   const [newTitle, setNewTitle] = useState('')
 
-  const [growth, setGrowth] = useState(loadGrowth)
+  const DEFAULT_GROWTH = {
+    logs: [
+      { id: 'l1', date: localDate(), subject: '英语听力', duration: 30, notes: 'BBC 6 Minute English，完成2集' },
+      { id: 'l2', date: localDate(), subject: 'Shopify 主题开发', duration: 45, notes: '学习 Liquid 模板语法' },
+    ] as StudyLog[],
+    resources: [
+      { id: 'r1', title: 'Shopify 官方文档', url: 'https://shopify.dev', category: 'shopify', bookmarked: true },
+      { id: 'r2', title: 'BBC Learning English', url: 'https://bbc.co.uk/learningenglish', category: 'english', bookmarked: true },
+      { id: 'r3', title: 'AI for Work (提示词库)', url: 'https://aiforwork.com', category: 'ai', bookmarked: true },
+    ] as Resource[],
+  }
+
+  const [growth, setGrowth] = useCollectionData(
+    LS_KEY,
+    ['study_log', 'study_resource'] as const,
+    (raw: any) => ({ study_log: raw?.logs, study_resource: raw?.resources }),
+    DEFAULT_GROWTH,
+  )
   const [newLog, setNewLog] = useState({ subject: '', duration: '', notes: '' })
   const [newResource, setNewResource] = useState({ title: '', url: '', category: 'english' })
-
-  // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
-  const [hydrated, setHydrated] = useState(false)
-  const hydrateKinds = useCallback(async (first = false) => {
-    if (first) {
-      await migrateLSItems(LS_KEY, 'study_log', d => d.logs)
-      await migrateLSItems(LS_KEY, 'study_resource', d => d.resources)
-    }
-    const [logs, resources] = await Promise.all([listByKind('study_log'), listByKind('study_resource')])
-    setGrowth(g => ({
-      logs: logs.length ? (logs as any) : g.logs,
-      resources: resources.length ? (resources as any) : g.resources,
-    }))
-    if (first) setHydrated(true)
-  }, [])
-  useEffect(() => { void hydrateKinds(true) }, [hydrateKinds])
-
-  // 云同步落地远端 collections 变更后重水合，防止旧内存数组把新行当缺席误删
-  useEffect(() => onKindsChanged(() => { void hydrateKinds() }), [hydrateKinds])
-
-  useEffect(() => {
-    if (!hydrated) return
-    syncKind('study_log', growth.logs).catch(() => {})
-    syncKind('study_resource', growth.resources).catch(() => {})
-  }, [growth, hydrated])
 
   const handleAdd = () => {
     if (!newTitle.trim()) return
@@ -152,7 +126,7 @@ export default function GrowthPage() {
       </div>
 
       {/* 子标签 */}
-      <div className="flex gap-2">
+      <div role="tablist" className="flex gap-2">
         {([
           { key: 'paths' as const, label: '🛤️ 学习路径', icon: BookOpen },
           { key: 'logs' as const, label: '📝 学习日志', icon: Clock },
@@ -160,6 +134,9 @@ export default function GrowthPage() {
         ]).map(t => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={subTab === t.key}
+            tabIndex={subTab === t.key ? 0 : -1}
             onClick={() => { setSubTab(t.key); setShowForm(false) }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm transition-colors ${
               subTab === t.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
@@ -175,10 +152,13 @@ export default function GrowthPage() {
       {subTab === 'paths' && (
         <>
           {/* 分类 */}
-          <div className="flex gap-2 overflow-x-auto pb-2">
+          <div role="tablist" className="flex gap-2 overflow-x-auto pb-2">
             {categories.map(cat => (
               <button
                 key={cat.key}
+                role="tab"
+                aria-selected={activeCategory === cat.key}
+                tabIndex={activeCategory === cat.key ? 0 : -1}
                 onClick={() => setActiveCategory(cat.key)}
                 className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
                   activeCategory === cat.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'

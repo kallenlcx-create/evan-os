@@ -13,11 +13,14 @@ export function useAskText(): [
   const [state, setState] = useState<{ title: string; value: string; placeholder?: string } | null>(null)
   const resolveRef = useRef<((v: string | null) => void) | null>(null)
 
-  const askText = (title: string, defaultValue = '', placeholder?: string) =>
-    new Promise<string | null>(resolve => {
+  const askText = (title: string, defaultValue = '', placeholder?: string) => {
+    // 如果上一个弹窗还没关闭，先 reject 掉
+    resolveRef.current?.(null)
+    return new Promise<string | null>(resolve => {
       resolveRef.current = resolve
       setState({ title, value: defaultValue, placeholder })
     })
+  }
 
   const close = (result: string | null) => {
     resolveRef.current?.(result)

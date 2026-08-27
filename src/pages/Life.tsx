@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
 import { useStore } from '../store'
+import { useConfirm } from '../components/ConfirmModal'
 import { listByKind, migrateLSList, syncKind, onKindsChanged } from '../repositories/collectionRepository'
 import { localDate, localToday } from '../utils/date'
 import type { CollectionKind } from '../types'
@@ -89,6 +90,7 @@ interface PersonalRecord {
 export default function LifePage() {
   const { habits, toggleHabit, addHabit, updateHabit, deleteHabit } = useStore()
   const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
   const [newHabitTitle, setNewHabitTitle] = useState('')
   const [newHabitEmoji, setNewHabitEmoji] = useState('')
   const [activeSection, setActiveSection] = useState('habits')
@@ -136,7 +138,7 @@ return (
                         })() }} className="p-1.5 text-gray-300 hover:text-blue-500" title="编辑">
                           <Pencil size={13} />
                         </button>
-                        <button onClick={() => { if (confirm(`删除习惯「${habit.title}」？打卡记录将一并删除`)) deleteHabit(habit.id) }} className="p-1.5 text-gray-300 hover:text-red-500" title="删除">
+                        <button onClick={async () => { if (await confirm(`删除习惯「${habit.title}」？打卡记录将一并删除`)) deleteHabit(habit.id) }} className="p-1.5 text-gray-300 hover:text-red-500" title="删除">
                           <Trash2 size={13} />
                         </button>
                       </div>
@@ -399,14 +401,18 @@ return (
   return (
     <div className="space-y-6">
       {askModal}
+      {confirmModal}
       <div>
         <h1 className="text-2xl font-bold text-gray-800">🌿 生活</h1>
         <p className="text-sm text-gray-400 mt-0.5">平衡工作与生活，照顾好自己</p>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-2">
+      <div role="tablist" className="flex gap-2 overflow-x-auto pb-2">
         {sections.map(s => (
           <button
             key={s.key}
+            role="tab"
+            aria-selected={activeSection === s.key}
+            tabIndex={activeSection === s.key ? 0 : -1}
             onClick={() => setActiveSection(s.key)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${activeSection === s.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
           >

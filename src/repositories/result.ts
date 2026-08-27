@@ -13,7 +13,12 @@ export function err<E>(error: E): Result<never, E> {
 
 // ====== ID 生成 ======
 export function uid(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  // crypto.randomUUID() 在现代浏览器中可用，128 位随机，无碰撞风险
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  // 降级：时间戳 + 8 字符随机
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
 export function now(): string {

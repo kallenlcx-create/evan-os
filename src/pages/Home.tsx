@@ -1,9 +1,10 @@
-﻿import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react'
+﻿import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
+import { useConfirm } from '../components/ConfirmModal'
 import { localToday } from '../utils/date'
 import { useAskText } from '../components/PromptModal'
-import { Plus, Check, Clock, ChevronRight, PenLine, Inbox } from 'lucide-react'
+import { Plus, Check, Clock, ChevronRight, PenLine } from 'lucide-react'
 import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
@@ -52,9 +53,9 @@ function DailyLearningCard() {
         <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
           <span>📚</span> 每日学习
         </h2>
-        <div className="flex gap-1">
+        <div role="tablist" className="flex gap-1">
           {(['word', 'sentence', 'grammar'] as const).map(t => (
-            <button key={t} onClick={() => { setCardType(t); setFlipped(false) }}
+            <button key={t} role="tab" aria-selected={cardType === t} tabIndex={cardType === t ? 0 : -1} onClick={() => { setCardType(t); setFlipped(false) }}
               className={`px-2 py-0.5 rounded text-[10px] ${cardType === t ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
               {t === 'word' ? '单词' : t === 'sentence' ? '句型' : '语法'}
             </button>
@@ -309,6 +310,7 @@ function ClockWork({ weather, weatherError, loadWeather, changeCity }: ClockWork
 export default function HomePage() {
   const { projects, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, toggleHabit, updateObject, deleteObject } = useStore()
   const [askModal, askText] = useAskText()
+  const [confirmModal, confirm] = useConfirm()
   const navigate = useNavigate()
   const todayStr = localToday()
   const [newTask, setNewTask] = useState('')
@@ -464,6 +466,7 @@ export default function HomePage() {
   return (
     <div className="space-y-6">
       {askModal}
+      {confirmModal}
       <StatusStrip />
       {/* 页面标题 */}
       <div className="flex items-center justify-between">
@@ -598,8 +601,8 @@ export default function HomePage() {
                     const title = await askText('修改事项', task.title ?? ''); if (title === null || !title.trim()) return
                     updateObject('task', task.id, { title: title.trim() })
                   })() }}
-                  onDelete={() => {
-                    if (!confirm(`删除事项「${task.title}」？`)) return
+                  onDelete={async () => {
+                    if (!await confirm(`删除事项「${task.title}」？`)) return
                     deleteObject('task', task.id)
                   }}
                 />

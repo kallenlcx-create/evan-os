@@ -3,7 +3,7 @@
 // 数据统一走 IndexedDB；首次挂载自动迁移旧 localStorage 数据
 
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Globe, TrendingUp, Copy, Check, Users, FileText, Settings as SettingsIcon, Mail, Package } from 'lucide-react'
+import { Plus, Globe, TrendingUp, Copy, Check, Users, Settings as SettingsIcon, Mail, Package } from 'lucide-react'
 import { db } from '../db'
 import {
   getAllTradeDeals, createTradeDeal, advanceTradeStage,
@@ -209,10 +209,13 @@ export default function WorkPage() {
       </p>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
+      <div role="tablist" className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
         {tabs.map(t => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            tabIndex={tab === t.key ? 0 : -1}
             onClick={() => setTab(t.key)}
             className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
               tab === t.key ? 'border-emerald-500 text-emerald-600 font-medium' : 'border-transparent text-gray-400 hover:text-gray-600'

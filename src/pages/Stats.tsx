@@ -13,11 +13,12 @@ export default function StatsPage() {
 
   // 番茄钟统计
   const todayPomo = getTodayPomodoroStats()
+  const pomoDays = period === 'week' ? 7 : 30
   const weekPomo = pomodoroSessions.filter(s => {
     const d = new Date(s.startTime)
     const now = new Date()
     const diff = (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)
-    return diff <= 7 && s.type === 'focus'
+    return diff <= pomoDays && s.type === 'focus'
   })
   const totalFocusMinutes = weekPomo.reduce((sum, s) => sum + s.duration, 0)
 
@@ -51,13 +52,13 @@ export default function StatsPage() {
   const logCount = dailyLogs.length
   const recentLogs = dailyLogs.slice(-7)
 
-  // 最近7天任务完成趋势
-  const weekTaskTrend = Array.from({ length: 7 }, (_, i) => {
+  // 最近 N 天任务完成趋势（根据 period 切换）
+  const trendDays = period === 'week' ? 7 : 30
+  const weekTaskTrend = Array.from({ length: trendDays }, (_, i) => {
     const d = new Date()
-    d.setDate(d.getDate() - (6 - i))
+    d.setDate(d.getDate() - ((trendDays - 1) - i))
     const dateStr = localDate(d)
     const dayName = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
-    // 简化：统计所有已完成任务的 updatedAt 在当天的
     const done = doneTasks.filter(t => t.updatedAt.startsWith(dateStr)).length
     return { date: dateStr, day: dayName, count: done }
   })
@@ -71,14 +72,20 @@ export default function StatsPage() {
           <h1 className="text-2xl font-bold text-gray-800">📊 统计分析</h1>
           <p className="text-sm text-gray-400 mt-0.5">数据驱动的自我管理仪表盘</p>
         </div>
-        <div className="flex gap-2">
+        <div role="tablist" className="flex gap-2">
           <button
+            role="tab"
+            aria-selected={period === 'week'}
+            tabIndex={period === 'week' ? 0 : -1}
             onClick={() => setPeriod('week')}
             className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${period === 'week' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 border border-gray-200'}`}
           >
             本周
           </button>
           <button
+            role="tab"
+            aria-selected={period === 'month'}
+            tabIndex={period === 'month' ? 0 : -1}
             onClick={() => setPeriod('month')}
             className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${period === 'month' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 border border-gray-200'}`}
           >

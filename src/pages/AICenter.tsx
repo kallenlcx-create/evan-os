@@ -2,14 +2,13 @@
 // 六大 AI 能力统一入口：助手 / 智能体 / 记忆 / 上下文 / 工具 / 自动化
 // 保留：提示词库 + AI 工具收藏（本地清单）
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, Lightbulb, Cpu, Bot, Brain, Zap, FlaskConical,
   MessageSquare, Eye, Plug, Copy, Trash2, Plus, ExternalLink, ArrowRight, Check,
 } from 'lucide-react'
-import { useStore } from '../store'
-import { listByKind, migrateLSItems, syncKind, onKindsChanged } from '../repositories/collectionRepository'
+import { useCollectionData } from '../hooks/useCollectionData'
 
 // ---------- 本地清单（提示词/工具） ----------
 
@@ -30,26 +29,6 @@ interface ToolItem {
 
 const LS_KEY = 'evan-os-ai-data'
 
-function loadAI(): { prompts: PromptItem[]; tools: ToolItem[] } {
-  try {
-    const raw = localStorage.getItem(LS_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  return {
-    prompts: [
-      { id: 'p1', title: '外贸跟进邮件', category: '外贸', content: '请以专业外贸业务员口吻，给 [客户名] 写一封跟进邮件，关于 [产品] 的报价，语气友好专业，150 词以内。' },
-      { id: 'p2', title: '产品描述生成', category: '独立站', content: '为 [产品名] 写一段 Shopify 产品描述：包含 SEO 关键词 [关键词]、3 个卖点、规格参数、行动号召。' },
-      { id: 'p3', title: '周报总结', category: '效率', content: '根据以下工作记录，生成一份结构化周报：本周完成 / 下周计划 / 风险与求助。\n记录：' },
-    ],
-    tools: [
-      { id: 't1', name: 'ChatGPT', url: 'https://chat.openai.com', category: '对话', description: '通用对话与写作' },
-      { id: 't2', name: 'Claude', url: 'https://claude.ai', category: '对话', description: '长文分析与代码' },
-      { id: 't3', name: 'Midjourney', url: 'https://midjourney.com', category: '图像', description: '产品图与营销素材' },
-      { id: 't4', name: 'n8n', url: 'https://n8n.io', category: '自动化', description: '工作流自动化平台' },
-    ],
-  }
-}
-
 // ---------- AI 六模块入口 ----------
 
 const hubEntries = [
@@ -64,37 +43,32 @@ const hubEntries = [
 export default function AICenterPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<'hub' | 'prompts' | 'tools'>('hub')
-  const [aiData, setAiData] = useState(loadAI)
   const [showForm, setShowForm] = useState<'prompt' | 'tool' | ''>('')
   const [searchQuery, setSearchQuery] = useState('')
   const [copiedId, setCopiedId] = useState('')
   const [newPrompt, setNewPrompt] = useState({ title: '', category: '', content: '' })
   const [newTool, setNewTool] = useState({ name: '', url: '', category: '', description: '' })
 
-  // v1.1：持久层迁至 IndexedDB collections（首次自动迁移 LS，幂等）
-  const [hydrated, setHydrated] = useState(false)
-  const hydrateKinds = useCallback(async (first = false) => {
-    if (first) {
-      await migrateLSItems(LS_KEY, 'prompt', d => d.prompts)
-      await migrateLSItems(LS_KEY, 'ai_tool', d => d.tools)
-    }
-    const [prompts, tools] = await Promise.all([listByKind('prompt'), listByKind('ai_tool')])
-    setAiData(d => ({
-      prompts: prompts.length ? (prompts as any) : d.prompts,
-      tools: tools.length ? (tools as any) : d.tools,
-    }))
-    if (first) setHydrated(true)
-  }, [])
-  useEffect(() => { void hydrateKinds(true) }, [hydrateKinds])
+  const DEFAULT_AI = {
+    prompts: [
+      { id: 'p1', title: '外贸跟进邮件', category: '外贸', content: '请以专业外贸业务员口吻，给 [客户名] 写一封跟进邮件，关于 [产品] 的报价，语气友好专业，150 词以内。' },
+      { id: 'p2', title: '产品描述生成', category: '独立站', content: '为 [产品名] 写一段 Shopify 产品描述：包含 SEO 关键词 [关键词]、3 个卖点、规格参数、行动号召。' },
+      { id: 'p3', title: '周报总结', category: '效率', content: '根据以下工作记录，生成一份结构化周报：本周完成 / 下周计划 / 风险与求助。\n记录：' },
+    ] as PromptItem[],
+    tools: [
+      { id: 't1', name: 'ChatGPT', url: 'https://chat.openai.com', category: '对话', description: '通用对话与写作' },
+      { id: 't2', name: 'Claude', url: 'https://claude.ai', category: '对话', description: '长文分析与代码' },
+      { id: 't3', name: 'Midjourney', url: 'https://midjourney.com', category: '图像', description: '产品图与营销素材' },
+      { id: 't4', name: 'n8n', url: 'https://n8n.io', category: '自动化', description: '工作流自动化平台' },
+    ] as ToolItem[],
+  }
 
-  // 云同步落地远端 collections 变更后重水合，防止旧内存数组把新行当缺席误删
-  useEffect(() => onKindsChanged(() => { void hydrateKinds() }), [hydrateKinds])
-
-  useEffect(() => {
-    if (!hydrated) return
-    syncKind('prompt', aiData.prompts).catch(() => {})
-    syncKind('ai_tool', aiData.tools).catch(() => {})
-  }, [aiData, hydrated])
+  const [aiData, setAiData] = useCollectionData(
+    LS_KEY,
+    ['prompt', 'ai_tool'] as const,
+    (raw: any) => ({ prompt: raw?.prompts, ai_tool: raw?.tools }),
+    DEFAULT_AI,
+  )
 
   const addPrompt = () => {
     if (!newPrompt.title.trim()) return
@@ -131,7 +105,7 @@ export default function AICenterPage() {
       <p className="text-xs text-gray-400 mb-4">六大 AI 能力统一入口 —— 数据仍遵守四层架构与权限管线。</p>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
+      <div role="tablist" className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
         {([
           { key: 'hub', label: '能力入口', icon: Sparkles },
           { key: 'prompts', label: '提示词库', icon: Lightbulb },
@@ -139,6 +113,9 @@ export default function AICenterPage() {
         ] as const).map(t => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            tabIndex={tab === t.key ? 0 : -1}
             onClick={() => setTab(t.key)}
             className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 whitespace-nowrap transition-colors ${
               tab === t.key ? 'border-purple-500 text-purple-600 font-medium' : 'border-transparent text-gray-400 hover:text-gray-600'
