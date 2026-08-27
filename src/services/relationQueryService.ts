@@ -4,11 +4,6 @@
 
 import type { ObjectType, RelationRecord, AnyObject, RelationType } from '../types'
 import { db } from '../db'
-import {
-  getAllRelations,
-  getOutgoingRelations,
-  getIncomingRelations,
-} from '../repositories/relationRepository'
 
 // ====== 图谱节点 & 边 ======
 

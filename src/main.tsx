@@ -8,7 +8,7 @@ import './index.css'
 import { useStore } from './store'
 
 function Root() {
-  const { loaded, initFromDB } = useStore()
+  const { loaded } = useStore()
 
   return (
     <StrictMode>

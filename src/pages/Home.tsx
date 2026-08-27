@@ -6,9 +6,9 @@ import { localToday } from '../utils/date'
 import { useAskText } from '../components/PromptModal'
 import { Plus, Check, Clock, ChevronRight, PenLine } from 'lucide-react'
 import { db } from '../db'
-import { cloudSync, getSyncConfig } from '../services/cloudSync'
-import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
-import { pickDaily, RECIPES, fetchRecipeTutorial, pickDailyHotspots } from '../config/dailyContent'
+import { getSyncConfig } from '../services/cloudSync'
+import { readWorkHours, isWorkNow, isoWeekNumber } from '../config/workHours'
+import { RECIPES, fetchRecipeTutorial, pickDailyHotspots } from '../config/dailyContent'
 import Card from '../components/Card'
 
 // ====== 每日学习卡片数据 ======
@@ -309,7 +309,7 @@ function ClockWork({ weather, weatherError, loadWeather, changeCity }: ClockWork
 }
 
 export default function HomePage() {
-  const { projects, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, toggleHabit, updateObject, deleteObject } = useStore()
+  const { projects, learningPaths, tasks, toggleTaskStatus, addTask, getDailyLog, updateObject, deleteObject } = useStore()
   const [askModal, askText] = useAskText()
   const [confirmModal, confirm] = useConfirm()
   const navigate = useNavigate()

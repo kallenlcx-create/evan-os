@@ -107,7 +107,7 @@ export default function AgentsPage() {
   const [defs, setDefs] = useState<AgentDefinition[]>([])
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([])
   const [runs, setRuns] = useState<AgentRunRecord[]>([])
-  const [busy, setBusy] = useState('')
+  const [_busy, setBusy] = useState('')
   const [expandedRun, setExpandedRun] = useState('')
 
   const refresh = useCallback(async () => {

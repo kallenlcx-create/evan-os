@@ -326,7 +326,6 @@ class WorkflowEngine {
   ): Promise<void> {
     for (let i = stepIndex; i < wf.steps.length; i++) {
       const step = wf.steps[i]
-      const level: PermissionLevel = WORKFLOW_ACTION_LEVEL[step.action]
       // 高风险动作（external_mock/delete_object）强制审批；
       // 其他动作默认随运行自动执行，除非步骤显式 requireApproval
       const mustApprove =

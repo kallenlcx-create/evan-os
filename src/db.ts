@@ -3,7 +3,7 @@ import type {
   Goal, Project, Task, Customer, Opportunity, Order, Communication,
   Knowledge, Inspiration, Question, Research, Experiment, Decision, Review, Process,
   Habit, InboxItem, LearningPath, AgentConfig, Notification,
-  DailyLog, AppState, PomodoroSession,
+  DailyLog, PomodoroSession,
   RelationRecord, EventRecord,
   Memory, AgentRunRecord, ApprovalRecord,
   WorkflowDefinition, WorkflowRunRecord,

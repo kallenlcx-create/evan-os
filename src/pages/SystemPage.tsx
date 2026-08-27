@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Database, RefreshCw, ShieldCheck, Layers3 } from 'lucide-react'
 import { db } from '../db'
-import { DATA_LAYERS, layerOf, syncSystemRegistry, type LayerKey } from '../services/systemRegistry'
+import { DATA_LAYERS, syncSystemRegistry, type LayerKey } from '../services/systemRegistry'
 
 const layerMeta: Record<LayerKey, { title: string; subtitle: string; color: string }> = {
   layer1_core_objects: { title: '第一层 · 核心对象', subtitle: '人生 / 工作 / 生活的业务实体', color: 'text-blue-600' },

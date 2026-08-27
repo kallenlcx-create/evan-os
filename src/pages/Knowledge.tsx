@@ -4,7 +4,7 @@ import { useConfirm } from '../components/ConfirmModal'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Tag, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
 import { useAskText } from '../components/PromptModal'
 import RelationCreator from '../components/RelationCreator'
@@ -468,7 +468,7 @@ export default function KnowledgePage() {
 
             {l2sByL1.map(({ l1, children }) => {
               const expanded = expandedL1 === l1.id
-              const l1Count = children.reduce((s, l2) => s + (countByCategory.get(l2.name) ?? 0), 0)
+              children.reduce((s, l2) => s + (countByCategory.get(l2.name) ?? 0), 0)
               return (
                 <div key={l1.id}>
                   <div className="flex items-center gap-1 px-1 py-1 group">

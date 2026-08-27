@@ -3,10 +3,10 @@ import {
   Home, Target, Briefcase, FolderKanban, CalendarCheck,
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
   ChevronLeft, ChevronRight, Plus, Settings, BarChart3, Eye, Zap,
-  Plug, TrendingUp, FlaskConical, Database, CloudUpload,
+  Plug, FlaskConical, Database, CloudUpload,
   ChevronDown, Layers
 } from 'lucide-react'
-import { useState, useEffect, type CSSProperties } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
 import { getSyncConfig } from '../services/cloudSync'

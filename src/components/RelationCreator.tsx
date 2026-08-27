@@ -2,7 +2,7 @@
 // 任意两个对象之间创建 Relation（18 种关系类型可选）
 // 对象选择复用统一搜索（有界结果）
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link2, Search, X } from 'lucide-react'
 import { createRelation } from '../repositories/relationRepository'
 import { searchService } from '../services/searchService'

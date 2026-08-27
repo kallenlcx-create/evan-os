@@ -30,9 +30,9 @@ export function useCollectionData<K extends string, T extends Record<K, unknown[
 
   const hydrateKinds = useCallback(async (first = false) => {
     if (first) {
-      await Promise.all(kinds.map(k => migrateLSItems(lsKey, k, d => extract(d)?.[k])))
+      await Promise.all(kinds.map(k => migrateLSItems(lsKey, k as any, d => extract(d)?.[k])))
     }
-    const results = await Promise.all(kinds.map(k => listByKind(k)))
+    const results = await Promise.all(kinds.map(k => listByKind(k as any)))
     setData(prev => {
       let changed = false
       const next = { ...prev }
@@ -54,7 +54,7 @@ export function useCollectionData<K extends string, T extends Record<K, unknown[
   // 写回 IndexedDB
   useEffect(() => {
     if (!hydrated) return
-    kinds.forEach(k => syncKind(k, (data as any)[k] as unknown[]).catch(() => {}))
+    kinds.forEach(k => syncKind(k as any, (data as any)[k] as unknown[]).catch(() => {}))
   }, [data, hydrated, kinds])
 
   return [data, setData] as const

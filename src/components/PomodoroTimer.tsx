@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { Play, Pause, RotateCcw, Timer, Coffee, Check, X } from 'lucide-react'
+import { Play, Pause, RotateCcw, Timer, Check, X } from 'lucide-react'
 
 const FOCUS = (Number(localStorage.getItem('evan-os-pomodoro-min')) || 25) * 60
 const BREAK = 5 * 60

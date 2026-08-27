@@ -4,10 +4,9 @@ import { useStore } from '../store'
 import { localToday } from '../utils/date'
 import { useAskText } from '../components/PromptModal'
 import { useConfirm } from '../components/ConfirmModal'
-import { Plus, Check, Clock, Calendar, RotateCw, ArrowRight, Save, Timer, Grid3X3 } from 'lucide-react'
+import { Plus, Check, Calendar, RotateCw, ArrowRight, Save, Timer, Grid3X3 } from 'lucide-react'
 import QuadrantView from '../components/QuadrantView'
 import PomodoroTimer from '../components/PomodoroTimer'
-import type { Task } from '../types'
 
 const tabs = [
   { key: 'today', label: '📅 今日', icon: Calendar },

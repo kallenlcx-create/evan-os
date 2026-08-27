@@ -2,10 +2,10 @@
 // 基于 SearchService 统一搜索，支持类型过滤、最近使用、精确/模糊匹配
 
 import { Search, X, Clock, Filter } from 'lucide-react'
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { searchService, type SearchScope } from '../services/searchService'
+import { searchService } from '../services/searchService'
 import type { SearchKind } from '../types'
 
 const typeLabel: Record<string, string> = {
@@ -69,7 +69,7 @@ export default function GlobalSearch() {
   const [activeIdx, setActiveIdx] = useState(0)
   const [showFilters, setShowFilters] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<Set<SearchKind>>(new Set())
-  const [scope, setScope] = useState<SearchScope>('all')
+
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 

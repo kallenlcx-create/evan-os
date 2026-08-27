@@ -2,7 +2,7 @@
 
 import { db } from '../db'
 import type { SiteMetric, SiteProduct, SeoKeyword } from '../types'
-import { uid, now, type Result, ok, err } from './result'
+import { uid, now, type Result, ok } from './result'
 import { localDate } from '../utils/date'
 
 // ---------- 产品 ----------

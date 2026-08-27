@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useStore } from '../store'
 import { useConfirm } from '../components/ConfirmModal'
 import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell, Palette, Info, BellOff } from 'lucide-react'
@@ -17,7 +17,7 @@ export default function SettingsPage() {
     catch { return defaults }
   })
   const [activeSection, setActiveSection] = useState('data')
-  const [cardVersion, setCardVersion] = useState(0)
+  const [_cardVersion, setCardVersion] = useState(0)
 
   const stats = {
     goals: goals.length,

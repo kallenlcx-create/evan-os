@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Sparkles, Lightbulb, Cpu, Bot, Brain, Zap, FlaskConical,
+  Sparkles, Lightbulb, Cpu, Bot,
   MessageSquare, Eye, Plug, Copy, Trash2, Plus, ExternalLink, ArrowRight, Check,
 } from 'lucide-react'
 import { useCollectionData } from '../hooks/useCollectionData'
@@ -50,12 +50,12 @@ export default function AICenterPage() {
   const [newTool, setNewTool] = useState({ name: '', url: '', category: '', description: '' })
 
   const DEFAULT_AI = {
-    prompts: [
+    prompt: [
       { id: 'p1', title: '外贸跟进邮件', category: '外贸', content: '请以专业外贸业务员口吻，给 [客户名] 写一封跟进邮件，关于 [产品] 的报价，语气友好专业，150 词以内。' },
       { id: 'p2', title: '产品描述生成', category: '独立站', content: '为 [产品名] 写一段 Shopify 产品描述：包含 SEO 关键词 [关键词]、3 个卖点、规格参数、行动号召。' },
       { id: 'p3', title: '周报总结', category: '效率', content: '根据以下工作记录，生成一份结构化周报：本周完成 / 下周计划 / 风险与求助。\n记录：' },
     ] as PromptItem[],
-    tools: [
+    ai_tool: [
       { id: 't1', name: 'ChatGPT', url: 'https://chat.openai.com', category: '对话', description: '通用对话与写作' },
       { id: 't2', name: 'Claude', url: 'https://claude.ai', category: '对话', description: '长文分析与代码' },
       { id: 't3', name: 'Midjourney', url: 'https://midjourney.com', category: '图像', description: '产品图与营销素材' },
@@ -73,17 +73,17 @@ export default function AICenterPage() {
   const addPrompt = () => {
     if (!newPrompt.title.trim()) return
     const p: PromptItem = { id: Date.now().toString(), ...newPrompt, category: newPrompt.category || '通用' }
-    setAiData(d => ({ ...d, prompts: [p, ...d.prompts] }))
+    setAiData(d => ({ ...d, prompt: [p, ...d.prompt] }))
     setNewPrompt({ title: '', category: '', content: '' }); setShowForm('')
   }
   const addTool = () => {
     if (!newTool.name.trim()) return
     const t: ToolItem = { id: Date.now().toString(), ...newTool, category: newTool.category || '通用' }
-    setAiData(d => ({ ...d, tools: [t, ...d.tools] }))
+    setAiData(d => ({ ...d, ai_tool: [t, ...d.ai_tool] }))
     setNewTool({ name: '', url: '', category: '', description: '' }); setShowForm('')
   }
-  const deletePrompt = (id: string) => setAiData(d => ({ ...d, prompts: d.prompts.filter(p => p.id !== id) }))
-  const deleteTool = (id: string) => setAiData(d => ({ ...d, tools: d.tools.filter(t => t.id !== id) }))
+  const deletePrompt = (id: string) => setAiData(d => ({ ...d, prompt: d.prompt.filter(p => p.id !== id) }))
+  const deleteTool = (id: string) => setAiData(d => ({ ...d, ai_tool: d.ai_tool.filter(t => t.id !== id) }))
   const copyPrompt = (p: PromptItem) => {
     navigator.clipboard?.writeText(p.content).then(() => {
       setCopiedId(p.id); setTimeout(() => setCopiedId(''), 1500)
@@ -91,9 +91,9 @@ export default function AICenterPage() {
   }
 
   const inputClass = 'w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200'
-  const filteredPrompts = aiData.prompts.filter(p =>
+  const filteredPrompts = aiData.prompt.filter(p =>
     !searchQuery || p.title.includes(searchQuery) || p.category.includes(searchQuery) || p.content.includes(searchQuery))
-  const filteredTools = aiData.tools.filter(t =>
+  const filteredTools = aiData.ai_tool.filter(t =>
     !searchQuery || t.name.includes(searchQuery) || t.category.includes(searchQuery) || t.description.includes(searchQuery))
 
   return (

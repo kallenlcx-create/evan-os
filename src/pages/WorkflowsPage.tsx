@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Zap, Play, PauseCircle, CheckCircle, XCircle, ChevronDown, ChevronRight,
+  Zap, Play, PauseCircle, CheckCircle, ChevronDown, ChevronRight,
   ShieldAlert, History, Plus, RefreshCw,
 } from 'lucide-react'
 import { workflowEngine, WORKFLOW_TEMPLATES } from '../services/workflowEngine'

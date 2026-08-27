@@ -2,9 +2,8 @@
 // 从 Relation 数据实时生成，不创建第二套知识数据库
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ZoomIn, ZoomOut, Maximize2, RefreshCw, Network } from 'lucide-react'
+import { ZoomIn, ZoomOut, Maximize2, RefreshCw } from 'lucide-react'
 import { relationQueryService, type GraphData, type GraphNode } from '../services/relationQueryService'
-import type { ObjectType } from '../types'
 
 // ====== 类型标签和颜色 ======
 

@@ -50,11 +50,11 @@ export default function GrowthPage() {
   const [newTitle, setNewTitle] = useState('')
 
   const DEFAULT_GROWTH = {
-    logs: [
+    study_log: [
       { id: 'l1', date: localDate(), subject: '英语听力', duration: 30, notes: 'BBC 6 Minute English，完成2集' },
       { id: 'l2', date: localDate(), subject: 'Shopify 主题开发', duration: 45, notes: '学习 Liquid 模板语法' },
     ] as StudyLog[],
-    resources: [
+    study_resource: [
       { id: 'r1', title: 'Shopify 官方文档', url: 'https://shopify.dev', category: 'shopify', bookmarked: true },
       { id: 'r2', title: 'BBC Learning English', url: 'https://bbc.co.uk/learningenglish', category: 'english', bookmarked: true },
       { id: 'r3', title: 'AI for Work (提示词库)', url: 'https://aiforwork.com', category: 'ai', bookmarked: true },
@@ -80,19 +80,19 @@ export default function GrowthPage() {
   const addLog = () => {
     if (!newLog.subject.trim()) return
     const log: StudyLog = { id: Date.now().toString(), date: localDate(), subject: newLog.subject, duration: Number(newLog.duration) || 0, notes: newLog.notes }
-    setGrowth(g => ({ ...g, logs: [log, ...g.logs] }))
+    setGrowth(g => ({ ...g, study_log: [log, ...g.study_log] }))
     setNewLog({ subject: '', duration: '', notes: '' }); setShowForm(false)
   }
 
   const addResource = () => {
     if (!newResource.title.trim()) return
     const r: Resource = { id: Date.now().toString(), title: newResource.title, url: newResource.url, category: newResource.category, bookmarked: true }
-    setGrowth(g => ({ ...g, resources: [...g.resources, r] }))
+    setGrowth(g => ({ ...g, study_resource: [...g.study_resource, r] }))
     setNewResource({ title: '', url: '', category: 'english' }); setShowForm(false)
   }
 
-  const deleteLog = (id: string) => setGrowth(g => ({ ...g, logs: g.logs.filter(l => l.id !== id) }))
-  const deleteResource = (id: string) => setGrowth(g => ({ ...g, resources: g.resources.filter(r => r.id !== id) }))
+  const deleteLog = (id: string) => setGrowth(g => ({ ...g, study_log: g.study_log.filter(l => l.id !== id) }))
+  const deleteResource = (id: string) => setGrowth(g => ({ ...g, study_resource: g.study_resource.filter(r => r.id !== id) }))
 
   const grouped = [
     { status: 'not_started' as const, items: learningPaths.filter(l => l.status === 'not_started') },
@@ -106,7 +106,7 @@ export default function GrowthPage() {
   const today = new Date()
   const weekStart = new Date(today)
   weekStart.setDate(today.getDate() - today.getDay() + 1)
-  const weekLogs = growth.logs.filter(l => new Date(l.date) >= weekStart)
+  const weekLogs = growth.study_log.filter(l => new Date(l.date) >= weekStart)
   const weekMinutes = weekLogs.reduce((sum, l) => sum + l.duration, 0)
 
   const inputClass = 'w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200'
@@ -245,7 +245,7 @@ export default function GrowthPage() {
               <div className="text-xs text-gray-400 mt-1">本周学习次数</div>
             </Card>
             <Card className="p-5">
-              <div className="text-3xl font-bold text-orange-600">{growth.logs.length}</div>
+              <div className="text-3xl font-bold text-orange-600">{growth.study_log.length}</div>
               <div className="text-xs text-gray-400 mt-1">累计学习记录</div>
             </Card>
           </div>
@@ -264,7 +264,7 @@ export default function GrowthPage() {
 
           {/* 日志列表 */}
           <Card className="overflow-hidden">
-            {growth.logs.map((log, idx) => (
+            {growth.study_log.map((log, idx) => (
               <div key={log.id} className={`flex items-center gap-4 p-4 group hover:bg-gray-50 transition-colors ${idx > 0 ? 'border-t border-gray-50' : ''}`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
@@ -282,7 +282,7 @@ export default function GrowthPage() {
                 </button>
               </div>
             ))}
-            {growth.logs.length === 0 && (
+            {growth.study_log.length === 0 && (
               <div className="p-12 text-center text-gray-400 text-sm">暂无学习日志</div>
             )}
           </Card>
@@ -307,7 +307,7 @@ export default function GrowthPage() {
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {growth.resources.map(r => {
+            {growth.study_resource.map(r => {
               const cat = categories.find(c => c.key === r.category)
               return (
                 <Card className="p-5 group">
@@ -329,7 +329,7 @@ export default function GrowthPage() {
                 </Card>
               )
             })}
-            {growth.resources.length === 0 && (
+            {growth.study_resource.length === 0 && (
               <div className="col-span-full text-center py-12 text-gray-400 text-sm">暂无资源</div>
             )}
           </div>

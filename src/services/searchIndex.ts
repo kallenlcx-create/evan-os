@@ -202,7 +202,7 @@ export class SearchIndex {
 
     // 4. 多 token 同时命中加分
     if (queryTokens.length > 1) {
-      for (const [id, sr] of results) {
+      for (const [_id, sr] of results) {
         // 检查所有 query token 是否都命中了某个字段
         const allMatched = queryTokens.every(token =>
           sr.matchedFields.some(field => {

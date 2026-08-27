@@ -2,7 +2,7 @@ import { db } from '../db'
 import type { Task } from '../types'
 import { uid, now, type Result, ok, err } from './result'
 import { createEvent } from './eventRepository'
-import { createRelation, deleteRelation } from './relationRepository'
+import { createRelation } from './relationRepository'
 
 // ====== Task Repository ======
 

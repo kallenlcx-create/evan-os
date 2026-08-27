@@ -6,8 +6,6 @@
 import type { AnyObject, SearchKind, ObjectType, RelationRecord, EventRecord } from '../types'
 import { SearchIndex, type SearchResult, type IndexedItem } from './searchIndex'
 import { db } from '../db'
-import { getAllRelations } from '../repositories/relationRepository'
-import { getAllEvents } from '../repositories/eventRepository'
 
 // ====== 搜索过滤器 ======
 
@@ -280,7 +278,7 @@ export class SearchService {
     }
   }
 
-  removeObject(id: string, type: SearchKind): void {
+  removeObject(id: string, _type: SearchKind): void {
     this.index.remove(id)
     this.allObjects = this.allObjects.filter(o => o.id !== id)
   }
