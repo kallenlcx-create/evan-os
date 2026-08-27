@@ -4,6 +4,7 @@ import { useCollectionData } from '../hooks/useCollectionData'
 import { localDate } from '../utils/date'
 import { Plus, Globe, Bot, TrendingUp, Wrench, Clock, BookOpen, Link2, Trash2 } from 'lucide-react'
 import type { LearningPath } from '../types'
+import Card from '../components/Card'
 
 const statusLabels: Record<LearningPath['status'], { label: string; color: string }> = {
   not_started: { label: '未开始', color: 'bg-gray-100 text-gray-500' },
@@ -171,7 +172,7 @@ export default function GrowthPage() {
           </div>
 
           {showForm && (
-            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex gap-2">
+            <Card className="p-4 flex gap-2">
               <input
                 type="text"
                 value={newTitle}
@@ -188,7 +189,7 @@ export default function GrowthPage() {
               >
                 添加
               </button>
-            </div>
+            </Card>
           )}
 
           {/* 学习路径看板 */}
@@ -235,22 +236,22 @@ export default function GrowthPage() {
         <div className="space-y-4">
           {/* 本周统计 */}
           <div className="grid grid-cols-3 gap-4">
-            <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
+            <Card className="p-5">
               <div className="text-3xl font-bold text-blue-600">{weekMinutes}</div>
               <div className="text-xs text-gray-400 mt-1">本周学习分钟</div>
-            </div>
-            <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
+            </Card>
+            <Card className="p-5">
               <div className="text-3xl font-bold text-green-600">{weekLogs.length}</div>
               <div className="text-xs text-gray-400 mt-1">本周学习次数</div>
-            </div>
-            <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
+            </Card>
+            <Card className="p-5">
               <div className="text-3xl font-bold text-orange-600">{growth.logs.length}</div>
               <div className="text-xs text-gray-400 mt-1">累计学习记录</div>
-            </div>
+            </Card>
           </div>
 
           {showForm && (
-            <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+            <Card className="p-5 space-y-3">
               <h3 className="text-sm font-semibold text-gray-700">记录学习</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <input value={newLog.subject} onChange={e => setNewLog({ ...newLog, subject: e.target.value })} placeholder="学习主题" className={inputClass} autoFocus />
@@ -258,11 +259,11 @@ export default function GrowthPage() {
               </div>
               <textarea value={newLog.notes} onChange={e => setNewLog({ ...newLog, notes: e.target.value })} placeholder="学到了什么..." rows={2} className={inputClass} />
               <button onClick={addLog} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">记录</button>
-            </div>
+            </Card>
           )}
 
           {/* 日志列表 */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <Card className="overflow-hidden">
             {growth.logs.map((log, idx) => (
               <div key={log.id} className={`flex items-center gap-4 p-4 group hover:bg-gray-50 transition-colors ${idx > 0 ? 'border-t border-gray-50' : ''}`}>
                 <div className="flex-1 min-w-0">
@@ -284,7 +285,7 @@ export default function GrowthPage() {
             {growth.logs.length === 0 && (
               <div className="p-12 text-center text-gray-400 text-sm">暂无学习日志</div>
             )}
-          </div>
+          </Card>
         </div>
       )}
 
@@ -292,7 +293,7 @@ export default function GrowthPage() {
       {subTab === 'resources' && (
         <div className="space-y-4">
           {showForm && (
-            <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+            <Card className="p-5 space-y-3">
               <h3 className="text-sm font-semibold text-gray-700">添加资源</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <input value={newResource.title} onChange={e => setNewResource({ ...newResource, title: e.target.value })} placeholder="资源名称" className={inputClass} autoFocus />
@@ -302,14 +303,14 @@ export default function GrowthPage() {
                 </select>
               </div>
               <button onClick={addResource} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加</button>
-            </div>
+            </Card>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {growth.resources.map(r => {
               const cat = categories.find(c => c.key === r.category)
               return (
-                <div key={r.id} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 group">
+                <Card className="p-5 group">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-lg">{cat?.label.split(' ')[0] || '🔗'}</span>
@@ -325,7 +326,7 @@ export default function GrowthPage() {
                   <div className="mt-2">
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{cat?.label || '通用'}</span>
                   </div>
-                </div>
+                </Card>
               )
             })}
             {growth.resources.length === 0 && (

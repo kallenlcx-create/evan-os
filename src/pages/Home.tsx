@@ -9,6 +9,7 @@ import { db } from '../db'
 import { cloudSync, getSyncConfig } from '../services/cloudSync'
 import { readWorkHours, isWorkNow, isWorkDay, isoWeekNumber } from '../config/workHours'
 import { pickDaily, RECIPES, fetchRecipeTutorial, pickDailyHotspots } from '../config/dailyContent'
+import Card from '../components/Card'
 
 // ====== 每日学习卡片数据 ======
 const DAILY_WORDS = [
@@ -48,7 +49,7 @@ function DailyLearningCard() {
   const grammar = DAILY_GRAMMAR[dayIdx % DAILY_GRAMMAR.length]
 
   return (
-    <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+    <Card className="p-5">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
           <span>📚</span> 每日学习
@@ -111,7 +112,7 @@ function DailyLearningCard() {
         )}
       </div>
       <p className="text-[9px] text-gray-300 text-center">点击卡片翻转查看答案</p>
-    </div>
+    </Card>
   )
 }
 import type { Task } from '../types'
@@ -491,7 +492,7 @@ export default function HomePage() {
           <ClockWork weather={weather} weatherError={weatherError} loadWeather={() => loadWeather()} changeCity={changeCity} />
         </div>
         {/* 补水 & 久坐卡片 */}
-        <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col justify-between">
+        <Card className="p-4 flex flex-col justify-between">
           <div>
             <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-3">
               <span>💧</span> 补水 & 久坐
@@ -540,7 +541,7 @@ export default function HomePage() {
               刚活动过
             </button>
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* 下方：今日事项 + 天气/食谱 */}
@@ -548,7 +549,7 @@ export default function HomePage() {
         {/* 左列：今日重点 + 待办 */}
         <div className="lg:col-span-2 space-y-6">
           {/* 今日事项 */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>📋</span> 今日事项
@@ -609,10 +610,10 @@ export default function HomePage() {
               ))}
             </div>
             <p className="text-[10px] text-gray-300 mt-3">💡 切换日期可预设未来事项，到当天才会出现在这里；也可在「行动 → 日历」中按月规划</p>
-          </div>
+          </Card>
 
           {/* 进行中的项目 */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>🚀</span> 进行中的项目
@@ -642,7 +643,7 @@ export default function HomePage() {
                 ))}
               </div>
             )}
-          </div>
+          </Card>
         </div>
 
         {/* 右列：每日学习 + 食谱 + AI 热点 */}
@@ -651,7 +652,7 @@ export default function HomePage() {
           <DailyLearningCard />
 
           {/* 今日食谱（2道菜） */}
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+          <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>🍳</span> 今日食谱
@@ -687,10 +688,10 @@ export default function HomePage() {
                 <p className="text-[9px] text-gray-300 pt-1">🤖 AI 图文教程接口预留中</p>
               </div>
             )}
-          </div>
+          </Card>
 
           {/* AI 热点 */}
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+          <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                 <span>🤖</span> AI 热点
@@ -709,7 +710,7 @@ export default function HomePage() {
               ))}
             </div>
             <p className="text-[10px] text-gray-200 mt-2">每日轮换 · AI 接口预留中，接入后为实时热点</p>
-          </div>
+          </Card>
 
           {/* AI 建议（基于真实状态动态生成） */}
           <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-2xl p-5 shadow-sm border border-purple-100">

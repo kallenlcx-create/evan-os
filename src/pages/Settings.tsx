@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { useConfirm } from '../components/ConfirmModal'
 import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell, Palette, Info, BellOff } from 'lucide-react'
 import { WALLPAPER_PRESETS, CARD_BG_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl, hexToRgb } from '../config/wallpapers'
+import { CARD_THEMES, getCardTheme, setCardTheme } from '../config/constants'
 
 export default function SettingsPage() {
   const { app, toggleSidebar, backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
@@ -16,6 +17,7 @@ export default function SettingsPage() {
     catch { return defaults }
   })
   const [activeSection, setActiveSection] = useState('data')
+  const [cardVersion, setCardVersion] = useState(0)
 
   const stats = {
     goals: goals.length,
@@ -298,6 +300,29 @@ export default function SettingsPage() {
                 ))}
               </div>
               <p className="text-[10px] text-gray-300">深色模式覆盖全局界面；壁纸在两种主题下均可使用。</p>
+            </div>
+
+            {/* ====== 卡片背景色 ====== */}
+            <div className="pt-4 border-t border-gray-100">
+              <label className="text-sm font-medium text-gray-700 block mb-3">卡片背景色</label>
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                {CARD_THEMES.map(t => {
+                  const active = getCardTheme().key === t.key
+                  return (
+                    <button
+                      key={t.key}
+                      onClick={() => { setCardTheme(t.key); setCardVersion(v => v + 1) }}
+                      className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all ${
+                        active ? 'border-blue-400 ring-2 ring-blue-200' : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <div className={`w-8 h-8 rounded-lg border ${t.preview}`} />
+                      <span className="text-[10px] text-gray-600">{t.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[10px] text-gray-300 mt-1">全局卡片统一背景色调。</p>
             </div>
 
             <div className="pt-4 border-t border-gray-100">

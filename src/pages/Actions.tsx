@@ -20,6 +20,7 @@ const tabs = [
 ]
 
 import { MOODS } from '../config/constants'
+import Card from '../components/Card'
 
 export default function ActionsPage() {
   const { tasks, reviews, addTask, toggleTaskStatus, addObject, updateObject, deleteObject } = useStore()
@@ -528,9 +529,9 @@ export default function ActionsPage() {
       </div>
 
       {/* 内容 */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 min-h-[400px]">
+      <Card className="p-6 min-h-[400px]">
         {renderContent()}
-      </div>
+      </Card>
     </div>
   )
 }
