@@ -2,7 +2,7 @@
 // 策略：index.html 网络优先（保证更新）→ 缓存回退；其余静态资源缓存优先
 // 版本号递增触发旧缓存清理
 
-const CACHE = 'evan-os-v1'
+const CACHE = 'evan-os-v2'
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', event => {
