@@ -2,9 +2,9 @@
 // 监听 evan-card-theme-change 事件，切换后自动触发重渲染
 
 import { useState, useEffect } from 'react'
-import { getCardTheme, type CardTheme } from '../config/constants'
+import { getCardTheme } from '../config/constants'
 
-export function useCardTheme(): CardTheme {
+export function useCardTheme() {
   const [theme, setTheme] = useState(getCardTheme)
 
   useEffect(() => {

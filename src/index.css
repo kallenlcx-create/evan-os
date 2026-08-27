@@ -52,30 +52,6 @@
 :root {
   --sidebar-width: 220px;
   --header-height: 48px;
-  --card-bg-opacity: 1;
-  --card-bg-rgb: 255,255,255;
-}
-
-/* ====== 内容区卡片：背景颜色 + 透明度叠加（所有卡片统一生效）====== */
-/* 默认 white 透明时走 .card-themed；历史类 .card-opacity-active 保留兼容 */
-.card-themed .bg-white {
-  background-color: rgba(var(--card-bg-rgb), var(--card-bg-opacity));
-}
-.card-themed .bg-white\/90 {
-  background-color: rgba(var(--card-bg-rgb), calc(var(--card-bg-opacity) * 0.9));
-}
-.card-themed .bg-white\/80 {
-  background-color: rgba(var(--card-bg-rgb), calc(var(--card-bg-opacity) * 0.8));
-}
-/* 兼容旧类名 */
-.card-opacity-active .bg-white {
-  background-color: rgba(var(--card-bg-rgb), var(--card-bg-opacity));
-}
-.card-opacity-active .bg-white\/90 {
-  background-color: rgba(var(--card-bg-rgb), calc(var(--card-bg-opacity) * 0.9));
-}
-.card-opacity-active .bg-white\/80 {
-  background-color: rgba(var(--card-bg-rgb), calc(var(--card-bg-opacity) * 0.8));
 }
 
 * {

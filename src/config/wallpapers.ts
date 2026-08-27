@@ -39,34 +39,6 @@ export const WALLPAPER_PRESETS: WallpaperPreset[] = [
 
 export const DEFAULT_WALLPAPER: WallpaperConfig = { type: 'none', dim: 0, sidebarDim: 0.15, contentCardOpacity: 1, contentCardColor: '#ffffff' }
 
-// ====== 卡片背景颜色预设（与透明度叠加，所有卡片统一生效）======
-export interface CardBgPreset {
-  id: string
-  name: string
-  color: string // hex
-  rgb: string // "r,g,b"
-}
-
-export const CARD_BG_PRESETS: CardBgPreset[] = [
-  { id: 'white', name: '纯白', color: '#ffffff', rgb: '255,255,255' },
-  { id: 'warm', name: '暖白', color: '#fffaf0', rgb: '255,250,240' },
-  { id: 'cream', name: '奶茶', color: '#fdf6ec', rgb: '253,246,236' },
-  { id: 'peach', name: '蜜桃', color: '#fff7ed', rgb: '255,247,237' },
-  { id: 'pink', name: '樱粉', color: '#fff1f2', rgb: '255,241,242' },
-  { id: 'sakura', name: '豆粉', color: '#fef2f2', rgb: '254,242,242' },
-  { id: 'sky', name: '天空', color: '#f0f9ff', rgb: '240,249,255' },
-  { id: 'blue', name: '雾蓝', color: '#eff6ff', rgb: '239,246,255' },
-  { id: 'mint', name: '薄荷', color: '#f0fdf4', rgb: '240,253,244' },
-  { id: 'green', name: '豆绿', color: '#f0fdfa', rgb: '240,253,250' },
-  { id: 'lavender', name: '薰衣草', color: '#f5f3ff', rgb: '245,243,255' },
-  { id: 'lily', name: '香芋', color: '#faf5ff', rgb: '250,245,255' },
-  { id: 'lemon', name: '柠檬', color: '#fefce8', rgb: '254,252,232' },
-  { id: 'yellow', name: '浅黄', color: '#fef9c3', rgb: '254,249,195' },
-  { id: 'gray', name: '浅灰', color: '#f8fafc', rgb: '248,250,252' },
-  { id: 'slate', name: '石板', color: '#f1f5f9', rgb: '241,245,249' },
-]
-
-/** hex -> "r,g,b" */
 export function hexToRgb(hex: string): string {
   const m = hex.replace('#', '')
   const full = m.length === 3 ? m.split('').map(c => c + c).join('') : m

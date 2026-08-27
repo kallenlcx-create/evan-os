@@ -8,7 +8,7 @@ import NotificationCenter from './NotificationCenter'
 import SearchDeepLink from './SearchDeepLink'
 import { PageErrorBoundary } from './ErrorBoundary'
 import { useStore } from '../store'
-import { getPresetCss, hexToRgb } from '../config/wallpapers'
+import { getPresetCss } from '../config/wallpapers'
 
 export default function Layout() {
   // 按需订阅：Layout 包裹全部页面，整店订阅会让任何状态变化重渲染当前页
@@ -46,11 +46,8 @@ export default function Layout() {
     document.body.style.background = hasWallpaper ? (bgStyle.backgroundImage ?? '') : ''
     document.body.style.backgroundSize = hasWallpaper ? 'cover' : ''
     document.body.style.backgroundAttachment = hasWallpaper ? 'fixed' : ''
-    // 设置卡片透明度 + 背景颜色 CSS 变量（与透明度叠加，所有卡片统一生效）
-    document.documentElement.style.setProperty('--card-bg-opacity', String(wallpaper.contentCardOpacity ?? 1))
-    document.documentElement.style.setProperty('--card-bg-rgb', hexToRgb(wallpaper.contentCardColor ?? '#ffffff'))
     return () => { document.body.style.background = '' }
-  }, [hasWallpaper, wallpaper, (wallpaper as any).contentCardColor, (wallpaper as any).contentCardOpacity])
+  }, [hasWallpaper, wallpaper])
 
   // 路由变化时收起移动端抽屉（兜底，导航点击时已处理）
   useEffect(() => { setMobileNav(false); setNotificationPanel(false) }, [location.pathname, setMobileNav, setNotificationPanel])
@@ -153,7 +150,7 @@ export default function Layout() {
         )}
 
         {/* 主内容区 */}
-        <main className={`p-4 md:p-6 max-w-7xl card-themed ${(wallpaper.contentCardOpacity ?? 1) < 1 ? 'card-opacity-active' : ''}`}>
+        <main className="p-4 md:p-6 max-w-7xl">
           <PageErrorBoundary key={location.pathname}>
             <Outlet />
           </PageErrorBoundary>

@@ -19,48 +19,73 @@ export const MOOD_COLORS: Record<MoodValue, string> = {
   bad: 'bg-red-100 text-red-700',
 }
 
-// ====== 卡片背景主题 ======
+// ====== 卡片背景主题（统一系统：背景色 + 透明度）======
 
 export interface CardTheme {
   key: string
   label: string
-  /** 卡片背景类（浅色模式） */
-  bg: string
-  /** 卡片边框类 */
-  border: string
-  /** 卡片预览色块（用于设置页展示） */
+  /** 背景基础色（hex） */
+  hex: string
+  /** 设置页预览色块 class */
   preview: string
+  /** 该主题的默认透明度 0-1 */
+  defaultOpacity: number
 }
 
 export const CARD_THEMES: CardTheme[] = [
-  { key: 'default', label: '经典白', bg: 'bg-white', border: 'border-gray-100', preview: 'bg-white border-gray-200' },
-  { key: 'warm',    label: '暖阳',   bg: 'bg-orange-50/60', border: 'border-orange-100', preview: 'bg-orange-50 border-orange-200' },
-  { key: 'ocean',   label: '海洋',   bg: 'bg-sky-50/60', border: 'border-sky-100', preview: 'bg-sky-50 border-sky-200' },
-  { key: 'forest',  label: '森林',   bg: 'bg-emerald-50/60', border: 'border-emerald-100', preview: 'bg-emerald-50 border-emerald-200' },
-  { key: 'lavender',label: '薰衣草', bg: 'bg-purple-50/60', border: 'border-purple-100', preview: 'bg-purple-50 border-purple-200' },
-  { key: 'rose',    label: '玫瑰',   bg: 'bg-rose-50/60', border: 'border-rose-100', preview: 'bg-rose-50 border-rose-200' },
-  { key: 'slate',   label: '石墨',   bg: 'bg-slate-50/80', border: 'border-slate-200', preview: 'bg-slate-50 border-slate-300' },
-  { key: 'amber',   label: '琥珀',   bg: 'bg-amber-50/60', border: 'border-amber-100', preview: 'bg-amber-50 border-amber-200' },
+  { key: 'default', label: '经典白', hex: '#ffffff', preview: 'bg-white border-gray-200', defaultOpacity: 1 },
+  { key: 'warm',    label: '暖阳',   hex: '#fff7ed', preview: 'bg-orange-50 border-orange-200', defaultOpacity: 0.6 },
+  { key: 'ocean',   label: '海洋',   hex: '#f0f9ff', preview: 'bg-sky-50 border-sky-200', defaultOpacity: 0.6 },
+  { key: 'forest',  label: '森林',   hex: '#f0fdf4', preview: 'bg-emerald-50 border-emerald-200', defaultOpacity: 0.6 },
+  { key: 'lavender',label: '薰衣草', hex: '#f5f3ff', preview: 'bg-purple-50 border-purple-200', defaultOpacity: 0.6 },
+  { key: 'rose',    label: '玫瑰',   hex: '#fff1f2', preview: 'bg-rose-50 border-rose-200', defaultOpacity: 0.6 },
+  { key: 'slate',   label: '石墨',   hex: '#f8fafc', preview: 'bg-slate-50 border-slate-300', defaultOpacity: 0.8 },
+  { key: 'amber',   label: '琥珀',   hex: '#fffbeb', preview: 'bg-amber-50 border-amber-200', defaultOpacity: 0.6 },
 ]
+
+interface CardThemeState { key: string; opacity: number }
 
 const LS_CARD_THEME = 'evan-os-card-theme'
 
-/** 获取当前卡片背景主题 */
-export function getCardTheme(): CardTheme {
+/** 获取当前卡片主题（背景色 + 透明度） */
+export function getCardTheme(): CardTheme & { opacity: number } {
   try {
-    const key = localStorage.getItem(LS_CARD_THEME) ?? 'default'
-    return CARD_THEMES.find(t => t.key === key) ?? CARD_THEMES[0]
-  } catch { return CARD_THEMES[0] }
+    const raw = localStorage.getItem(LS_CARD_THEME)
+    if (raw) {
+      const state: CardThemeState = JSON.parse(raw)
+      const t = CARD_THEMES.find(t => t.key === state.key) ?? CARD_THEMES[0]
+      return { ...t, opacity: typeof state.opacity === 'number' ? state.opacity : t.defaultOpacity }
+    }
+  } catch {}
+  return { ...CARD_THEMES[0], opacity: CARD_THEMES[0].defaultOpacity }
 }
 
-/** 设置卡片背景主题 */
+/** 设置卡片背景主题（仅切换主题，保留当前透明度） */
 export function setCardTheme(key: string) {
-  localStorage.setItem(LS_CARD_THEME, key)
+  const cur = getCardTheme()
+  const next = CARD_THEMES.find(t => t.key === key) ?? CARD_THEMES[0]
+  localStorage.setItem(LS_CARD_THEME, JSON.stringify({ key: next.key, opacity: cur.opacity }))
   window.dispatchEvent(new CustomEvent('evan-card-theme-change'))
 }
 
-/** 返回卡片通用背景+边框类（可在任意组件中直接拼入 className） */
-export function cardBg(): string {
+/** 设置卡片透明度（保持当前主题） */
+export function setCardThemeOpacity(opacity: number) {
+  const cur = getCardTheme()
+  localStorage.setItem(LS_CARD_THEME, JSON.stringify({ key: cur.key, opacity }))
+  window.dispatchEvent(new CustomEvent('evan-card-theme-change'))
+}
+
+/** hex -> "r,g,b" */
+function hexToRgb(hex: string): string {
+  const m = hex.replace('#', '')
+  const full = m.length === 3 ? m.split('').map(c => c + c).join('') : m
+  const n = parseInt(full, 16)
+  if (Number.isNaN(n) || full.length !== 6) return '255,255,255'
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`
+}
+
+/** 返回卡片背景 inline style（背景色 + 透明度） */
+export function cardBgStyle(): React.CSSProperties {
   const t = getCardTheme()
-  return `${t.bg} ${t.border}`
+  return { backgroundColor: `rgba(${hexToRgb(t.hex)},${t.opacity})` }
 }
