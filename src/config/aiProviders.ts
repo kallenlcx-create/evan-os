@@ -127,7 +127,11 @@ export function getAiSettings(): AiSettings {
 }
 
 export function setAiSettings(settings: AiSettings) {
-  localStorage.setItem(LS_KEY, JSON.stringify(settings))
+  // 规范化 baseUrl：去掉可能重复拼接的路径后缀，防止 /chat/completions/chat/completions
+  let baseUrl = settings.baseUrl.replace(/\/$/, '')
+  baseUrl = baseUrl.replace(/\/chat\/completions$/i, '')
+  baseUrl = baseUrl.replace(/\/v1\/messages$/i, '')
+  localStorage.setItem(LS_KEY, JSON.stringify({ ...settings, baseUrl }))
 }
 
 function getDefaultSettings(): AiSettings {
