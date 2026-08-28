@@ -114,6 +114,8 @@ export interface AiSettings {
   topP: number
   /** 系统提示词 */
   systemPrompt: string
+  /** CORS 代理地址（解决跨域问题） */
+  proxyUrl: string
 }
 
 const LS_KEY = 'evan-os-ai-settings'
@@ -145,6 +147,7 @@ function getDefaultSettings(): AiSettings {
     maxTokens: p.defaults.maxTokens,
     topP: p.defaults.topP,
     systemPrompt: '你是 Evan OS 的 AI 助手。请用中文回答，简洁专业。',
+    proxyUrl: '',
   }
 }
 

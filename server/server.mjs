@@ -223,6 +223,48 @@ app.post('/deletions', auth, wrap(async (req, res) => {
   res.json({ ok: true })
 }))
 
+// ---------- AI CORS 代理 ----------
+// POST /ai-proxy  { targetUrl, method, headers, body }
+// 转发请求到目标 API，解决浏览器跨域问题
+app.post('/ai-proxy', wrap(async (req, res) => {
+  const { targetUrl, method = 'POST', headers = {}, body: reqBody } = req.body ?? {}
+  if (!targetUrl || typeof targetUrl !== 'string') {
+    return res.status(400).json({ error: '需要 targetUrl' })
+  }
+  // 安全校验：只允许 https 请求
+  try {
+    const u = new URL(targetUrl)
+    if (u.protocol !== 'https:') return res.status(400).json({ error: '仅支持 https 目标' })
+  } catch {
+    return res.status(400).json({ error: 'targetUrl 格式无效' })
+  }
+
+  // 转发请求
+  const upstream = await fetch(targetUrl, {
+    method,
+    headers,
+    body: typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody),
+  })
+
+  // 流式回传（支持 SSE）
+  res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  if (upstream.body) {
+    const reader = upstream.body.getReader()
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) { res.end(); return }
+        res.write(value)
+      }
+    }
+    await pump()
+  } else {
+    res.status(upstream.status).end()
+  }
+}))
+
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {

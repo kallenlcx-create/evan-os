@@ -248,6 +248,15 @@ export default function AiChat() {
                   onChange={e => setSettings(s => ({ ...s, topP: Number(e.target.value) }))}
                   className="w-full accent-blue-500" />
               </div>
+              {/* CORS 代理地址 */}
+              <div className="sm:col-span-2">
+                <label className="text-[11px] text-gray-500 block mb-1">
+                  CORS 代理地址 <span className="text-gray-300">（解决跨域问题，留空直连）</span>
+                </label>
+                <input type="text" value={settings.proxyUrl ?? ''} onChange={e => setSettings(s => ({ ...s, proxyUrl: e.target.value }))}
+                  placeholder="https://iven.tail73fe40.ts.net"
+                  className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+              </div>
               {/* 系统提示词 */}
               <div className="sm:col-span-2">
                 <label className="text-[11px] text-gray-500 block mb-1">系统提示词</label>
