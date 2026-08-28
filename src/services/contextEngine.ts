@@ -29,6 +29,7 @@ export interface ContextEngineInput {
   recentEventsLimit?: number
   includeMemories?: boolean
   includeGoals?: boolean
+  includeStudy?: boolean // v1.1：是否纳入学习日志/资源（真串联）
   tokenBudget?: number
   /** v1.0：构建后把快照持久化到 contexts 表（可追溯） */
   persist?: boolean
@@ -40,11 +41,12 @@ const DEFAULT_TOKEN_BUDGET = 2000
 
 const TYPE_PRIORITY: Record<ContextItemType, number> = {
   object: 95, task: 90, project: 85, memory: 70, goal: 60,
-  related_object: 50, knowledge: 45, event: 30, page: 20, user: 10,
+  related_object: 50, knowledge: 45, study_log: 42, study_resource: 40, event: 30, page: 20, user: 10,
 }
 
 const CATEGORY_CAPS: Partial<Record<ContextItemType, number>> = {
   related_object: 6, knowledge: 3, memory: 5, goal: 5, event: 5,
+  study_log: 4, study_resource: 3,
 }
 
 const COMPRESS_MAX_CHARS = 160
@@ -278,6 +280,39 @@ export class ContextEngine {
           })
         }
       } catch { /* ignore */ }
+    }
+
+    // 1g. 学习日志/资源（真串联：近7天，按相关度+时间）
+    if (input.includeStudy !== false) {
+      try {
+        const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+        const cols = await db.collections.where('kind').anyOf(['study_log', 'study_resource']).toArray()
+        const logs = cols.filter(c => c.kind === 'study_log').sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, CATEGORY_CAPS.study_log)
+        for (const c of logs) {
+          const d: any = c.data ?? {}
+          // 近期优先，过期7天以上 relevance 稍降
+          const isRecent = (d.date ?? c.createdAt ?? '').slice(0, 10) >= cutoff
+          raw.push({
+            type: 'study_log',
+            title: `${d.subject ?? '学习'} ${d.duration ?? ''}min`,
+            content: compressText(`[学习日志·${d.date ?? c.createdAt.slice(0, 10)}] ${d.subject ?? ''} ${d.duration ? `· ${d.duration}分钟` : ''} ${d.notes ?? ''}`),
+            source: 'db:collections:study_log',
+            ref: { type: 'study_log', id: c.id },
+            relevanceHint: isRecent ? 0.9 : 0.4,
+          })
+        }
+        const ress = cols.filter(c => c.kind === 'study_resource').slice(0, CATEGORY_CAPS.study_resource)
+        for (const c of ress) {
+          const d: any = c.data ?? {}
+          raw.push({
+            type: 'study_resource',
+            title: d.title ?? '资源',
+            content: compressText(`[学习资源·${d.category ?? ''}] ${d.title ?? ''} ${d.url ?? ''}`),
+            source: 'db:collections:study_resource',
+            ref: { type: 'study_resource', id: c.id },
+          })
+        }
+      } catch { /* 学习数据缺失时跳过 */ }
     }
 
     // 1f. 最近事件（审计流尾部，非全量）

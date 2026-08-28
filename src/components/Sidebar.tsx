@@ -25,6 +25,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/inspector': { icon: Eye, label: 'Context Inspector', emoji: '🧩' },
   '/life': { icon: Heart, label: '生活', emoji: '🌿' },
   '/ai': { icon: Bot, label: 'AI 中心', emoji: '🤖' },
+  '/review': { icon: GraduationCap, label: 'AI 复习', emoji: '🔁' },
   '/agents': { icon: Bot, label: 'Agents', emoji: '🧑‍🚀' },
   '/workflows': { icon: Zap, label: '自动化', emoji: '⚡' },
   '/integrations': { icon: Plug, label: '外部集成', emoji: '🔌' },
@@ -39,7 +40,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
   { key: 'core', label: '概览', paths: ['/', '/inbox', '/goals', '/actions', '/life'] },
   { key: 'work', label: '工作', paths: ['/work', '/projects'] },
-  { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/ai-lab'] },
+  { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
   { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/stats', '/system', '/settings'] },
 ]

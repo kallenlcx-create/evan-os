@@ -9,6 +9,7 @@ import {
   MessageSquare, Eye, Plug, Copy, Trash2, Plus, ExternalLink, ArrowRight, Check,
 } from 'lucide-react'
 import { useCollectionData } from '../hooks/useCollectionData'
+import AiChat from '../components/AiChat'
 
 // ---------- 本地清单（提示词/工具） ----------
 
@@ -42,7 +43,7 @@ const hubEntries = [
 
 export default function AICenterPage() {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<'hub' | 'prompts' | 'tools'>('hub')
+  const [tab, setTab] = useState<'hub' | 'chat' | 'prompts' | 'tools'>('hub')
   const [showForm, setShowForm] = useState<'prompt' | 'tool' | ''>('')
   const [searchQuery, setSearchQuery] = useState('')
   const [copiedId, setCopiedId] = useState('')
@@ -108,6 +109,7 @@ export default function AICenterPage() {
       <div role="tablist" className="flex items-center gap-1 mb-4 overflow-x-auto border-b border-gray-100 pb-px">
         {([
           { key: 'hub', label: '能力入口', icon: Sparkles },
+          { key: 'chat', label: '💬 AI 对话', icon: MessageSquare },
           { key: 'prompts', label: '提示词库', icon: Lightbulb },
           { key: 'tools', label: 'AI 工具收藏', icon: Cpu },
         ] as const).map(t => (
@@ -165,6 +167,13 @@ export default function AICenterPage() {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ====== AI 对话 ====== */}
+      {tab === 'chat' && (
+        <div className="-mx-4 md:-mx-6 -mt-2">
+          <AiChat />
         </div>
       )}
 

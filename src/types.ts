@@ -456,6 +456,7 @@ export type CollectionKind =
   | 'personal_record'
   | 'tag_l1'
   | 'tag_l2'
+  | 'flashcard'         // AI 复习卡（FSRS/Leitner）
 
 export interface CollectionRecord {
   id: string
@@ -536,6 +537,8 @@ export type ContextItemType =
   | 'memory'            // 生效中的记忆
   | 'goal'              // 活跃目标
   | 'event'             // 最近事件
+  | 'study_log'         // 学习日志（v1.1 真串联）
+  | 'study_resource'    // 学习资源
 
 export interface ContextItem {
   id: string
