@@ -82,7 +82,8 @@ export default function AIReviewPage() {
     try {
       const dayIdx = Math.floor(Date.now() / 86400000)
       const words = [DAILY_WORDS[dayIdx % DAILY_WORDS.length], DAILY_WORDS[(dayIdx + 1) % DAILY_WORDS.length]]
-      const raws = await generateFlashcards({ knowledges: knowledge, words, logs: studyLogs, max: 18 })
+      const reviewable = knowledge.filter(k => k.reviewEnabled !== false)
+      const raws = await generateFlashcards({ knowledges: reviewable, words, logs: studyLogs, max: 18 })
       const inited = raws.map(initFlashcard)
       // 去重：已存在同 sourceId 不重复
       const existingIds = new Set(cards.map(c => c.id))
@@ -146,8 +147,8 @@ export default function AIReviewPage() {
           <div className="text-[11px] text-gray-400">已掌握 Box5</div>
         </div>
         <div className="bg-white rounded-2xl p-4 border border-gray-100 text-center">
-          <div className="text-2xl font-bold text-purple-600">{knowledge.length}</div>
-          <div className="text-[11px] text-gray-400">知识条目</div>
+          <div className="text-2xl font-bold text-purple-600">{knowledge.filter(k => k.reviewEnabled !== false).length}<span className="text-sm text-gray-300">/{knowledge.length}</span></div>
+          <div className="text-[11px] text-gray-400">可复习知识</div>
         </div>
       </div>
 

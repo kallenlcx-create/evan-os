@@ -4,7 +4,7 @@ import { useConfirm } from '../components/ConfirmModal'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight, RotateCw } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
 import { useAskText } from '../components/PromptModal'
 import RelationCreator from '../components/RelationCreator'
@@ -666,6 +666,7 @@ export default function KnowledgePage() {
                   {(k as any).markType && (
                     <span className="text-[9px] px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded">{(k as any).markType}</span>
                   )}
+                  {k.reviewEnabled === false && <span className="text-[9px] px-1 py-0.5 bg-gray-100 text-gray-400 rounded" title="不参与复习">🚫</span>}
                   {k.isBookmarked && <span className="text-yellow-500 text-xs">★</span>}
                   <ChevronRight size={13} className="text-gray-200" />
                 </button>
@@ -1190,6 +1191,15 @@ export default function KnowledgePage() {
                     >
                       <Bookmark size={12} fill={viewingItem.isBookmarked ? 'currentColor' : 'none'} />
                       {viewingItem.isBookmarked ? '已收藏' : '收藏'}
+                    </button>
+                    <button
+                      onClick={() => updateObject('knowledge', viewingItem.id, { reviewEnabled: viewingItem.reviewEnabled === false ? true : false } as any)}
+                      className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg ${
+                        viewingItem.reviewEnabled !== false ? 'bg-purple-50 text-purple-600' : 'bg-gray-100 text-gray-400'
+                      }`}
+                    >
+                      <RotateCw size={12} />
+                      {viewingItem.reviewEnabled !== false ? '参与复习' : '不参与复习'}
                     </button>
                   </div>
 

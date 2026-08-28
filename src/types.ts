@@ -248,6 +248,8 @@ export interface Knowledge extends BaseObject {
   format: 'plain' | 'markdown' | 'json'
   /** 知识标记：可标记为灵感/问题/研究/实验/决策（对应顶部 Tab 归类） */
   markType?: 'inspiration' | 'question' | 'research' | 'experiment' | 'decision'
+  /** 是否参与复习抽卡（默认 true） */
+  reviewEnabled?: boolean
   backlinks: string[] // legacy — 新数据通过 Relation 动态计算
 }
 

@@ -118,8 +118,9 @@ export async function generateFlashcards(opts: {
   const { knowledges, words = [], logs = [], max = 20 } = opts
   const cards: Omit<Flashcard,'box'|'interval'|'dueDate'|'ease'|'reps'|'lapses'|'createdAt'>[] = []
 
-  // 1) 知识 → 问答卡
-  for (const k of knowledges.slice(0, 12)) {
+  // 1) 知识 → 问答卡（只抽取 reviewEnabled !== false 的条目）
+  const reviewable = knowledges.filter(k => k.reviewEnabled !== false)
+  for (const k of reviewable.slice(0, 12)) {
     const q = k.title.length < 30 ? `什么是「${k.title}」？` : k.title
     const a = (k.content || k.description || '').slice(0, 180) || '暂无内容，需补充'
     cards.push({ id: `kc-${k.id}`, front: q, back: a, hint: k.category, sourceType: 'knowledge', sourceId: k.id })
