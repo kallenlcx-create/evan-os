@@ -4,7 +4,7 @@ import { useConfirm } from '../components/ConfirmModal'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight, RotateCw } from 'lucide-react'
+import { Plus, Lightbulb, HelpCircle, Search, FlaskConical, GitBranch, Brain, Bookmark, Link2, Pencil, Trash2, ArrowLeftRight, X, Network, ChevronDown, ChevronRight, RotateCw, CheckSquare, Check } from 'lucide-react'
 import MarkdownEditor from '../components/MarkdownEditor'
 import { useAskText } from '../components/PromptModal'
 import RelationCreator from '../components/RelationCreator'
@@ -63,6 +63,10 @@ export default function KnowledgePage() {
   const [graphDepth, setGraphDepth] = useState(1)
   const [graphCenterId, setGraphCenterId] = useState<string | undefined>(undefined)
   const [backlinks, setBacklinks] = useState<Knowledge[]>([])
+
+  // 批量操作模式
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // 页内输入弹窗（替代原生 prompt）
   const [askModal, askText] = useAskText()
@@ -553,6 +557,14 @@ export default function KnowledgePage() {
               >
                 <Plus size={16} /> 新建
               </button>
+              <button
+                onClick={() => { setBatchMode(!batchMode); setSelectedIds(new Set()) }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm border transition-colors ${
+                  batchMode ? 'bg-purple-50 border-purple-300 text-purple-600' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                <CheckSquare size={15} /> 批量
+              </button>
             </div>
 
             {/* 新建表单 */}
@@ -656,11 +668,29 @@ export default function KnowledgePage() {
               {visibleItems.map(k => (
                 <button
                   key={k.id}
-                  onClick={() => setViewingId(k.id)}
+                  onClick={() => {
+                    if (batchMode) {
+                      setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        if (next.has(k.id)) next.delete(k.id); else next.add(k.id)
+                        return next
+                      })
+                    } else {
+                      setViewingId(k.id)
+                    }
+                  }}
                   className={`w-full text-left flex items-center gap-2.5 px-4 py-2.5 rounded-xl border transition-colors ${
-                    viewingId === k.id ? 'border-blue-300 bg-blue-50/50' : 'border-gray-100 bg-white hover:border-blue-200'
+                    viewingId === k.id && !batchMode ? 'border-blue-300 bg-blue-50/50' :
+                    selectedIds.has(k.id) ? 'border-purple-300 bg-purple-50/50' : 'border-gray-100 bg-white hover:border-blue-200'
                   }`}
                 >
+                  {batchMode && (
+                    <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                      selectedIds.has(k.id) ? 'bg-purple-500 border-purple-500' : 'border-gray-300'
+                    }`}>
+                      {selectedIds.has(k.id) && <Check size={12} className="text-white" />}
+                    </span>
+                  )}
                   <span className="text-base">{k.emoji || '📄'}</span>
                   <span className="text-sm text-gray-700 truncate flex-1">{highlight(k.title)}</span>
                   {(k as any).markType && (
@@ -1236,6 +1266,35 @@ export default function KnowledgePage() {
           </div>
         )}
       </div>
+
+      {/* 批量操作浮动栏 */}
+      {batchMode && selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-2xl shadow-lg border border-gray-200 px-5 py-3 flex items-center gap-4 z-50">
+          <span className="text-sm text-gray-500">已选 <strong className="text-purple-600">{selectedIds.size}</strong> 条</span>
+          <div className="w-px h-5 bg-gray-200" />
+          <button
+            onClick={async () => {
+              for (const id of selectedIds) await updateObject('knowledge', id, { reviewEnabled: true } as any)
+              setSelectedIds(new Set())
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs font-medium hover:bg-purple-100"
+          >
+            <RotateCw size={13} /> 全部参与复习
+          </button>
+          <button
+            onClick={async () => {
+              for (const id of selectedIds) await updateObject('knowledge', id, { reviewEnabled: false } as any)
+              setSelectedIds(new Set())
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-500 rounded-lg text-xs font-medium hover:bg-gray-200"
+          >
+            <RotateCw size={13} /> 全部关闭复习
+          </button>
+          <button onClick={() => { setBatchMode(false); setSelectedIds(new Set()) }} className="text-gray-400 hover:text-gray-600 ml-1">
+            <X size={16} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
