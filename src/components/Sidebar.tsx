@@ -4,7 +4,7 @@ import {
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
   ChevronLeft, ChevronRight, Plus, Settings, BarChart3, Eye, Zap,
   Plug, FlaskConical, Database, CloudUpload,
-  ChevronDown, Layers
+  ChevronDown, Layers, File
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
@@ -32,6 +32,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/ai-lab': { icon: FlaskConical, label: 'AI 实验室', emoji: '🧪' },
   '/system': { icon: Database, label: '系统架构', emoji: '🗄️' },
   '/sync': { icon: CloudUpload, label: '云同步', emoji: '☁️' },
+  '/files': { icon: File, label: '文件存储', emoji: '📁' },
   '/stats': { icon: BarChart3, label: '统计分析', emoji: '📊' },
   '/settings': { icon: Settings, label: '设置', emoji: '⚙️' },
 }
@@ -42,7 +43,7 @@ const GROUPS: { key: string; label: string; paths: string[] }[] = [
   { key: 'work', label: '工作', paths: ['/work', '/projects'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
-  { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/stats', '/system', '/settings'] },
+  { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
 ]
 
 const GROUP_LS_KEY = 'evan-os-nav-collapsed'

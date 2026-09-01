@@ -17,6 +17,8 @@
 
 import express from 'express'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import mysql from 'mysql2/promise'
 
 const PORT = process.env.PORT || 3000
@@ -39,7 +41,7 @@ app.use(express.json({ limit: '2mb' }))
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*') // 上线后建议改为你的 Pages 域名
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,x-evan-token')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,x-evan-token,x-evan-file-id')
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
@@ -79,6 +81,22 @@ async function init() {
       PRIMARY KEY (username, table_name, row_id),
       INDEX idx_updated (username, updated_at)
     ) CHARACTER SET utf8mb4`)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS files (
+      id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      original_name VARCHAR(255) NOT NULL,
+      stored_name VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(128) NOT NULL,
+      size BIGINT NOT NULL,
+      path VARCHAR(512) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user (username)
+    ) CHARACTER SET utf8mb4`)
+  // 确保上传目录存在
+  const uploadDir = path.join(process.cwd(), 'uploads')
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true })
   console.log('[sync-server] storage ready')
 }
 
@@ -263,6 +281,101 @@ app.post('/ai-proxy', wrap(async (req, res) => {
   } else {
     res.status(upstream.status).end()
   }
+}))
+
+// ---------- 文件存储 ----------
+// POST /files/upload   multipart/form-data  → { id, name, size, mime }
+// GET  /files           → [{ id, name, size, mime, createdAt }]
+// GET  /files/:id       → 文件内容 (Content-Type: 原始 mime)
+// DELETE /files/:id     → { ok }
+
+// 简易 multipart 解析（无 multer 依赖）
+function parseMultipart(buf, boundary) {
+  const parts = []
+  const boundaryBuf = Buffer.from('--' + boundary)
+  let pos = 0
+  while (pos < buf.length) {
+    const start = buf.indexOf(boundaryBuf, pos)
+    if (start === -1) break
+    const next = buf.indexOf(boundaryBuf, start + boundaryBuf.length)
+    if (next === -1) break
+    const part = buf.slice(start + boundaryBuf.length, next)
+    const headerEnd = part.indexOf('\r\n\r\n')
+    if (headerEnd === -1) { pos = next; continue }
+    const header = part.slice(0, headerEnd).toString()
+    const body = part.slice(headerEnd + 4, part.length - 2) // strip trailing \r\n
+    const nameMatch = header.match(/name="([^"]+)"/)
+    const filenameMatch = header.match(/filename="([^"]+)"/)
+    const mimeMatch = header.match(/Content-Type:\s*(.+)/i)
+    parts.push({
+      name: nameMatch?.[1],
+      filename: filenameMatch?.[1],
+      mime: mimeMatch?.[1]?.trim() || 'application/octet-stream',
+      data: body,
+    })
+    pos = next
+  }
+  return parts
+}
+
+app.post('/files/upload', auth, wrap(async (req, res) => {
+  const ct = req.headers['content-type'] || ''
+  const boundaryMatch = ct.match(/boundary=(.+)/)
+  if (!boundaryMatch) return res.status(400).json({ error: '需要 multipart/form-data' })
+
+  // 收集原始 body
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  const raw = Buffer.concat(chunks)
+
+  const parts = parseMultipart(raw, boundaryMatch[1])
+  const filePart = parts.find(p => p.filename)
+  if (!filePart) return res.status(400).json({ error: '未找到文件' })
+
+  const id = crypto.randomUUID()
+  const ext = path.extname(filePart.filename) || ''
+  const storedName = `${id}${ext}`
+  const uploadDir = path.join(process.cwd(), 'uploads', req.user)
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true })
+  const filePath = path.join(uploadDir, storedName)
+  fs.writeFileSync(filePath, filePart.data)
+
+  await pool.query(
+    `INSERT INTO files (id, username, original_name, stored_name, mime_type, size, path)
+     VALUES (?,?,?,?,?,?,?)`,
+    [id, req.user, filePart.filename, storedName, filePart.mime, filePart.data.length, filePath])
+
+  res.json({ id, name: filePart.filename, size: filePart.data.length, mime: filePart.mime })
+}))
+
+app.get('/files', auth, wrap(async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT id, original_name AS name, mime_type AS mime, size, created_at AS createdAt, updated_at AS updatedAt FROM files WHERE username = ? ORDER BY created_at DESC',
+    [req.user])
+  res.json(rows)
+}))
+
+app.get('/files/:id', auth, wrap(async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT original_name, mime_type, path, size FROM files WHERE id = ? AND username = ?',
+    [req.params.id, req.user])
+  if (rows.length === 0) return res.status(404).json({ error: '文件不存在' })
+  const file = rows[0]
+  res.setHeader('Content-Type', file.mime_type)
+  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.original_name)}`)
+  res.setHeader('Content-Length', file.size)
+  fs.createReadStream(file.path).pipe(res)
+}))
+
+app.delete('/files/:id', auth, wrap(async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT path FROM files WHERE id = ? AND username = ?',
+    [req.params.id, req.user])
+  if (rows.length === 0) return res.status(404).json({ error: '文件不存在' })
+  // 删除磁盘文件
+  try { fs.unlinkSync(rows[0].path) } catch {}
+  await pool.query('DELETE FROM files WHERE id = ? AND username = ?', [req.params.id, req.user])
+  res.json({ ok: true })
 }))
 
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack

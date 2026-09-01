@@ -22,6 +22,7 @@ import InboxPage from './pages/InboxPage'
 import DailyLogPage from './pages/DailyLog'
 import StatsPage from './pages/Stats'
 import AIReviewPage from './pages/AIReview'
+import FilesPage from './pages/FilesPage'
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="journal" element={<DailyLogPage />} />
           <Route path="stats" element={<StatsPage />} />
           <Route path="review" element={<AIReviewPage />} />
+          <Route path="files" element={<FilesPage />} />
         </Route>
       </Routes>
     </HashRouter>
