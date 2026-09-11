@@ -11,6 +11,7 @@ import type {
   Domain, AgentToolRecord, AgentPermissionRecord, ContextSnapshotRecord,
   WorkflowVersionRecord, WorkflowStepRecord,
   DeletionRecord, CollectionRecord,
+  EmailAccount, EmailMessage, FollowUpRecord,
 } from './types'
 
 // ====== 数据库版本 ======
@@ -76,6 +77,10 @@ export class EvanOSDatabase extends Dexie {
   deletions!: Table<DeletionRecord, string>
   // v10 新增（通用收藏/清单：提示词/AI工具/学习/生活清单）
   collections!: Table<CollectionRecord, string>
+  // v11 邮件经营中心
+  emailAccounts!: Table<EmailAccount, string>
+  emails!: Table<EmailMessage, string>
+  followUps!: Table<FollowUpRecord, string>
 
   constructor() {
     super('EvanOSDatabase')
@@ -354,6 +359,13 @@ export class EvanOSDatabase extends Dexie {
       collections: 'id, kind, category, updatedAt',
     })
 
+    // v11: + 邮件经营中心（EmailAccount/Email/FollowUp）
+    this.version(11).stores({
+      emailAccounts: 'id, provider, email',
+      emails: 'id, accountId, folder, from, isRead, date, customerId',
+      followUps: 'id, customerId, dueAt, status',
+    })
+
     // 全局删除捕获中间件：任何表的 delete 自动写入墓碑（云同步传播删除）
     this.use({
       stack: 'dbcore',
@@ -513,6 +525,10 @@ export const TABLES = {
   workflowSteps: db.workflowSteps,
   // v10 新增
   collections: db.collections,
+  // v11 邮件经营中心
+  emailAccounts: db.emailAccounts,
+  emails: db.emails,
+  followUps: db.followUps,
 } as const
 
 export type TableName = keyof typeof TABLES

@@ -163,7 +163,9 @@ export interface Task extends BaseObject {
   todayOrder: number
 }
 
-// ====== 客户 ======
+// ====== 客户（扩展为客户经营中心核心：重点/等级/画像/跟进）======
+export type CustomerLevel = 'A+' | 'A' | 'B' | 'C' | 'D'
+export type CustomerType = 'End Customer'|'Distributor'|'Wholesaler'|'Retailer'|'Reseller'|'Organization'|'Government'|'Military'|'School'|'Company'
 export interface Customer extends BaseObject {
   type: 'customer'
   company?: string
@@ -176,6 +178,25 @@ export interface Customer extends BaseObject {
   value?: number
   currency?: string
   notes?: string
+  // 经营中心扩展
+  isKey?: boolean // 重点客户
+  level?: CustomerLevel // A+ VIP … D 沉睡
+  customerType?: CustomerType
+  linkedin?: string
+  followUpAt?: string // YYYY-MM-DD 下次跟进
+  aiSummary?: string // AI总结
+  score?: number // 0-100 自动评分
+  portrait?: {
+    business?: string
+    products?: string[] // 常购
+    avgQty?: string
+    avgAmount?: number
+    priceSensitive?: number // 1-5
+    replySpeed?: '快'|'中'|'慢'
+    prefersShort?: boolean
+    decisionMaker?: boolean
+    needsApproval?: boolean
+  }
 }
 
 // ====== 商机 ======
@@ -994,4 +1015,58 @@ export interface CloudSyncConfig {
   lastSyncAt?: string
   /** 自动同步：应用启动时 + 每 5 分钟（前台时） */
   autoSync?: boolean
+}
+
+// ====== 邮件经营中心（v1.2）======
+
+export type EmailProvider = '163'|'qq'|'outlook'|'gmail'|'enterprise'|'custom'
+export interface EmailAccount {
+  id: string
+  provider: EmailProvider
+  email: string
+  imap: { host: string; port: number; ssl: boolean }
+  smtp: { host: string; port: number; ssl: boolean; tls?: boolean }
+  authEnc?: string // 16位授权码/app密码加密后（前端仅存脱敏）
+  createdAt: string
+  lastSyncAt?: string
+  status?: 'connected'|'error'|'unconfigured'
+}
+
+export type EmailIntent =
+  | '新询价'|'报价回复'|'询问价格'|'询问交期'|'修改设计'|'确认订单'|'付款'|'样品'|'催货'|'售后'|'投诉'|'物流'|'复购'|'营销机会'|'暂时没有需求'|'已读不回'|'其他'
+
+export interface EmailMessage {
+  id: string
+  accountId: string
+  folder: 'inbox'|'sent'
+  from: string
+  fromName?: string
+  to: string
+  subject: string
+  text: string
+  html?: string
+  date: string // ISO
+  isRead: boolean
+  hasAttachment?: boolean
+  customerId?: string
+  // AI
+  translated?: string
+  intent?: EmailIntent
+  product?: string // Coin/Patch/Pin...
+  priority?: '高'|'中'|'低'
+  status?: '待处理'|'已处理'|'已跟进'
+  aiSummary?: string
+  qty?: number
+  budget?: string
+  deadline?: string
+}
+
+export interface FollowUpRecord {
+  id: string
+  customerId: string
+  dueAt: string // YYYY-MM-DD
+  channel: ('workbench'|'telegram'|'email')[]
+  note?: string
+  status: 'pending'|'done'|'overdue'
+  createdAt: string
 }

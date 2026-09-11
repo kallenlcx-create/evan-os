@@ -36,6 +36,7 @@ const TIME_FIELD: Record<string, string> = {
   // v1.2 补齐：此前缺失导致这三张表的远端变更永远无法应用回本地
   collections: 'updatedAt', siteMetrics: 'createdAt', workflowSteps: 'updatedAt',
   pomodoroSessions: 'startTime',
+  emailAccounts: 'createdAt', emails: 'date', followUps: 'createdAt',
 }
 
 // 启动断言：同步清单内的每张表必须有 LWW 时钟字段，防止再出现「只上传永下载」盲区

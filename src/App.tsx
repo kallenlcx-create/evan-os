@@ -23,6 +23,10 @@ import DailyLogPage from './pages/DailyLog'
 import StatsPage from './pages/Stats'
 import AIReviewPage from './pages/AIReview'
 import FilesPage from './pages/FilesPage'
+import CustomersPage from './pages/CustomersPage'
+import FollowUpsPage from './pages/FollowUpsPage'
+import EmailGraphPage from './pages/EmailGraph'
+import EmailPanoramaPage from './pages/EmailPanorama'
 
 export default function App() {
   return (
@@ -52,6 +56,10 @@ export default function App() {
           <Route path="stats" element={<StatsPage />} />
           <Route path="review" element={<AIReviewPage />} />
           <Route path="files" element={<FilesPage />} />
+          <Route path="customers" element={<CustomersPage />} />
+          <Route path="followups" element={<FollowUpsPage />} />
+          <Route path="graph" element={<EmailGraphPage />} />
+          <Route path="panorama" element={<EmailPanoramaPage />} />
         </Route>
       </Routes>
     </HashRouter>

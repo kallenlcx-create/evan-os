@@ -14,7 +14,11 @@ import { getSyncConfig } from '../services/cloudSync'
 // ====== 全部导航项 ======
 const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/': { icon: Home, label: '首页', emoji: '🏠' },
-  '/inbox': { icon: Inbox, label: '收件箱', emoji: '📥' },
+  '/inbox': { icon: Inbox, label: '邮件中心', emoji: '📧' },
+  '/customers': { icon: Inbox, label: '客户', emoji: '👥' },
+  '/followups': { icon: CalendarCheck, label: '跟进', emoji: '⏰' },
+  '/graph': { icon: Brain, label: '客户拓扑', emoji: '🕸️' },
+  '/panorama': { icon: BarChart3, label: '资产全景', emoji: '📊' },
   '/goals': { icon: Target, label: '目标', emoji: '🎯' },
   '/work': { icon: Briefcase, label: '工作台', emoji: '💼' },
   '/projects': { icon: FolderKanban, label: '项目', emoji: '🚀' },
@@ -40,10 +44,10 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 // ====== 分组定义 ======
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
   { key: 'core', label: '概览', paths: ['/', '/inbox', '/goals', '/actions', '/life'] },
-  { key: 'work', label: '工作', paths: ['/work', '/projects'] },
+  { key: 'work', label: '工作', paths: ['/work', '/projects', '/customers', '/followups'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
-  { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
+  { key: 'system', label: '系统', paths: ['/panorama', '/graph', '/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
 ]
 
 const GROUP_LS_KEY = 'evan-os-nav-collapsed'

@@ -1,179 +1,285 @@
-// ====== InboxPage — 收件箱管理 ======
-// QuickCapture / AI 捕获的条目在此分拣：转任务 / 转知识 / 转想法 / 删除
-// 组织者 Agent 的 AI 标注（aiCategory/aiTags）一并展示
-
+// ====== 邮件中心：从收邮件升级为客户经营中心（未读中心）======
+// 三栏：左未读列表 | 中AI工作台 | 右翻译/重点/跟进 + 配置抽屉
 import { useState, useEffect, useCallback } from 'react'
-import {
-  Inbox as InboxIcon, Trash2, CheckCircle2, BookPlus,
-  Lightbulb, ListTodo, Sparkles, Inbox,
-} from 'lucide-react'
+import { Mail, Star, Clock, Languages, Sparkles, StickyNote, UserCheck, Calendar, Send, Settings, Search } from 'lucide-react'
 import { db } from '../db'
-import { useStore } from '../store'
-import { processInbox, deleteInboxItem } from '../repositories/inboxRepository'
-import type { InboxItem } from '../types'
+import type { EmailMessage, EmailAccount, Customer } from '../types'
+import { listAccounts, upsertAccount, PROVIDER_PRESETS, mockSync, markRead, listEmails } from '../repositories/emailRepository'
+import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
+import { useAskText } from '../components/PromptModal'
 
-const typeEmoji: Record<string, string> = {
-  quick_note: '📝', task: '✅', idea: '💡', link: '🔗',
+const INTENT_COLOR: Record<string,string> = {
+  '新询价':'bg-red-50 text-red-600','报价回复':'bg-blue-50 text-blue-600','询问价格':'bg-orange-50 text-orange-600',
+  '催货':'bg-yellow-50 text-yellow-700','复购':'bg-green-50 text-green-600','其他':'bg-gray-100 text-gray-500',
 }
+const LEVEL_STAR: Record<string,string> = { 'A+':'⭐️⭐️⭐️','A':'⭐️⭐️','B':'⭐️','C':'','D':'' }
 
-export default function InboxPage() {
-  const addObject = useStore(s => s.addObject)
-  const [items, setItems] = useState<InboxItem[]>([])
-  const [busyId, setBusyId] = useState('')
+export default function InboxPage(){
+  const [askModal, askText] = useAskText()
+  const [accounts, setAccounts] = useState<EmailAccount[]>([])
+  const [emails, setEmails] = useState<EmailMessage[]>([])
+  const [selected, setSelected] = useState<EmailMessage|null>(null)
+  const [filter, setFilter] = useState<'all'|'unread'>('unread')
+  const [q, setQ] = useState('')
+  const [translated, setTranslated] = useState('')
+  const [showTrans, setShowTrans] = useState(false)
+  const [showConfig, setShowConfig] = useState(false)
+  const [customer, setCustomer] = useState<Customer|null>(null)
 
-  const refresh = useCallback(async () => {
-    const rows = await db.inbox.toArray()
-    rows.sort((a, b) => {
-      if (a.processed !== b.processed) return a.processed ? 1 : -1
-      return b.capturedAt.localeCompare(a.capturedAt)
-    })
-    setItems(rows)
-  }, [])
+  // 配置表单
+  const [provider, setProvider] = useState<EmailAccount['provider']>('qq')
+  const [emailAddr, setEmailAddr] = useState('3254136783@qq.com')
+  const [authCode, setAuthCode] = useState('')
+  const [customImap, setCustomImap] = useState('')
+  const [customSmtp, setCustomSmtp] = useState('')
 
-  useEffect(() => { refresh() }, [refresh])
+  const refresh = useCallback(async()=>{
+    setAccounts(await listAccounts())
+    const list = await listEmails()
+    // 补AI字段（懒计算）
+    for(const m of list){ if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m)} }
+    setEmails(list)
+    if(list.length && !selected) setSelected(list[0])
+  },[])
+  useEffect(()=>{ void refresh() },[refresh])
 
-  // 经 store 写入：IndexedDB + zustand + 搜索索引三处同步，其他页面立即可见
-  const convert = async (item: InboxItem, target: 'task' | 'knowledge' | 'inspiration') => {
-    setBusyId(item.id)
-    try {
-      let id = ''
-      if (target === 'task') {
-        id = await addObject('task', { title: item.content.slice(0, 40) })
-      } else if (target === 'knowledge') {
-        const aiTags = (item.metadata as any)?.aiTags ?? []
-        id = await addObject('knowledge', {
-          title: item.content.slice(0, 30),
-          content: item.content,
-          category: (item.metadata as any)?.aiCategory ?? 'inbox',
-          tags: aiTags,
-        })
-      } else {
-        id = await addObject('inspiration', {
-          title: item.content.slice(0, 30),
-          description: item.content,
-          status: 'captured',
-        })
-      }
-      if (id) await processInbox(item.id, target, id)
-    } finally {
-      setBusyId('')
-      refresh()
-    }
+  useEffect(()=>{
+    if(!selected) { setCustomer(null); return }
+    ;(async()=>{
+      const addr = selected.from.match(/<(.+?)>/)?.[1] || selected.from
+      const c = await db.customers.where('email').equals(addr).first() as any
+      setCustomer(c||null)
+      // 自动翻译
+      if(selected.text && !selected.translated){
+        const t = await translateEnToZh(selected.text)
+        selected.translated = t; await db.emails.put(selected); setTranslated(t)
+      } else setTranslated(selected.translated||'')
+    })()
+  },[selected?.id])
+
+  const handleAddAccount = async()=>{
+    if(!emailAddr.trim()||!authCode.trim()) return alert('请填邮箱和16位授权码/应用密码')
+    const preset = PROVIDER_PRESETS[provider]
+    const imap = provider==='custom'? {host:customImap,port:993,ssl:true}: preset.imap
+    const smtp = provider==='custom'? {host:customSmtp,port:465,ssl:true}: preset.smtp
+    const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.trim() })
+    await mockSync(acc.id)
+    setShowConfig(false); setAuthCode(''); await refresh()
   }
 
-  const handleDelete = async (id: string) => {
-    await deleteInboxItem(id)
+  const handleFollowUp = async()=>{
+    if(!customer || !selected) return
+    const due = suggestFollowUpDate(selected.intent||'其他', selected.text)
+    const note = await askText('跟进备注', '')
+    if(note===null) return
+    await db.followUps.put({ id:`fu-${Date.now()}`, customerId:customer.id, dueAt: due, channel:['workbench'], note: note||'跟进', status:'pending', createdAt:new Date().toISOString()} as any)
+    await db.customers.update(customer.id, { followUpAt: due, notes: note } as any)
+    // 同时建 Task 用于提醒
+    const { uid } = await import('../repositories/result')
+    const { now } = await import('../repositories/result')
+    await db.tasks.put({ id: uid(), type:'task', title:`跟进 ${customer.title||customer.email} - ${selected.subject.slice(0,20)}`, description: note||'', emoji:'📧', tags:['跟进'], createdAt:now(), updatedAt:now(), relations:[], status:'todo', priority:'high', importance:'high', isRecurring:false, todayOrder:0, dueDate:due } as any)
+    alert(`已安排 ${due} 跟进，已同步到行动/通知`)
     refresh()
   }
 
-  const pending = items.filter(i => !i.processed)
-  const processed = items.filter(i => i.processed)
+  const handleMarkKey = async()=>{
+    if(!customer) return
+    const next = !customer.isKey
+    await db.customers.update(customer.id, { isKey: next, level: next? 'A': 'C' } as any)
+    setCustomer({...customer, isKey: next} as any)
+  }
 
-  const renderCard = (item: InboxItem, isProcessed: boolean) => {
-    const meta = (item.metadata ?? {}) as any
-    return (
-      <div key={item.id} className={`bg-white border rounded-xl p-3.5 ${isProcessed ? 'border-gray-100 opacity-60' : 'border-gray-200'}`}>
-        <div className="flex items-start gap-2.5">
-          <span className="text-xl shrink-0">{typeEmoji[item.type] ?? '📝'}</span>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-gray-700 leading-relaxed break-words">{item.content}</p>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              {meta.aiCategory && (
-                <span className="px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded text-[10px]">
-                  <Sparkles size={9} className="inline mr-0.5" />{meta.aiCategory}
-                </span>
-              )}
-              {(meta.aiTags ?? []).map((t: string) => (
-                <span key={t} className="px-1.5 py-0.5 bg-gray-100 text-gray-400 rounded text-[10px]">{t}</span>
-              ))}
-              <span className="text-[10px] text-gray-300">{new Date(item.capturedAt).toLocaleString()}</span>
-              {isProcessed && item.processedType && (
-                <span className="px-1.5 py-0.5 bg-green-50 text-green-500 rounded text-[10px]">
-                  已转 {item.processedType}
-                </span>
-              )}
+  const handleAiSummary = async()=>{
+    if(!customer || !selected) return
+    const hist = emails.filter(e=> e.from.includes(customer.email||'') || e.to.includes(customer.email||''))
+    const p = await buildPortrait(customer.email||'', hist)
+    const summary = `${p.business} 评分${p.score} 潜在:${p.potential.join('、')}`
+    await db.customers.update(customer.id, { aiSummary: summary, score:p.score, portrait: p as any } as any)
+    setCustomer({...customer, aiSummary: summary, score:p.score} as any)
+  }
+
+  const filtered = emails.filter(m=>{
+    if(filter==='unread' && m.isRead) return false
+    if(q && !(`${m.subject} ${m.from} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
+    return true
+  })
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6">
+      {askModal}
+      {/* 顶部配置条 */}
+      <div className="px-4 py-2 border-b border-gray-100 bg-white flex items-center gap-2">
+        <Mail size={18} className="text-blue-500"/>
+        <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
+        <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
+        <button onClick={()=> setShowConfig(v=>!v)} className="ml-auto px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
+        <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
+      </div>
+
+      {/* 配置抽屉 */}
+      {showConfig && (
+        <div className="m-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm">
+          <div className="text-xs font-semibold text-gray-600 mb-2 flex items-center gap-1.5"><span className="w-2 h-2 bg-green-500 rounded-full"/>通用邮箱标准 IMAP 接入（全量支持国内外主流邮箱）</div>
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3">
+            {Object.entries(PROVIDER_PRESETS).map(([k,v])=>(
+              <button key={k} onClick={()=> setProvider(k as any)} className={`px-3 py-2 rounded-lg border text-xs ${provider===k?'border-red-300 bg-red-50 text-red-600':'border-gray-200 bg-white text-gray-500'}`}>{v.label}</button>
+            ))}
+          </div>
+          {provider==='qq' && <div className="text-xs bg-amber-50 border border-amber-100 rounded-lg p-2 mb-2">ⓘ QQ邮箱需在 网页版「设置→账户」开启 POP3/IMAP 服务，并发送短信获取 16位专属授权码</div>}
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-gray-400 mb-1">电子邮箱地址：</div>
+              <input value={emailAddr} onChange={e=> setEmailAddr(e.target.value)} placeholder="QQ号@qq.com" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"/>
             </div>
+            <div>
+              <div className="text-xs text-gray-400 mb-1">16位专属授权码（非QQ登录密码）：</div>
+              <input value={authCode} onChange={e=> setAuthCode(e.target.value)} placeholder="输入在 QQ邮箱生成的16位授权码" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"/>
+            </div>
+          </div>
+          {provider==='custom' && (
+            <div className="grid md:grid-cols-2 gap-3 mt-2">
+              <input value={customImap} onChange={e=> setCustomImap(e.target.value)} placeholder="IMAP 主机 imap.example.com" className="px-3 py-2 border rounded-lg text-sm"/>
+              <input value={customSmtp} onChange={e=> setCustomSmtp(e.target.value)} placeholder="SMTP 主机 smtp.example.com" className="px-3 py-2 border rounded-lg text-sm"/>
+            </div>
+          )}
+          <div className="mt-3 flex gap-2">
+            <button onClick={handleAddAccount} className="px-4 py-2 bg-pink-500 text-white rounded-lg text-sm flex items-center gap-1.5"><Settings size={14}/> 连接并绑定 {provider} 邮箱</button>
+            <button onClick={()=> setShowConfig(false)} className="px-3 py-2 text-xs text-gray-400">收起</button>
+            <span className="ml-auto text-xs text-gray-300">展开/自定义服务器主机与端口</span>
+          </div>
+        </div>
+      )}
+
+      {/* 三栏主体 */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[340px_1fr_360px] gap-3 p-3 overflow-hidden">
+        {/* 左：未读邮件列表 */}
+        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
+          <div className="p-2 border-b border-gray-100 flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300"/>
+              <input value={q} onChange={e=> setQ(e.target.value)} placeholder="全文检索（中英文关键词、发件人、主题）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs"/>
+            </div>
+            <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>
+          </div>
+          <div className="flex items-center gap-1 px-2 py-1 border-b border-gray-50 text-xs">
+            <span className={`px-2 py-0.5 rounded-full ${filter==='unread'?'bg-blue-50 text-blue-600':'bg-gray-50'}`}>未读 {emails.filter(e=>!e.isRead).length}</span>
+            <span className="text-gray-300 ml-auto">{filtered.length} 封</span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {filtered.map(m=>{
+              const isSel = selected?.id===m.id
+              const cust = m.from.split('<')[0].trim()
+              return (
+                <button key={m.id} onClick={async()=>{ setSelected(m); await markRead(m.id,true); setEmails(prev=> prev.map(x=> x.id===m.id? {...x,isRead:true}:x)) }} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
+                    <span className="font-medium text-gray-700 truncate">{cust}</span>
+                    <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
+                  </div>
+                  <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
+                  <div className="text-xs text-gray-400 truncate">{m.text.slice(0,60)}</div>
+                  <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-400">
+                    <span>{m.hasAttachment?'📎':''} {m.product||'Coin'} · {m.priority==='高'?'🔴高':'中'} · {new Date(m.date).toLocaleDateString()}</span>
+                    <span className="ml-auto px-1 py-0.5 bg-gray-100 rounded">{m.status}</span>
+                  </div>
+                </button>
+              )
+            })}
+            {filtered.length===0 && <div className="p-8 text-center text-xs text-gray-300">暂无邮件，去配置邮箱并同步</div>}
           </div>
         </div>
 
-        {/* 操作区 */}
-        <div className="flex items-center gap-1.5 mt-2.5 pl-8">
-          {!isProcessed ? (
+        {/* 中：AI工作台 */}
+        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
+          {!selected ? <div className="flex-1 flex items-center justify-center text-xs text-gray-300">请选择一封邮件</div> : (
             <>
-              <button
-                onClick={() => convert(item, 'task')}
-                disabled={busyId === item.id}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100 disabled:opacity-40"
-              >
-                <ListTodo size={12} /> 转任务
-              </button>
-              <button
-                onClick={() => convert(item, 'knowledge')}
-                disabled={busyId === item.id}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs hover:bg-indigo-100 disabled:opacity-40"
-              >
-                <BookPlus size={12} /> 转知识
-              </button>
-              <button
-                onClick={() => convert(item, 'inspiration')}
-                disabled={busyId === item.id}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-yellow-50 text-yellow-600 rounded-lg text-xs hover:bg-yellow-100 disabled:opacity-40"
-              >
-                <Lightbulb size={12} /> 转想法
-              </button>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-auto p-1.5 text-gray-300 hover:text-red-500 rounded-lg hover:bg-red-50"
-                title="删除"
-              >
-                <Trash2 size={13} />
-              </button>
+              <div className="p-3 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-800 flex items-center gap-2">{selected.subject} <button onClick={()=> window.open(`mailto:${selected.from}`)} className="px-2 py-0.5 bg-gray-900 text-white rounded text-xs">新窗口</button></div>
+                  <div className="text-xs text-gray-400">发件：{selected.from} → {selected.to} · {new Date(selected.date).toLocaleString()}</div>
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {/* 客户头 */}
+                <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-center gap-2">
+                  <div className="text-sm font-semibold text-gray-700">客户：{customer?.contactName||selected.from.split('<')[0]} {customer?.isKey && <span className="ml-1 text-yellow-500">⭐ A级</span>}</div>
+                  <span className="text-xs text-gray-500">{customer?.company||'—'}</span>
+                  <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
+                </div>
+
+                {/* AI工作台卡 */}
+                <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
+                  <div className="text-xs font-semibold text-gray-700">AI工作台</div>
+                  {!showTrans ? (
+                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{selected.text}</div>
+                  ) : (
+                    <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-2 border">{translated || '翻译中...'}</div>
+                  )}
+                  <div className="grid grid-cols-2 gap-1 text-xs">
+                    <div>🎯 意图：<b>{selected.intent}</b></div>
+                    <div>📦 产品：{selected.product}</div>
+                    <div>💰 数量：{selected.qty||500}</div>
+                    <div>💵 预算：{selected.budget||'未提及'}</div>
+                    <div>📅 交期：{selected.deadline||'Oct 15'}</div>
+                    <div>🔥 成交意愿：高</div>
+                  </div>
+                  <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期（3天未回自动跟进）</div>
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
+                  <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
+                  <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
+                </div>
+              </div>
             </>
-          ) : (
-            <span className="flex items-center gap-1 text-[10px] text-gray-300">
-              <CheckCircle2 size={11} /> 已处理
-            </span>
           )}
+        </div>
+
+        {/* 右：翻译/AI推荐/重点跟进 */}
+        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
+          <div className="p-3 border-b border-gray-100 text-xs font-semibold text-gray-600">AI 侧栏 · 重点客户</div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            <div className="rounded-xl border border-gray-100 p-3">
+              <div className="text-xs font-medium text-gray-700 mb-1">记录重点客户 · 添加备注</div>
+              <div className="text-xs text-gray-500 mb-2">{customer? `${customer.title||customer.email} ${customer.company||''}`:'未关联客户'}</div>
+              <div className="flex gap-1">
+                <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已标记重点':'标记重点'}</button>
+                <button onClick={async()=>{ if(!customer) return; const n=await askText('备注', customer.notes||''); if(n!==null){ await db.customers.update(customer.id,{notes:n} as any); setCustomer({...customer,notes:n} as any)}} } className="flex-1 py-1.5 bg-white border rounded-lg text-xs flex items-center justify-center gap-1"><StickyNote size={12}/> 备注</button>
+              </div>
+              {customer?.notes && <div className="mt-2 text-xs bg-yellow-50 border border-yellow-100 rounded p-2">{customer.notes}</div>}
+              <button onClick={handleAiSummary} className="mt-2 w-full py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结客户</button>
+              {customer?.aiSummary && <div className="mt-2 text-xs bg-purple-50 rounded p-2">{customer.aiSummary} 评分:{customer.score}</div>}
+            </div>
+
+            <div className="rounded-xl border border-gray-100 p-3">
+              <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1"><Calendar size={12}/> 下次跟进</div>
+              <div className="text-xs text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'} · AI建议：{selected? suggestFollowUpDate(selected.intent||'其他', selected.text):'—'}</div>
+              <div className="flex gap-1 flex-wrap">
+                {[1,3,7,14,30].map(d=>{
+                  const dd=new Date(); dd.setDate(dd.getDate()+d); const v=dd.toISOString().slice(0,10)
+                  return <button key={d} onClick={async()=>{ if(!customer) return; await db.customers.update(customer.id,{followUpAt:v} as any); setCustomer({...customer,followUpAt:v} as any); await db.followUps.put({id:`fu-${Date.now()}`,customerId:customer.id,dueAt:v,channel:['workbench'],status:'pending',createdAt:new Date().toISOString()} as any); alert(`已设 ${v} 跟进`)}} className="px-2 py-1 bg-white border rounded text-xs">{d}天后</button>
+                })}
+                <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-xs flex items-center gap-1"><Clock size={10}/> 自定义</button>
+              </div>
+              <div className="text-xs text-gray-400 mt-2">提醒方式：☑ 工作台 ☑ Telegram ☑ Email（存 followUps，首页通知）</div>
+            </div>
+
+            <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
+              <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Send size={12}/> AI推荐回复</div>
+              <div className="text-xs bg-white rounded p-2 border">
+                Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm quantity & deadline?<br/>Best regards, Evan
+              </div>
+              <div className="flex gap-1 mt-2">
+                <button onClick={()=> alert('已插入到起草（Mock），走 L3审批后发送')} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
+                <button className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-    )
-  }
-
-  return (
-    <div className="p-4 md:p-6 max-w-3xl mx-auto">
-      <div className="flex items-center gap-2 mb-1">
-        <InboxIcon size={22} className="text-sky-500" />
-        <h1 className="text-xl font-bold text-gray-800">收件箱</h1>
-        {pending.length > 0 && (
-          <span className="px-2 py-0.5 bg-sky-100 text-sky-600 rounded-full text-[10px] font-bold">{pending.length} 待处理</span>
-        )}
-      </div>
-      <p className="text-xs text-gray-400 mb-5">
-        快速捕获与 AI 收集的条目在此分拣。知识整理助手会自动标注分类——你只需决定流向。
-      </p>
-
-      {items.length === 0 ? (
-        <div className="text-center py-16">
-          <Inbox size={36} className="mx-auto text-gray-200 mb-3" />
-          <p className="text-sm text-gray-400">收件箱是空的</p>
-          <p className="text-[11px] text-gray-300 mt-1">用底部「快速捕获」或 AI 实验室随手记录</p>
-        </div>
-      ) : (
-        <div className="space-y-5">
-          {pending.length > 0 && (
-            <div className="space-y-2.5">
-              <h3 className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">待处理</h3>
-              {pending.map(i => renderCard(i, false))}
-            </div>
-          )}
-          {processed.length > 0 && (
-            <div className="space-y-2.5">
-              <h3 className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">已处理</h3>
-              {processed.map(i => renderCard(i, true))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
