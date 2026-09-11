@@ -1,4 +1,4 @@
-import { db } from '../db'
+﻿import { db } from '../db'
 import type { EmailAccount, EmailMessage, EmailIntent } from '../types'
 import { classifyIntent } from '../services/emailAiService'
 import { uid, now } from './result'
@@ -13,20 +13,25 @@ async function serverHeaders(): Promise<{url:string, token:string}|null>{
 }
 
 export const PROVIDER_PRESETS: Record<string, { imap:{host:string,port:number,ssl:boolean}, smtp:{host:string,port:number,ssl:boolean,tls?:boolean}, label:string }> = {
-  '163': { label:'163 网易', imap:{host:'imap.163.com',port:993,ssl:true}, smtp:{host:'smtp.163.com',port:465,ssl:true} },
-  'qq': { label:'QQ 邮箱', imap:{host:'imap.qq.com',port:993,ssl:true}, smtp:{host:'smtp.qq.com',port:465,ssl:true} },
+  '163': { label:'163', imap:{host:'imap.163.com',port:993,ssl:true}, smtp:{host:'smtp.163.com',port:465,ssl:true} },
+  'qq': { label:'QQ', imap:{host:'imap.qq.com',port:993,ssl:true}, smtp:{host:'smtp.qq.com',port:465,ssl:true} },
   'outlook': { label:'Outlook / 365', imap:{host:'outlook.office365.com',port:993,ssl:true}, smtp:{host:'smtp.office365.com',port:587,ssl:false,tls:true} },
   'gmail': { label:'Gmail', imap:{host:'imap.gmail.com',port:993,ssl:true}, smtp:{host:'smtp.gmail.com',port:465,ssl:true} },
-  'enterprise': { label:'企业邮箱', imap:{host:'imap.qiye.163.com',port:993,ssl:true}, smtp:{host:'smtp.qiye.163.com',port:465,ssl:true} },
-  'custom': { label:'自定义 IMAP', imap:{host:'',port:993,ssl:true}, smtp:{host:'',port:465,ssl:true} },
+  'enterprise': { label:'Enterprise', imap:{host:'imap.qiye.163.com',port:993,ssl:true}, smtp:{host:'smtp.qiye.163.com',port:465,ssl:true} },
+  'custom': { label:'Custom IMAP', imap:{host:'',port:993,ssl:true}, smtp:{host:'',port:465,ssl:true} },
+}
+
+function bypassHeaders(h:{url:string,token:string}){
+  const hdr: Record<string,string> = { 'x-evan-token': h.token }
+  if(h.url.includes('loca.lt')) hdr['Bypass-Tunnel-Reminder']='true'
+  return hdr
 }
 
 export async function listAccounts(): Promise<EmailAccount[]> {
-  // 优先拉服务端（跨设备共享），无服务时回落本地
   const h = await serverHeaders()
   if(h){
     try{
-      const r = await fetch(`${h.url}/email/accounts`,{ headers:{ 'x-evan-token': h.token }})
+      const r = await fetch(`${h.url}/email/accounts`,{ headers: bypassHeaders(h) })
       if(r.ok){ const rows = await r.json(); if(Array.isArray(rows)) return rows as EmailAccount[] }
     }catch{}
   }
@@ -49,7 +54,7 @@ export async function upsertAccount(a: Partial<EmailAccount>): Promise<EmailAcco
 export async function deleteAccount(id:string){
   const h = await serverHeaders()
   if(h){
-    try{ await fetch(`${h.url}/email/accounts/${id}`,{ method:'DELETE', headers:{ 'x-evan-token': h.token }}) }catch{}
+    try{ await fetch(`${h.url}/email/accounts/${id}`,{ method:'DELETE', headers: bypassHeaders(h) }) }catch{}
   }
   await db.emailAccounts.delete(id)
 }
@@ -57,7 +62,7 @@ export async function deleteAccount(id:string){
 export async function createAccountOnServer(opts:{ provider:string, email:string, imap:{host:string,port:number,ssl:boolean}, smtp:{host:string,port:number,ssl:boolean}, pass:string }): Promise<{id:string}>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先在 云同步 登录（云同步即IMAP中台，需同一账号）')
-  const r = await fetch(`${h.url}/email/accounts`,{ method:'POST', headers:{ 'Content-Type':'application/json', 'x-evan-token': h.token }, body: JSON.stringify({ provider:opts.provider, email:opts.email, imap_host:opts.imap.host, imap_port:opts.imap.port, smtp_host:opts.smtp.host, smtp_port:opts.smtp.port, pass:opts.pass })})
+  const r = await fetch(`${h.url}/email/accounts`,{ method:'POST', headers:{ 'Content-Type':'application/json', 'x-evan-token': h.token, 'Bypass-Tunnel-Reminder':'true' }, body: JSON.stringify({ provider:opts.provider, email:opts.email, imap_host:opts.imap.host, imap_port:opts.imap.port, smtp_host:opts.smtp.host, smtp_port:opts.smtp.port, pass:opts.pass })})
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`绑定失败 ${r.status}`)
   return j
@@ -66,7 +71,7 @@ export async function createAccountOnServer(opts:{ provider:string, email:string
 export async function syncReal(accountId:string, limit=20): Promise<number>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${limit}`,{ headers:{ 'x-evan-token': h.token }})
+  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${limit}`,{ headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
   const emails: any[] = j.emails||[]
@@ -81,7 +86,6 @@ export async function syncReal(accountId:string, limit=20): Promise<number>{
       priority: '中', status: e.isRead?'已处理':'待处理',
     }
     await db.emails.put(m); added++
-    // 同步客户
     try{
       const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
       if(addr && addr.includes('@')){
@@ -109,7 +113,7 @@ export async function markRead(id:string, isRead:boolean){
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 
-// Mock 同步：生成 20-30 封逼真邮件（878封的缩略版）
+// Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {
   const acc = await db.emailAccounts.get(accountId)
   if (!acc) return 0
@@ -141,7 +145,6 @@ export async function mockSync(accountId:string): Promise<number> {
       aiSummary: `客户需要${s.product}，意图：${intent}`,
     }
     await db.emails.put(m); added++
-    // 同步创建/更新 Customer + Communication
     try {
       const emailAddr = s.from.match(/<(.+?)>/)?.[1] || s.from
       const existing = await db.customers.where('email').equals(emailAddr).first() as any

@@ -69,9 +69,11 @@ export interface SyncTransport {
 
 export const httpTransport: SyncTransport = {
   async login(serverUrl, username, password) {
+    const hdr: Record<string,string> = { 'Content-Type': 'application/json' }
+    if(serverUrl.includes('loca.lt')) hdr['Bypass-Tunnel-Reminder']='true'
     const r = await fetch(`${serverUrl}/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: hdr,
       body: JSON.stringify({ username, password }),
     })
     if (!r.ok) throw new Error(`登录失败 (${r.status})`)
@@ -83,7 +85,7 @@ export const httpTransport: SyncTransport = {
     if (rows.length === 0) return
     const r = await fetch(`${serverUrl}/upsert/${encodeURIComponent(table)}`, {
       method: 'POST',
-      headers: jsonHeaders(token),
+      headers: jsonHeaders(token, serverUrl),
       body: JSON.stringify({ rows }),
     })
     if (!r.ok) throw new Error(`推送 ${table} 失败 (${r.status})`)
@@ -97,7 +99,7 @@ export const httpTransport: SyncTransport = {
 
   async pullChanges(serverUrl, token, since) {
     const r = await fetch(`${serverUrl}/changes?since=${encodeURIComponent(since)}`, {
-      headers: jsonHeaders(token),
+      headers: jsonHeaders(token, serverUrl),
     })
     if (!r.ok) throw new Error(`拉取变更失败 (${r.status})`)
     return r.json()
@@ -107,15 +109,17 @@ export const httpTransport: SyncTransport = {
     if (deletions.length === 0) return
     const r = await fetch(`${serverUrl}/deletions`, {
       method: 'POST',
-      headers: jsonHeaders(token),
+      headers: jsonHeaders(token, serverUrl),
       body: JSON.stringify({ deletions }),
     })
     if (!r.ok) throw new Error(`推送删除记录失败 (${r.status})`)
   },
 }
 
-function jsonHeaders(token: string): Record<string, string> {
-  return { 'Content-Type': 'application/json', 'x-evan-token': token }
+function jsonHeaders(token: string, serverUrl?: string): Record<string, string> {
+  const h: Record<string,string> = { 'Content-Type': 'application/json', 'x-evan-token': token }
+  if(serverUrl && serverUrl.includes('loca.lt')) h['Bypass-Tunnel-Reminder']='true'
+  return h
 }
 
 // ====== 配置存取（appState 表 key='cloud'）======
