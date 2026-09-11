@@ -190,6 +190,7 @@ app.post('/login', wrap(async (req, res) => {
 
 // ---------- 拉取变更 ----------
 app.get('/changes', auth, wrap(async (req, res) => {
+  if(!dbReady) return res.json({ serverNow: new Date().toISOString(), changes:[], deletions:[] })
   const since = String(req.query.since ?? '1970-01-01T00:00:00.000Z')
   const serverNow = new Date().toISOString()
 
@@ -221,6 +222,7 @@ app.get('/changes', auth, wrap(async (req, res) => {
 
 // ---------- 推送行 ----------
 app.post('/upsert/:table', auth, wrap(async (req, res) => {
+  if(!dbReady) return res.json({ ok:true, accepted: (Array.isArray(req.body?.rows)? req.body.rows.length:0) })
   const tableName = String(req.params.table).replace(/[^a-z_]/gi, '')
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
   let accepted = 0
@@ -249,6 +251,7 @@ app.post('/upsert/:table', auth, wrap(async (req, res) => {
 
 // ---------- 推送删除 ----------
 app.post('/deletions', auth, wrap(async (req, res) => {
+  if(!dbReady) return res.json({ ok:true })
   const list = Array.isArray(req.body?.deletions) ? req.body.deletions : []
   for (const d of list.slice(0, 500)) {
     if (!d.tableName || !d.rowId) continue
