@@ -2,6 +2,15 @@ import { db } from '../db'
 import type { EmailAccount, EmailMessage, EmailIntent } from '../types'
 import { classifyIntent } from '../services/emailAiService'
 import { uid, now } from './result'
+import { getSyncConfig } from '../services/cloudSync'
+
+async function serverHeaders(): Promise<{url:string, token:string}|null>{
+  try{
+    const cfg = await getSyncConfig()
+    if(!cfg?.serverUrl || !cfg?.token) return null
+    return { url: cfg.serverUrl.replace(/\/+$/,''), token: cfg.token }
+  }catch{ return null }
+}
 
 export const PROVIDER_PRESETS: Record<string, { imap:{host:string,port:number,ssl:boolean}, smtp:{host:string,port:number,ssl:boolean,tls?:boolean}, label:string }> = {
   '163': { label:'163 网易', imap:{host:'imap.163.com',port:993,ssl:true}, smtp:{host:'smtp.163.com',port:465,ssl:true} },
@@ -13,6 +22,14 @@ export const PROVIDER_PRESETS: Record<string, { imap:{host:string,port:number,ss
 }
 
 export async function listAccounts(): Promise<EmailAccount[]> {
+  // 优先拉服务端（跨设备共享），无服务时回落本地
+  const h = await serverHeaders()
+  if(h){
+    try{
+      const r = await fetch(`${h.url}/email/accounts`,{ headers:{ 'x-evan-token': h.token }})
+      if(r.ok){ const rows = await r.json(); if(Array.isArray(rows)) return rows as EmailAccount[] }
+    }catch{}
+  }
   try { return await db.emailAccounts.toArray() } catch { return [] }
 }
 export async function upsertAccount(a: Partial<EmailAccount>): Promise<EmailAccount> {
@@ -29,7 +46,56 @@ export async function upsertAccount(a: Partial<EmailAccount>): Promise<EmailAcco
   await db.emailAccounts.put(rec)
   return rec
 }
-export async function deleteAccount(id:string){ await db.emailAccounts.delete(id) }
+export async function deleteAccount(id:string){
+  const h = await serverHeaders()
+  if(h){
+    try{ await fetch(`${h.url}/email/accounts/${id}`,{ method:'DELETE', headers:{ 'x-evan-token': h.token }}) }catch{}
+  }
+  await db.emailAccounts.delete(id)
+}
+
+export async function createAccountOnServer(opts:{ provider:string, email:string, imap:{host:string,port:number,ssl:boolean}, smtp:{host:string,port:number,ssl:boolean}, pass:string }): Promise<{id:string}>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先在 云同步 登录（云同步即IMAP中台，需同一账号）')
+  const r = await fetch(`${h.url}/email/accounts`,{ method:'POST', headers:{ 'Content-Type':'application/json', 'x-evan-token': h.token }, body: JSON.stringify({ provider:opts.provider, email:opts.email, imap_host:opts.imap.host, imap_port:opts.imap.port, smtp_host:opts.smtp.host, smtp_port:opts.smtp.port, pass:opts.pass })})
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`绑定失败 ${r.status}`)
+  return j
+}
+
+export async function syncReal(accountId:string, limit=20): Promise<number>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${limit}`,{ headers:{ 'x-evan-token': h.token }})
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
+  const emails: any[] = j.emails||[]
+  let added=0
+  for(const e of emails){
+    const m: EmailMessage = {
+      id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
+      from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
+      date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
+      product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
+      intent: await classifyIntent(e.subject+' '+ (e.text||'').slice(0,500)) as EmailIntent,
+      priority: '中', status: e.isRead?'已处理':'待处理',
+    }
+    await db.emails.put(m); added++
+    // 同步客户
+    try{
+      const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
+      if(addr && addr.includes('@')){
+        const exist = await db.customers.where('email').equals(addr).first() as any
+        if(!exist){
+          const { uid:uid2 } = await import('./result')
+          await db.customers.put({ id: uid2(), type:'customer', title: (e.from.split('<')[0].trim()||addr.split('@')[0]), description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email:addr, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) } as any)
+        }
+      }
+    }catch{}
+  }
+  await db.emailAccounts.update(accountId,{lastSyncAt: now()} as any).catch(()=>{})
+  return added
+}
 
 export async function listEmails(folder?: string): Promise<EmailMessage[]> {
   try {

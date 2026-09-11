@@ -20,6 +20,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import mysql from 'mysql2/promise'
+import { ImapFlow } from 'imapflow'
+import { simpleParser } from 'mailparser'
 
 const PORT = process.env.PORT || 3000
 const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex')
@@ -34,6 +36,10 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   charset: 'utf8mb4',
 })
+// 内存降级（MySQL 不可用时）
+const memUsers = new Map()
+const memEmailAccounts = new Map() // username -> accounts[]
+let dbReady = true
 
 const app = express()
 // 认证/写入路由单独限制 body 大小（全局 20mb 过宽，易被单请求吃内存）
@@ -61,8 +67,9 @@ function loginRateLimited(key) {
   return arr.length > LOGIN_MAX_ATTEMPTS
 }
 
-// ---------- 初始化 ----------
+// ---------- 初始化（MySQL 不可用时降级为内存+文件，邮件IMAP仍可用） ----------
 async function init() {
+  try{
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       username VARCHAR(64) PRIMARY KEY,
@@ -97,7 +104,26 @@ async function init() {
   // 确保上传目录存在
   const uploadDir = path.join(process.cwd(), 'uploads')
   if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true })
+  // 邮件账号表（真实IMAP）
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_accounts (
+      id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      email VARCHAR(128) NOT NULL,
+      provider VARCHAR(20) NOT NULL,
+      imap_host VARCHAR(128) NOT NULL,
+      imap_port INT NOT NULL,
+      smtp_host VARCHAR(128) NOT NULL,
+      smtp_port INT NOT NULL,
+      auth_enc TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user (username)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
   console.log('[sync-server] storage ready')
+  }catch(e){
+    dbReady=false
+    console.warn('[sync-server] MySQL 不可用，已降级为内存模式（云同步不可用，但邮件IMAP仍可用）:', e.message)
+  }
 }
 
 // ---------- 认证 ----------
@@ -146,17 +172,18 @@ app.post('/login', wrap(async (req, res) => {
   if (loginRateLimited(rlKey)) {
     return res.status(429).json({ error: '尝试过于频繁，请 10 分钟后再试' })
   }
-  const [rows] = await pool.query('SELECT passhash, salt FROM users WHERE username = ?', [username])
-  if (rows.length === 0) {
-    // 自动注册
-    const salt = crypto.randomBytes(16).toString('hex')
-    await pool.query('INSERT INTO users (username, passhash, salt) VALUES (?,?,?)',
-      [username, hashPass(password, salt), salt])
-  } else {
-    if (rows[0].passhash !== hashPass(password, rows[0].salt)) {
-      // 统一失败文案，不区分「用户不存在/密码错误」，防止用户名枚举
-      return res.status(401).json({ error: '用户名或密码错误' })
+  if(dbReady){
+    const [rows] = await pool.query('SELECT passhash, salt FROM users WHERE username = ?', [username])
+    if (rows.length === 0) {
+      const salt = crypto.randomBytes(16).toString('hex')
+      await pool.query('INSERT INTO users (username, passhash, salt) VALUES (?,?,?)', [username, hashPass(password, salt), salt])
+    } else {
+      if (rows[0].passhash !== hashPass(password, rows[0].salt)) return res.status(401).json({ error: '用户名或密码错误' })
     }
+  } else {
+    const rec = memUsers.get(username)
+    if (!rec) { const salt=crypto.randomBytes(16).toString('hex'); memUsers.set(username,{passhash:hashPass(password,salt), salt}) }
+    else if (rec.passhash !== hashPass(password, rec.salt)) return res.status(401).json({ error: '用户名或密码错误' })
   }
   res.json({ token: signToken(username) })
 }))
@@ -376,6 +403,101 @@ app.delete('/files/:id', auth, wrap(async (req, res) => {
   try { fs.unlinkSync(rows[0].path) } catch {}
   await pool.query('DELETE FROM files WHERE id = ? AND username = ?', [req.params.id, req.user])
   res.json({ ok: true })
+}))
+
+// ---------- 真实邮件 IMAP ----------
+// 加密：用 SECRET 对授权码做 AES-GCM（与前端脱敏一致）
+function encAuth(plain){
+  const iv=crypto.randomBytes(12)
+  const cipher=crypto.createCipheriv('aes-256-gcm', crypto.createHash('sha256').update(SECRET).digest(), iv)
+  const enc=Buffer.concat([cipher.update(plain,'utf8'), cipher.final()])
+  const tag=cipher.getAuthTag()
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${enc.toString('hex')}`
+}
+function decAuth(encStr){
+  try{
+    const [ivHex,tagHex,encHex]=String(encStr).split(':')
+    const iv=Buffer.from(ivHex,'hex'), tag=Buffer.from(tagHex,'hex'), enc=Buffer.from(encHex,'hex')
+    const decipher=crypto.createDecipheriv('aes-256-gcm', crypto.createHash('sha256').update(SECRET).digest(), iv)
+    decipher.setAuthTag(tag)
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8')
+  }catch{ return encStr }
+}
+
+// 绑定账号（测试连接后入库）
+app.post('/email/accounts', auth, wrap(async (req,res)=>{
+  const { provider, email, imap_host, imap_port, smtp_host, smtp_port, pass } = req.body||{}
+  if(!email||!pass) return res.status(400).json({error:'需要 email 与授权码/应用密码'})
+  let ih=imap_host, ip=Number(imap_port||993), sh=smtp_host, sp=Number(smtp_port||465)
+  // 校验 IMAP 连通性（5s超时）
+  const client=new ImapFlow({ host: ih, port: ip, secure: ip===993, auth:{user:email, pass}, logger:false, socketTimeout: 8000 })
+  try{ await client.connect(); await client.logout(); }catch(e){ return res.status(400).json({error:'IMAP连接失败：'+(e.message||e)}) }
+  const id=crypto.randomUUID()
+  if(dbReady){
+    await pool.query(`INSERT INTO email_accounts (id, username, email, provider, imap_host, imap_port, smtp_host, smtp_port, auth_enc) VALUES (?,?,?,?,?,?,?,?,?)`,
+      [id, req.user, email, provider||'custom', ih, ip, sh||'', sp||0, encAuth(String(pass))])
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]; arr.push({ id, email, provider:provider||'custom', imap_host:ih, imap_port:ip, smtp_host:sh, smtp_port:sp||0, auth_enc: encAuth(String(pass)), created_at: new Date().toISOString()}); memEmailAccounts.set(req.user, arr)
+  }
+  res.json({ id, email, provider })
+}))
+app.get('/email/accounts', auth, wrap(async (req,res)=>{
+  if(!dbReady){
+    const rows=(memEmailAccounts.get(req.user)||[]); return res.json(rows)
+  }
+  const [rows]=await pool.query('SELECT id,email,provider,imap_host,imap_port,smtp_host,smtp_port,created_at FROM email_accounts WHERE username=? ORDER BY created_at DESC',[req.user])
+  res.json(rows)
+}))
+app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
+  if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); return res.json({ok:true}) }
+  await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); res.json({ok:true})
+}))
+// 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX
+app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
+  const accountId=req.params.id
+  const limit=Math.min(50, Number(req.query.limit||20))
+  const folder=String(req.query.folder||'INBOX')
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+  const pass=decAuth(acc.auth_enc)
+  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, socketTimeout: 10000 })
+  await client.connect()
+  const lock=await client.getMailboxLock(folder)
+  try{
+    const total=client.mailbox.exists
+    const start=Math.max(1, total - limit +1)
+    const out=[]
+    for await (const msg of client.fetch(`${start}:*`,{ envelope:true, source:true, flags:true, uid:true })){
+      try{
+        const parsed=await simpleParser(msg.source)
+        out.push({
+          id: `${accountId}-${msg.uid}`,
+          accountId,
+          folder: folder.toLowerCase(),
+          from: parsed.from?.text || msg.envelope.from?.[0]?.address || '',
+          fromName: parsed.from?.value?.[0]?.name || '',
+          to: parsed.to?.text || acc.email,
+          subject: parsed.subject || msg.envelope.subject || '(无主题)',
+          text: parsed.text || parsed.html || '',
+          html: parsed.html || '',
+          date: parsed.date?.toISOString() || new Date().toISOString(),
+          isRead: msg.flags.has('\\Seen'),
+          hasAttachment: (parsed.attachments||[]).length>0,
+        })
+      }catch{}
+    }
+    // 新的在前
+    out.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
+    res.json({ emails: out, total })
+  }finally{ lock.release(); await client.logout().catch(()=>{}) }
 }))
 
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack

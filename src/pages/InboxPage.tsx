@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, StickyNote, UserCheck, Calendar, Send, Settings, Search } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, PROVIDER_PRESETS, mockSync, markRead, listEmails } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { useAskText } from '../components/PromptModal'
 
@@ -57,14 +57,47 @@ export default function InboxPage(){
     })()
   },[selected?.id])
 
+  const [syncing, setSyncing] = useState(false)
   const handleAddAccount = async()=>{
     if(!emailAddr.trim()||!authCode.trim()) return alert('请填邮箱和16位授权码/应用密码')
     const preset = PROVIDER_PRESETS[provider]
     const imap = provider==='custom'? {host:customImap,port:993,ssl:true}: preset.imap
     const smtp = provider==='custom'? {host:customSmtp,port:465,ssl:true}: preset.smtp
-    const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.trim() })
-    await mockSync(acc.id)
-    setShowConfig(false); setAuthCode(''); await refresh()
+    setSyncing(true)
+    try{
+      // 优先走真实服务（需已登录云同步，Gmail 用应用专用密码16位）
+      try{
+        const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: authCode.trim() })
+        const n = await syncReal(id, 20)
+        alert(`已连接并拉取 ${n} 封真实邮件（来自你Gmail）`)
+      }catch(e:any){
+        const msg = String(e.message||e)
+        if(msg.includes('请先在 云同步 登录')){
+          // 未登录则本地演示
+          const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.trim() })
+          await mockSync(acc.id)
+          alert('未登录云同步，已用本地演示数据（要看真实Gmail，请先到 ☁️云同步 登录同一账号再绑定）')
+        } else {
+          throw e
+        }
+      }
+    }catch(e:any){
+      alert('绑定失败：' + String(e.message||e).slice(0,200) + '\n\nGmail请确认：1) 已开两步验证 2) 生成的是16位应用专用密码（无空格） 3) IMAP已启用')
+    }finally{
+      setSyncing(false)
+      setShowConfig(false); setAuthCode(''); await refresh()
+    }
+  }
+  const handleSyncSelected = async()=>{
+    if(accounts.length===0) return alert('先绑定邮箱')
+    setSyncing(true)
+    try{
+      let total=0
+      for(const a of accounts){ try{ total += await syncReal(a.id, 20) }catch(e){ console.warn(e)} }
+      if(total===0) alert('未拉到新邮件（或需检查应用密码）')
+      else alert(`已同步 ${total} 封真实邮件`)
+      await refresh()
+    }finally{ setSyncing(false) }
   }
 
   const handleFollowUp = async()=>{
@@ -112,7 +145,8 @@ export default function InboxPage(){
         <Mail size={18} className="text-blue-500"/>
         <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
-        <button onClick={()=> setShowConfig(v=>!v)} className="ml-auto px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
+        <button onClick={handleSyncSelected} disabled={syncing} className="ml-auto px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步真实邮件'}</button>
+        <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
         <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
       </div>
 
