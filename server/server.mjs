@@ -669,17 +669,21 @@ app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
   const pass=decAuth(acc.auth_enc)
   const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:60000 })
   await client.connect()
-  // 搜索所有文件夹找这封邮件
-  const folders = ['INBOX','[Gmail]/All Mail','[Gmail]/Sent Mail','[Gmail]/Drafts','Sent','Drafts']
+  const uidNum = Number(uid)
+  if(!isFinite(uidNum)) { await client.logout().catch(()=>{}); return res.status(400).json({error:'无效UID'}) }
+  // 直接在 All Mail 中搜索（包含所有邮件）
+  const folders = ['[Gmail]/All Mail','INBOX','[Gmail]/Sent Mail','Sent']
   for(const folder of folders){
     try{
       const lock = await client.getMailboxLock(folder)
       try{
-        const uidNum = Number(uid)
-        if(!isFinite(uidNum)) continue
+        // 用 SEARCH UID 确认存在，再 fetch
+        const found = await client.search({uid: uidNum})
+        if(!found || found.length === 0) continue
         const r = await client.fetchOne(uidNum, { source:true, uid:true }, {uid:true})
         if(!r || !r.source) continue
         const parsed = await simpleParser(r.source)
+        await client.logout().catch(()=>{})
         res.json({
           id: `${accountId}-${uid}`,
           from: parsed.from?.text || '',
@@ -694,7 +698,54 @@ app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
       }finally{ lock.release() }
     }catch{}
   }
+  await client.logout().catch(()=>{})
   res.status(404).json({error:'未找到该邮件'})
+}))
+
+// 批量加载邮件全文：POST /email/full-batch  {accountId, uids:[123,456,...]}
+app.post('/email/full-batch', auth, wrap(async (req,res)=>{
+  const { accountId, uids } = req.body||{}
+  if(!accountId || !Array.isArray(uids) || uids.length===0) return res.status(400).json({error:'需要accountId和uids数组'})
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+  const pass=decAuth(acc.auth_enc)
+  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+  await client.connect()
+  const results = {}
+  try{
+    const lock = await client.getMailboxLock('[Gmail]/All Mail')
+    try{
+      // 批量 fetch：用 UID 序列
+      const validUids = uids.map(Number).filter(isFinite)
+      if(validUids.length === 0) return res.json({results:{}})
+      const uidSeq = validUids.join(',')
+      for await (const msg of client.fetch(uidSeq, { source:true, uid:true })){
+        try{
+          if(!msg.source) continue
+          const parsed = await simpleParser(msg.source)
+          results[msg.uid] = {
+            from: parsed.from?.text || '',
+            to: parsed.to?.text || '',
+            subject: parsed.subject || '',
+            text: parsed.text || '',
+            html: parsed.html || '',
+            date: parsed.date?.toISOString() || '',
+            hasAttachment: (parsed.attachments||[]).length > 0,
+          }
+        }catch{}
+      }
+    }finally{ lock.release() }
+  }catch{}
+  await client.logout().catch(()=>{})
+  res.json({results})
 }))
 
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack

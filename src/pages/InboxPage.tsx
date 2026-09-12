@@ -1,5 +1,5 @@
 // ====== 邮件中心：客户经营中心 ======
-// 三栏：左邮件列表+搜索 | 中AI工作台+邮件往来 | 右AI侧栏
+// 三栏：左邮件列表+搜索 | 中邮件往来（纯邮件展示） | 右AI侧栏（客户+工作台+分析+跟进+回复）
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
@@ -355,7 +355,7 @@ export default function InboxPage(){
       )}
 
       {/* 三栏主体 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(680px,1.9fr)_340px] gap-2 p-2 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_1fr_380px] gap-2 p-2 overflow-hidden">
 
         {/* ====== 左栏：邮件列表 + 搜索 ====== */}
         <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
@@ -416,7 +416,7 @@ export default function InboxPage(){
           </div>
         </div>
 
-        {/* ====== 中栏：AI工作台 + 邮件往来 ====== */}
+        {/* ====== 中栏：邮件往来（纯邮件展示） ====== */}
         <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
           {!selected ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-300 space-y-3">
@@ -438,31 +438,14 @@ export default function InboxPage(){
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {/* 客户信息 */}
-                <div className="p-3 bg-gray-50 rounded-xl border flex items-center gap-2">
-                  <div className="text-sm font-semibold text-gray-700">客户：{customer?.contactName||selected.from.split('<')[0]} {customer?.isKey && <span className="ml-1 text-yellow-500">⭐</span>}</div>
-                  <span className="text-xs text-gray-500">{customer?.company||'—'}</span>
-                  <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
-                </div>
-
-                {/* AI工作台 */}
-                <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
-                  <div className="text-xs font-semibold text-gray-700">AI工作台</div>
-                  {!showTrans ? (
-                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{(selected.text||'').slice(0,600) || '(邮件全文加载中...)'}</div>
-                  ) : (
-                    <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-2 border">{translated || '翻译中...'}</div>
-                  )}
-                  <div className="grid grid-cols-2 gap-1 text-xs">
-                    <div>🎯 意图：<b>{selected.intent}</b></div>
-                    <div>📦 产品：{selected.product}</div>
-                    <div>💰 数量：{selected.qty||500}</div>
-                    <div>💵 预算：{selected.budget||'未提及'}</div>
-                    <div>📅 交期：{selected.deadline||'Oct 15'}</div>
-                    <div>🔥 成交意愿：高</div>
-                  </div>
-                  <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期</div>
-                </div>
+                {/* 当前邮件正文 */}
+                {showTrans ? (
+                  <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-3 border">{translated || '翻译中...'}</div>
+                ) : selected.html ? (
+                  <div className="email-html text-sm leading-relaxed max-w-none overflow-x-auto border rounded-lg p-3 bg-white" dangerouslySetInnerHTML={{__html: selected.html}} />
+                ) : (
+                  <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-3 bg-white">{(selected.text||'').slice(0,4000) || '(邮件全文加载中...)'}</div>
+                )}
 
                 {/* 邮件往来（仅该客户该主题的对话） */}
                 <div className="rounded-xl border overflow-hidden">
@@ -471,7 +454,7 @@ export default function InboxPage(){
                     <span className="text-[10px] text-gray-400">共 {thread.length} 封 · {thread.length > 0 ? `${new Date(thread[0].date).toLocaleDateString()} → ${new Date(thread[thread.length-1].date).toLocaleDateString()}` : ''}</span>
                     {thread.length > 20 && <span className="ml-auto text-[10px] text-orange-400">仅显示最近20封</span>}
                   </div>
-                  <div className="divide-y divide-gray-100 max-h-[520px] overflow-y-auto">
+                  <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
                     {thread.slice(-20).map((m)=>(
                       <div key={m.id} className={`p-3 ${m.id===selected.id?'bg-blue-50/30':''}`}>
                         <div className="flex items-center gap-2 text-xs mb-1">
@@ -503,14 +486,21 @@ export default function InboxPage(){
           )}
         </div>
 
-        {/* ====== 右栏：AI侧栏 + 深度分析 ====== */}
+        {/* ====== 右栏：AI 侧栏（含客户信息 + AI工作台 + 深度分析 + 跟进 + 推荐回复） ====== */}
         <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
-          <div className="p-3 border-b text-xs font-semibold text-gray-600">AI 侧栏</div>
+          <div className="p-3 border-b text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+            <Brain size={12}/> AI 侧栏
+            {customer && <span className="ml-auto text-[10px] text-gray-400">{customer.title||customer.email}</span>}
+          </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
             {/* 客户信息 */}
             <div className="rounded-xl border p-3">
-              <div className="text-xs font-medium text-gray-700 mb-1">重点客户 · 备注</div>
-              <div className="text-xs text-gray-500 mb-2">{customer? `${customer.title||customer.email}`:'未关联客户'}</div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-gray-700">{customer?.contactName||selected?.from?.split('<')[0]||'未知'}</span>
+                {customer?.isKey && <span className="text-yellow-500">⭐</span>}
+                <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
+              </div>
+              <div className="text-[10px] text-gray-400 mb-2">{customer?.company||'—'} · {customer?.email||selected?.from||'—'}</div>
               <div className="flex gap-1">
                 <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
                 <button onClick={handleAiSummary} className="flex-1 py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结</button>
@@ -518,7 +508,27 @@ export default function InboxPage(){
               {customer?.aiSummary && <div className="mt-2 text-xs bg-purple-50 rounded p-2">{customer.aiSummary}</div>}
             </div>
 
-            {/* 深度分析按钮 */}
+            {/* AI工作台（从中间栏合并过来） */}
+            {selected && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
+                <div className="text-xs font-semibold text-gray-700">AI 工作台</div>
+                <div className="grid grid-cols-2 gap-1 text-[11px]">
+                  <div>🎯 意图：<b>{selected.intent}</b></div>
+                  <div>📦 产品：{selected.product}</div>
+                  <div>💰 数量：{selected.qty||500}</div>
+                  <div>💵 预算：{selected.budget||'未提及'}</div>
+                  <div>📅 交期：{selected.deadline||'Oct 15'}</div>
+                  <div>🔥 成交意愿：高</div>
+                </div>
+                <div className="text-[11px] bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期</div>
+                <div className="flex gap-1">
+                  <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="flex-1 py-1 bg-white border rounded text-[11px] flex items-center justify-center gap-1"><Languages size={10}/> 翻译</button>
+                  <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="flex-1 py-1 bg-white border rounded text-[11px]">AI摘要</button>
+                </div>
+              </div>
+            )}
+
+            {/* 深度分析 */}
             <div className="rounded-xl border p-3">
               <button onClick={handleDeepAnalysis} disabled={analyzingCustomer || !selected} className="w-full py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg text-xs flex items-center justify-center gap-2 disabled:opacity-50">
                 <Brain size={14}/>
@@ -527,41 +537,23 @@ export default function InboxPage(){
               {deepAnalysis && (
                 <div className="mt-3 space-y-2 text-xs">
                   <div className="font-semibold text-gray-700 flex items-center gap-1"><FileText size={12}/> 分析报告</div>
-                  {/* RFM 分析 */}
                   <div className="bg-amber-50 rounded p-2">
-                    <b>RFM分群:</b> <span style={{color:deepAnalysis.rfm.segmentColor}}>{deepAnalysis.rfm.segment}</span>
+                    <b>RFM:</b> <span style={{color:deepAnalysis.rfm.segmentColor}}>{deepAnalysis.rfm.segment}</span>
                     <span className="ml-2">R:{deepAnalysis.rfm.recency} F:{deepAnalysis.rfm.frequency} M:{deepAnalysis.rfm.monetary} = {deepAnalysis.rfm.rfmTotal}/15</span>
                   </div>
-                  {/* BANT 资质 */}
                   <div className="bg-blue-50 rounded p-2">
                     <b>BANT:</b> <span className={`font-bold ${deepAnalysis.bant.grade==='A'?'text-green-600':deepAnalysis.bant.grade==='B'?'text-blue-600':'text-orange-600'}`}>{deepAnalysis.bant.grade}</span> ({deepAnalysis.bant.total}/100)
-                    <div className="mt-1 text-[10px]">B:{deepAnalysis.bant.budget} A:{deepAnalysis.bant.authority} N:{deepAnalysis.bant.need} T:{deepAnalysis.bant.timeline}</div>
                   </div>
-                  {/* 健康度 */}
                   <div className="bg-green-50 rounded p-2">
                     <b>健康度:</b> <span style={{color:deepAnalysis.health.statusColor}}>{deepAnalysis.health.overall}/100 {deepAnalysis.health.trend==='up'?'↑':deepAnalysis.health.trend==='down'?'↓':'→'}</span>
-                    <div className="mt-1 text-[10px]">互动:{Math.round(deepAnalysis.health.engagement)} 关系:{Math.round(deepAnalysis.health.relationship)} 价值:{Math.round(deepAnalysis.health.value)}</div>
                   </div>
-                  {/* 画像 */}
-                  <div className="bg-purple-50 rounded p-2"><b>画像:</b> {deepAnalysis.profile.type} · {deepAnalysis.profile.communicationStyle} · {deepAnalysis.profile.engagementLevel}</div>
-                  <div className="bg-orange-50 rounded p-2"><b>订单:</b> {deepAnalysis.profile.orderPattern}</div>
-                  <div className="bg-indigo-50 rounded p-2"><b>产品:</b> {deepAnalysis.profile.productPreference.join('/')}</div>
-                  {/* 跟进方案 */}
+                  <div className="bg-purple-50 rounded p-2"><b>画像:</b> {deepAnalysis.profile.type} · {deepAnalysis.profile.communicationStyle}</div>
                   <div className="bg-red-50 rounded p-2"><b>跟进:</b> {deepAnalysis.strategy.followUpType} · {deepAnalysis.strategy.followUpCadence}</div>
                   <div className="bg-teal-50 rounded p-2"><b>激活:</b> {deepAnalysis.strategy.activationPlan}</div>
-                  {deepAnalysis.strategy.keyTopics.length > 0 && (
-                    <div className="bg-gray-50 rounded p-2"><b>关键话题:</b> {deepAnalysis.strategy.keyTopics.join(' | ')}</div>
-                  )}
-                  {deepAnalysis.strategy.riskFactors.length > 0 && (
-                    <div className="bg-red-50 rounded p-2"><b>风险:</b> {deepAnalysis.strategy.riskFactors.join(' | ')}</div>
-                  )}
-                  {deepAnalysis.strategy.opportunities.length > 0 && (
-                    <div className="bg-yellow-50 rounded p-2"><b>机会:</b> {deepAnalysis.strategy.opportunities.join(' | ')}</div>
-                  )}
-                  {deepAnalysis.strategy.nextActions.length > 0 && (
-                    <div className="bg-blue-50 rounded p-2"><b>行动:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.strategy.nextActions.map((a,i)=><li key={i} className="flex items-start gap-1"><TrendingUp size={10} className="mt-0.5 shrink-0"/> {a}</li>)}</ul></div>
-                  )}
-                  <div className="bg-gray-50 rounded p-2 text-[10px] text-gray-500">{deepAnalysis.background.summary}</div>
+                  {deepAnalysis.strategy.keyTopics.length > 0 && <div className="bg-gray-50 rounded p-2"><b>话题:</b> {deepAnalysis.strategy.keyTopics.join(' | ')}</div>}
+                  {deepAnalysis.strategy.riskFactors.length > 0 && <div className="bg-red-50 rounded p-2"><b>风险:</b> {deepAnalysis.strategy.riskFactors.join(' | ')}</div>}
+                  {deepAnalysis.strategy.opportunities.length > 0 && <div className="bg-yellow-50 rounded p-2"><b>机会:</b> {deepAnalysis.strategy.opportunities.join(' | ')}</div>}
+                  {deepAnalysis.strategy.nextActions.length > 0 && <div className="bg-blue-50 rounded p-2"><b>行动:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.strategy.nextActions.map((a,i)=><li key={i} className="flex items-start gap-1"><TrendingUp size={10} className="mt-0.5 shrink-0"/> {a}</li>)}</ul></div>}
                 </div>
               )}
             </div>
@@ -569,17 +561,17 @@ export default function InboxPage(){
             {/* 跟进 */}
             <div className="rounded-xl border p-3">
               <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1"><Calendar size={12}/> 下次跟进</div>
-              <div className="text-xs text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'}</div>
+              <div className="text-[10px] text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'}</div>
               <div className="flex gap-1 flex-wrap">
-                {[1,3,7,14,30].map(d=> <button key={d} onClick={()=> handleCustomFollow(d)} className="px-2 py-1 bg-white border rounded text-xs hover:bg-blue-50">{d}天后</button>)}
-                <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-xs"><Clock size={10}/> 自定义</button>
+                {[1,3,7,14,30].map(d=> <button key={d} onClick={()=> handleCustomFollow(d)} className="px-2 py-1 bg-white border rounded text-[11px] hover:bg-blue-50">{d}天</button>)}
+                <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-[11px]"><Clock size={10}/> 自定义</button>
               </div>
             </div>
 
             {/* AI推荐回复 */}
             <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
               <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Send size={12}/> AI推荐回复</div>
-              <div className="text-xs bg-white rounded p-2 border">
+              <div className="text-[11px] bg-white rounded p-2 border">
                 Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product||'our products'}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm?<br/>Best regards, Evan
               </div>
               <div className="flex gap-1 mt-2">
@@ -593,8 +585,8 @@ export default function InboxPage(){
                   setFolder('drafts'); setSearchMode(false)
                   const list = await listEmails(); setEmails(list)
                   alert('草稿已生成')
-                }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
-                <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)} }} className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
+                }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-[11px]">一键生成</button>
+                <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)} }} className="flex-1 py-1.5 bg-white border rounded text-[11px]">翻译对照</button>
               </div>
             </div>
           </div>

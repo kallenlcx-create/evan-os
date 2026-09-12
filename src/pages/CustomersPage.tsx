@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
-import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark, Download } from 'lucide-react'
-import { fetchFullEmail } from '../repositories/emailRepository'
+import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
+import { fetchFullEmailBatch } from '../repositories/emailRepository'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -79,7 +79,6 @@ export default function CustomersPage(){
   const [autoClassified, setAutoClassified] = useState(false)
   const [fullContent, setFullContent] = useState<Record<string, {text:string;html:string}>>({})
   const [loadingContent, setLoadingContent] = useState<Record<string, boolean>>({})
-  const requestedRef = useRef(new Set<string>())
 
   const load = useCallback(async()=>{
     const customers = await db.customers.toArray() as any[]
@@ -115,10 +114,9 @@ export default function CustomersPage(){
 
   useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[load])
 
-  // 点击客户 → 加载该客户所有邮件
+  // 点击客户 → 加载该客户所有邮件 + 批量加载全文
   const handleCustomerClick = useCallback(async(c: Customer)=>{
     setSelectedCustomer(c)
-    requestedRef.current.clear()
     setFullContent({})
     setLoadingContent({})
     const allEmails = await db.emails.toArray() as EmailMessage[]
@@ -129,28 +127,39 @@ export default function CustomersPage(){
       return from===addr || to.includes(addr)
     }).sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
     setCustomerEmails(matched)
-  },[])
 
-  // 按需加载单封邮件全文（headersOnly 模式下 text/html 为空）
-  const loadFullContent = useCallback(async(e: EmailMessage)=>{
-    if(fullContent[e.id]) return // 已加载
-    if(loadingContent[e.id]) return
-    if(e.text || e.html) return // 已有内容
-    // 从 id 中提取 uid（格式: accountId-uid）
-    const parts = e.id.split('-')
-    const uid = parts[parts.length-1]
-    const accountId = e.accountId || parts[0]
-    setLoadingContent(prev=>({...prev,[e.id]:true}))
-    try{
-      const full = await fetchFullEmail(accountId, uid)
-      if(full && (full.text || full.html)){
-        setFullContent(prev=>({...prev,[e.id]:{text:full.text||'',html:full.html||''}}))
-        // 同步回 IndexedDB
-        await db.emails.update(e.id,{ text:full.text||e.text, html:full.html||e.html } as any)
+    // 批量加载所有 text/html 为空的邮件
+    const missing = matched.filter(e => !e.text && !e.html)
+    if(missing.length === 0) return
+    // 按 accountId 分组
+    const byAccount = new Map<string, {email: EmailMessage; uid: string}[]>()
+    for(const e of missing){
+      const parts = e.id.split('-')
+      const uid = parts[parts.length-1]
+      const accountId = e.accountId || parts[0]
+      if(!byAccount.has(accountId)) byAccount.set(accountId, [])
+      byAccount.get(accountId)!.push({email:e, uid})
+    }
+    setLoadingContent(prev => {
+      const next = {...prev}
+      for(const e of missing) next[e.id] = true
+      return next
+    })
+    // 并行请求所有账号
+    const promises = [...byAccount.entries()].map(async([accId, items])=>{
+      const uids = items.map(i => i.uid)
+      const results = await fetchFullEmailBatch(accId, uids)
+      for(const {email: e, uid} of items){
+        const full = results[uid]
+        if(full && (full.text || full.html)){
+          setFullContent(prev=>({...prev,[e.id]:{text:full.text||'',html:full.html||''}}))
+          await db.emails.update(e.id,{ text:full.text||e.text, html:full.html||e.html } as any)
+        }
+        setLoadingContent(prev=>({...prev,[e.id]:false}))
       }
-    }catch{}
-    setLoadingContent(prev=>({...prev,[e.id]:false}))
-  },[fullContent,loadingContent])
+    })
+    await Promise.allSettled(promises)
+  },[])
 
   const filtered = list.filter(c=>{
     if(filter==='key' && !c.isKey) return false
@@ -254,14 +263,8 @@ export default function CustomersPage(){
                 const isSent = e.folder==='sent' || (e.from||'').toLowerCase().includes('evan@maxemblem.com')
                 const loaded = fullContent[e.id]
                 const loading = loadingContent[e.id]
-                const hasContent = !!(loaded?.text || loaded?.html || e.text || e.html)
                 const displayText = loaded?.text || e.text || ''
                 const displayHtml = loaded?.html || e.html || ''
-                // 自动触发加载（仅首次）
-                if(!hasContent && !loading && !loaded && !requestedRef.current.has(e.id)){
-                  requestedRef.current.add(e.id)
-                  setTimeout(()=>loadFullContent(e), 0)
-                }
                 return(
                   <div key={e.id} className={`p-3 rounded-xl border ${isSent?'bg-green-50/50 border-green-100 ml-8':'bg-blue-50/50 border-blue-100 mr-8'}`}>
                     <div className="flex items-center gap-2 text-xs mb-1">
@@ -279,10 +282,7 @@ export default function CustomersPage(){
                     ) : displayText ? (
                       <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-auto border rounded-lg p-2 bg-white">{displayText.slice(0,2000)}</div>
                     ) : (
-                      <div className="text-[11px] text-gray-400 py-2 flex items-center gap-2">
-                        <span>暂无内容</span>
-                        <button onClick={()=>loadFullContent(e)} className="text-blue-500 hover:underline flex items-center gap-0.5"><Download size={10}/> 加载全文</button>
-                      </div>
+                      <div className="text-[11px] text-gray-400 py-2">暂无内容</div>
                     )}
                   </div>
                 )

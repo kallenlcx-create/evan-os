@@ -143,6 +143,17 @@ export async function fetchFullEmail(accountId: string, uid: string): Promise<{t
   }catch{ return null }
 }
 
+export async function fetchFullEmailBatch(accountId: string, uids: string[]): Promise<Record<string,{text:string;html:string;from:string;to:string;subject:string}>>{
+  const h = await serverHeaders()
+  if(!h) return {}
+  try{
+    const r = await fetch(`${h.url}/email/full-batch`,{ method:'POST', headers:{'Content-Type':'application/json', ...bypassHeaders(h)}, body:JSON.stringify({accountId, uids}) })
+    if(!r.ok) return {}
+    const j = await r.json()
+    return j.results || {}
+  }catch{ return {} }
+}
+
 // Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {
   const acc = await db.emailAccounts.get(accountId)
