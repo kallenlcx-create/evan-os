@@ -67,14 +67,15 @@ export default function InboxPage(){
     try{
       // 优先走真实服务（需已登录云同步，Gmail 用应用专用密码16位）
       try{
-        const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: authCode.trim() })
+        const cleanPass = authCode.replace(/\s/g,'')
+        const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: cleanPass })
         const n = await syncReal(id, 20)
         alert(`已连接并拉取 ${n} 封真实邮件（来自你Gmail）`)
       }catch(e:any){
         const msg = String(e.message||e)
         if(msg.includes('请先在 云同步 登录')){
           // 未登录则本地演示
-          const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.trim() })
+          const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.replace(/\s/g,'') })
           await mockSync(acc.id)
           alert('未登录云同步，已用本地演示数据（要看真实Gmail，请先到 ☁️云同步 登录同一账号再绑定）')
         } else {
