@@ -355,7 +355,7 @@ export default function InboxPage(){
       )}
 
       {/* 三栏主体 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_1fr_380px] gap-2 p-2 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_1.8fr_340px] gap-2 p-2 overflow-hidden">
 
         {/* ====== 左栏：邮件列表 + 搜索 ====== */}
         <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
@@ -493,37 +493,73 @@ export default function InboxPage(){
             {customer && <span className="ml-auto text-[10px] text-gray-400">{customer.title||customer.email}</span>}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* 客户信息 */}
-            <div className="rounded-xl border p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-medium text-gray-700">{customer?.contactName||selected?.from?.split('<')[0]||'未知'}</span>
-                {customer?.isKey && <span className="text-yellow-500">⭐</span>}
-                <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
+            {/* 客户信息卡片 */}
+            <div className="rounded-xl border p-3 bg-gradient-to-br from-blue-50 to-purple-50">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold text-sm">
+                  {(customer?.contactName||selected?.from||'?')[0].toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-gray-800 truncate">{customer?.contactName||selected?.from?.split('<')[0]||'未知'}</div>
+                  <div className="text-[10px] text-gray-500 truncate">{customer?.company||'—'}</div>
+                </div>
+                {customer?.isKey && <span className="text-yellow-500 text-lg">⭐</span>}
               </div>
-              <div className="text-[10px] text-gray-400 mb-2">{customer?.company||'—'} · {customer?.email||selected?.from||'—'}</div>
+              <div className="text-[10px] text-gray-400 mb-2 flex items-center gap-1">
+                <Mail size={10}/> {customer?.email||selected?.from||'—'}
+              </div>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs px-2 py-0.5 bg-white rounded-full border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
+                <span className="text-[10px] text-gray-400">|</span>
+                <span className="text-[10px] text-gray-500">{customer?.stage==='lead'?'线索':customer?.stage==='contacted'?'已联系':customer?.stage==='qualified'?'已确认':customer?.stage==='proposal'?'报价中':customer?.stage==='negotiation'?'谈判中':customer?.stage==='won'?'已成交':'线索'}</span>
+              </div>
               <div className="flex gap-1">
-                <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
-                <button onClick={handleAiSummary} className="flex-1 py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结</button>
+                <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-100 text-yellow-600 border border-yellow-200':'bg-white text-gray-600'}`}><UserCheck size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
+                <button onClick={handleAiSummary} className="flex-1 py-1.5 bg-white text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结</button>
               </div>
-              {customer?.aiSummary && <div className="mt-2 text-xs bg-purple-50 rounded p-2">{customer.aiSummary}</div>}
+              {customer?.aiSummary && <div className="mt-2 text-[11px] bg-white/70 rounded p-2 text-gray-600">{customer.aiSummary}</div>}
             </div>
 
-            {/* AI工作台（从中间栏合并过来） */}
+            {/* 邮件往来统计 */}
+            <div className="rounded-xl border p-3">
+              <div className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1"><TrendingUp size={12}/> 往来统计</div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-blue-50 rounded-lg p-2">
+                  <div className="text-lg font-bold text-blue-600">{emails.filter(e=>(e.from||'').toLowerCase().includes((customer?.email||'').toLowerCase()) || (e.to||'').toLowerCase().includes((customer?.email||'').toLowerCase())).length}</div>
+                  <div className="text-[10px] text-gray-500">总邮件</div>
+                </div>
+                <div className="bg-green-50 rounded-lg p-2">
+                  <div className="text-lg font-bold text-green-600">{emails.filter(e=>e.folder==='sent' && (e.to||'').toLowerCase().includes((customer?.email||'').toLowerCase())).length}</div>
+                  <div className="text-[10px] text-gray-500">已发送</div>
+                </div>
+                <div className="bg-orange-50 rounded-lg p-2">
+                  <div className="text-lg font-bold text-orange-600">{emails.filter(e=>e.folder==='inbox' && (e.from||'').toLowerCase().includes((customer?.email||'').toLowerCase()) && !e.isRead).length}</div>
+                  <div className="text-[10px] text-gray-500">未读</div>
+                </div>
+              </div>
+              {/* 最近活跃 */}
+              <div className="mt-2 text-[10px] text-gray-400">
+                最近联系：{customer?.updatedAt ? new Date(customer.updatedAt).toLocaleDateString() : '—'}
+                {customer?.followUpAt && <span className="ml-2">· 下次跟进：<span className={new Date(customer.followUpAt) < new Date() ? 'text-red-500 font-medium' : ''}>{customer.followUpAt}</span></span>}
+              </div>
+            </div>
+
+            {/* AI工作台 */}
             {selected && (
               <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
                 <div className="text-xs font-semibold text-gray-700">AI 工作台</div>
-                <div className="grid grid-cols-2 gap-1 text-[11px]">
-                  <div>🎯 意图：<b>{selected.intent}</b></div>
-                  <div>📦 产品：{selected.product}</div>
-                  <div>💰 数量：{selected.qty||500}</div>
-                  <div>💵 预算：{selected.budget||'未提及'}</div>
-                  <div>📅 交期：{selected.deadline||'Oct 15'}</div>
-                  <div>🔥 成交意愿：高</div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">意图</span> <b className="text-gray-700">{selected.intent}</b></div>
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">产品</span> <b className="text-gray-700">{selected.product}</b></div>
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">数量</span> <b className="text-gray-700">{selected.qty||500}</b></div>
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">预算</span> <b className="text-gray-700">{selected.budget||'未提及'}</b></div>
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">交期</span> <b className="text-gray-700">{selected.deadline||'Oct 15'}</b></div>
+                  <div className="bg-white rounded-lg p-1.5 border"><span className="text-gray-400">意愿</span> <b className="text-orange-600">高</b></div>
                 </div>
-                <div className="text-[11px] bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期</div>
+                <div className="text-[11px] bg-white rounded-lg p-2 border text-gray-600">💡 建议立即报价，并询问预算和交期</div>
                 <div className="flex gap-1">
-                  <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="flex-1 py-1 bg-white border rounded text-[11px] flex items-center justify-center gap-1"><Languages size={10}/> 翻译</button>
-                  <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="flex-1 py-1 bg-white border rounded text-[11px]">AI摘要</button>
+                  <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="flex-1 py-1.5 bg-white border rounded text-[11px] flex items-center justify-center gap-1 hover:bg-blue-50"><Languages size={10}/> 翻译</button>
+                  <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="flex-1 py-1.5 bg-white border rounded text-[11px] hover:bg-blue-50">AI摘要</button>
                 </div>
               </div>
             )}
