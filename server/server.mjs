@@ -54,7 +54,22 @@ function loadEmailAccounts(){
   try{ if(fs.existsSync(EMAIL_ACCOUNTS_FILE)){ const j=JSON.parse(fs.readFileSync(EMAIL_ACCOUNTS_FILE,'utf8')); for(const [k,v] of Object.entries(j)) memEmailAccounts.set(k, v) } }catch{}
 }
 function saveEmailAccounts(){ try{ fs.writeFileSync(EMAIL_ACCOUNTS_FILE, JSON.stringify(Object.fromEntries(memEmailAccounts), null, 2)) }catch{} }
+const memData = new Map()
+const memDeletions = new Map()
+const DATA_FILE = path.join(process.cwd(), 'data.json')
+function loadDataFile(){
+  try{ if(fs.existsSync(DATA_FILE)){ const j=JSON.parse(fs.readFileSync(DATA_FILE,'utf8')); for(const [user, tables] of Object.entries(j)){ const tm=new Map(); for(const [t, rows] of Object.entries(tables)){ const rm=new Map(); for(const [id, v] of Object.entries(rows)) rm.set(id, v); tm.set(t, rm) } memData.set(user, tm) } } }catch{}
+  try{ const p=DATA_FILE.replace('data.json','deletions.json'); if(fs.existsSync(p)){ const jd=JSON.parse(fs.readFileSync(p,'utf8')); for(const [k,v] of Object.entries(jd)) memDeletions.set(k, v) } }catch{}
+}
+function saveDataFile(){
+  try{
+    const out={}; for(const [user, tm] of memData) { out[user]={}; for(const [t, rm] of tm) { out[user][t]={}; for(const [id, v] of rm) out[user][t][id]=v } }
+    fs.writeFileSync(DATA_FILE, JSON.stringify(out, null, 2))
+    fs.writeFileSync(DATA_FILE.replace('data.json','deletions.json'), JSON.stringify(Object.fromEntries(memDeletions), null, 2))
+  }catch{}
+}
 loadEmailAccounts()
+loadDataFile()
 
 const app = express()
 // 认证/写入路由单独限制 body 大小（全局 20mb 过宽，易被单请求吃内存）
@@ -205,7 +220,17 @@ app.post('/login', wrap(async (req, res) => {
 
 // ---------- 拉取变更 ----------
 app.get('/changes', auth, wrap(async (req, res) => {
-  if(!dbReady) return res.json({ serverNow: new Date().toISOString(), changes:[], deletions:[] })
+  if(!dbReady){
+    const since = String(req.query.since ?? '1970-01-01T00:00:00.000Z')
+    const tm = memData.get(req.user) || new Map()
+    const changes=[]
+    for(const [table, rm] of tm){
+      const rows=[...rm.values()].filter(r=> r.updatedAt>since && !r.deleted).map(r=> r.data)
+      if(rows.length) changes.push({ table, rows })
+    }
+    const dels=(memDeletions.get(req.user)||[]).filter(d=> d.deletedAt>since)
+    return res.json({ serverNow: new Date().toISOString(), changes, deletions: dels })
+  }
   const since = String(req.query.since ?? '1970-01-01T00:00:00.000Z')
   const serverNow = new Date().toISOString()
 
@@ -237,7 +262,23 @@ app.get('/changes', auth, wrap(async (req, res) => {
 
 // ---------- 推送行 ----------
 app.post('/upsert/:table', auth, wrap(async (req, res) => {
-  if(!dbReady) return res.json({ ok:true, accepted: (Array.isArray(req.body?.rows)? req.body.rows.length:0) })
+  if(!dbReady){
+    const tableName = String(req.params.table).replace(/[^a-z_]/gi, '')
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+    let tm = memData.get(req.user); if(!tm){ tm=new Map(); memData.set(req.user, tm) }
+    let rm = tm.get(tableName); if(!rm){ rm=new Map(); tm.set(tableName, rm) }
+    let accepted=0
+    for(const row of rows.slice(0,500)){
+      if(!row?.id) continue
+      const updatedAt = row.updatedAt || row.createdAt || new Date().toISOString()
+      const cur = rm.get(row.id)
+      if(cur && cur.updatedAt >= updatedAt) continue
+      rm.set(row.id, { data:{...row}, updatedAt, deleted:false })
+      accepted++
+    }
+    saveDataFile()
+    return res.json({ ok:true, accepted })
+  }
   const tableName = String(req.params.table).replace(/[^a-z_]/gi, '')
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
   let accepted = 0
@@ -266,7 +307,19 @@ app.post('/upsert/:table', auth, wrap(async (req, res) => {
 
 // ---------- 推送删除 ----------
 app.post('/deletions', auth, wrap(async (req, res) => {
-  if(!dbReady) return res.json({ ok:true })
+  if(!dbReady){
+    const list = Array.isArray(req.body?.deletions) ? req.body.deletions : []
+    const arr = memDeletions.get(req.user)||[]
+    for(const d of list.slice(0,500)){
+      if(!d.tableName||!d.rowId) continue
+      const tm=memData.get(req.user); const rm=tm?.get(d.tableName)
+      if(rm?.has(d.rowId)) rm.set(d.rowId, { data:{_deleted:true, id:d.rowId}, updatedAt: d.deletedAt||new Date().toISOString(), deleted:true })
+      arr.push({ tableName:d.tableName, rowId:d.rowId, deletedAt: d.deletedAt||new Date().toISOString() })
+    }
+    memDeletions.set(req.user, arr)
+    saveDataFile()
+    return res.json({ ok:true })
+  }
   const list = Array.isArray(req.body?.deletions) ? req.body.deletions : []
   for (const d of list.slice(0, 500)) {
     if (!d.tableName || !d.rowId) continue
