@@ -183,7 +183,7 @@ export default function Layout() {
         )}
 
         {/* 主内容区 */}
-        <main className="p-4 md:p-6 max-w-7xl">
+        <main className={`p-4 md:p-6 ${location.pathname==='/inbox' ? 'max-w-none' : 'max-w-7xl'}`}>
           <PageErrorBoundary key={location.pathname}>
             <Outlet />
           </PageErrorBoundary>
