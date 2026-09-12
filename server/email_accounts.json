@@ -1,0 +1,15 @@
+{
+  "Evan": [
+    {
+      "id": "d9d80aa4-cef3-4fa7-81a5-3bc9fdc157c3",
+      "email": "evan@maxemblem.com",
+      "provider": "gmail",
+      "imap_host": "imap.gmail.com",
+      "imap_port": 993,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 465,
+      "auth_enc": "aed30d14a424c33538fe5aa0:0184b26f33bd2f910831d98b2dcdb88d:844cd448b786c17659bfee5a271ce5b0",
+      "created_at": "2026-09-12T06:26:09.566Z"
+    }
+  ]
+}

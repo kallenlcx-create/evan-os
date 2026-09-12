@@ -50,6 +50,7 @@ function emitDone(detail:any){
 }
 
 export async function syncAllEmails(limit: number|'all' = 30): Promise<number>{
+  if(limit==='all') limit=1000000 as any
   if(syncing) return 0
   syncing=true
   emitProgress({ status:'同步中...', done:0, total:1 })

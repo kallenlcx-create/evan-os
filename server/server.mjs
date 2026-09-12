@@ -474,8 +474,8 @@ app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
 app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
   let limit = Number(req.query.limit||20)
-  if(req.query.limit==='all' || limit===0) limit=2000
-  limit=Math.min(2000, Math.max(1, limit))
+  if(req.query.limit==='all' || limit===0) limit=1000000
+  limit=Math.min(1000000, Math.max(1, limit))
   const folder=String(req.query.folder||'INBOX')
   let acc=null
   if(dbReady){

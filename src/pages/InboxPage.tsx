@@ -119,29 +119,29 @@ export default function InboxPage(){
   },[])
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    let limit: number| string = syncCount==='all' ? 'all' : Number(syncCount)||20
+    let limit: number| string = syncCount==='all' ? 1000000 : Number(syncCount)||20
     if(syncCount==='custom'){
-      const v = await askText('自定义同步数量（1-2000，输入 all 表示全部）', '100')
+      const v = await askText('自定义同步数量（1-1000000，输入 all 表示全部）', '100')
       if(v===null) return
-      if(v.trim().toLowerCase()==='all') limit='all' as any
-      else { const n=Number(v); if(!n||n<1) return alert('数量无效'); limit=n }
+      if(v.trim().toLowerCase()==='all') limit=1000000 as any
+      else { const n=Number(v); if(!n||n<1 || n>1000000) return alert('数量无效(1-1000000)'); limit=n }
     }
     setEmailSyncConfig({ limit: limit as any })
     setSyncing(true)
     try{
       const total = await syncAllEmails(limit as any)
       if(total===0) alert('未拉到新邮件（或需检查应用密码）')
-      else alert(`后台同步完成：${total} 封（${limit==='all'?'全部':limit+'封'}）已入库并打通客户/全景/拓扑`)
+      else alert(`后台同步完成：${total} 封（${limit===1000000?'全部':limit+'封'}）已入库并打通客户/全景/拓扑`)
       await refresh()
     }catch(e:any){ alert(String(e.message||e)) }finally{ setSyncing(false) }
   }
   const handleImportAll = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    if(!confirm('将后台同步全部邮件（约878封，后台持续不中断），并自动打通客户/全景/拓扑，是否继续？')) return
-    setSyncCount('all'); setEmailSyncConfig({limit:'all' as any})
+    if(!confirm('将后台同步全部邮件（后台持续不中断，上限100万），并自动打通客户/全景/拓扑，是否继续？')) return
+    setSyncCount('all'); setEmailSyncConfig({limit:1000000 as any})
     setSyncing(true)
     try{
-      const total = await syncAllEmails('all' as any)
+      const total = await syncAllEmails(1000000 as any)
       alert(`后台同步完成：${total} 封邮件 + ${await db.customers.count()} 位客户已入库并打通`)
       await refresh()
     }finally{ setSyncing(false) }
@@ -241,8 +241,8 @@ export default function InboxPage(){
         <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
         <div className="ml-auto flex items-center gap-1.5">
-          <select value={syncCount} onChange={e=>{ setSyncCount(e.target.value); if(e.target.value!=='custom') setEmailSyncConfig({limit: e.target.value as any}) }} className="px-2 py-1 border rounded text-xs">
-            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="all">全部</option><option value="custom">自定义…</option>
+          <select value={syncCount} onChange={e=>{ setSyncCount(e.target.value); if(e.target.value!=='custom') setEmailSyncConfig({limit: e.target.value==='all'?1000000 as any : e.target.value as any}) }} className="px-2 py-1 border rounded text-xs">
+            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="1000000">全部(100万)</option><option value="all">全部</option><option value="custom">自定义…</option>
           </select>
           <select value={String(syncInterval)} onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }} className="px-2 py-1 border rounded text-xs" title="定时同步间隔">
             <option value="1">每分钟</option><option value="5">每5分</option><option value="10">每10分</option><option value="30">每30分</option><option value="60">每小时</option><option value="1440">每天</option>
