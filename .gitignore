@@ -28,3 +28,6 @@ evan-os-server.tar.gz
 *.tar.gz
 deploy.bat
 server.cjs
+
+server/email_accounts.json
+server/secret.key
