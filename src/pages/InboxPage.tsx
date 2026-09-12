@@ -20,6 +20,7 @@ export default function InboxPage(){
   const [emails, setEmails] = useState<EmailMessage[]>([])
   const [selected, setSelected] = useState<EmailMessage|null>(null)
   const [filter, setFilter] = useState<'all'|'unread'>('unread')
+  const [folder, setFolder] = useState<'inbox'|'sent'|'drafts'>('inbox')
   const [q, setQ] = useState('')
   const [translated, setTranslated] = useState('')
   const [showTrans, setShowTrans] = useState(false)
@@ -176,10 +177,21 @@ export default function InboxPage(){
   }
 
   const filtered = emails.filter(m=>{
-    if(filter==='unread' && m.isRead) return false
+    if(folder==='inbox' && m.folder!=='inbox') return false
+    if(folder==='sent' && m.folder!=='sent') return false
+    if(folder==='drafts' && m.folder!=='drafts') return false
+    if(folder==='inbox' && filter==='unread' && m.isRead) return false
     if(q && !(`${m.subject} ${m.from} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
     return true
   })
+  const thread = selected ? emails.filter(e=> {
+    const a = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).toLowerCase()
+    const b = (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase()
+    const c = (e.to||'').toLowerCase()
+    const subj = selected.subject.replace(/^Re:\s*/i,'').trim().toLowerCase()
+    const esubj = e.subject.replace(/^Re:\s*/i,'').trim().toLowerCase()
+    return b===a || c.includes(a) || esubj===subj
+  }).sort((x,y)=> new Date(x.date).getTime()-new Date(y.date).getTime()) : []
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6">
@@ -235,18 +247,25 @@ export default function InboxPage(){
 
       {/* 三栏主体 - 按红/蓝线比例：左260 中1fr加宽至红线 右340贴蓝线 */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(680px,1.9fr)_340px] gap-2 p-2 overflow-hidden">
-        {/* 左：未读邮件列表 */}
+        {/* 左：邮件列表（未读/已发送/草稿） */}
         <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
-          <div className="p-2 border-b border-gray-100 flex items-center gap-2">
-            <div className="relative flex-1">
-              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300"/>
-              <input value={q} onChange={e=> setQ(e.target.value)} placeholder="全文检索（中英文关键词、发件人、主题）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs"/>
+          <div className="p-2 border-b border-gray-100 space-y-2">
+            <div className="flex items-center gap-1">
+              <button onClick={()=> setFolder('inbox')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
+              <button onClick={()=> setFolder('sent')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='sent'?'bg-green-600 text-white':'bg-gray-100 text-gray-600'}`}>已发送 {folder==='sent'?`·${emails.filter(e=> e.folder==='sent').length}`:''}</button>
+              <button onClick={()=> setFolder('drafts')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿 {folder==='drafts'?`·${emails.filter(e=> e.folder==='drafts').length}`:''}</button>
             </div>
-            <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300"/>
+                <input value={q} onChange={e=> setQ(e.target.value)} placeholder="全文检索（中英文关键词、发件人、主题）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs"/>
+              </div>
+              {folder==='inbox' && <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs shrink-0 ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>}
+            </div>
           </div>
           <div className="flex items-center gap-1 px-2 py-1 border-b border-gray-50 text-xs">
-            <span className={`px-2 py-0.5 rounded-full ${filter==='unread'?'bg-blue-50 text-blue-600':'bg-gray-50'}`}>未读 {emails.filter(e=>!e.isRead).length}</span>
-            <span className="text-gray-300 ml-auto">{filtered.length} 封</span>
+            <span className="text-gray-400">{folder==='inbox'?'未读':folder==='sent'?'已发送':'草稿'} {filtered.length} 封</span>
+            <span className="ml-auto text-[10px] text-gray-300">{folder==='drafts'?'点开看往来记录':''}</span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {filtered.map(m=>{
@@ -316,6 +335,24 @@ export default function InboxPage(){
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
                 </div>
+                {/* 草稿往来记录 */}
+                {selected.folder==='drafts' && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+                    <div className="text-xs font-semibold text-amber-700 mb-2">往来记录 · 草稿关联 {thread.length} 封</div>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {thread.map(e=>(
+                        <div key={e.id} className={`p-2 rounded-lg border text-xs ${e.id===selected.id?'bg-white border-amber-300':'bg-white/70'}`}>
+                          <div className="flex items-center gap-1 text-[11px] text-gray-400">
+                            <span>{e.folder==='sent'?'我 →':'→我'} {e.from.split('<')[0]}</span>
+                            <span className="ml-auto">{new Date(e.date).toLocaleDateString()}</span>
+                          </div>
+                          <div className="font-medium text-gray-700 truncate">{e.subject}</div>
+                          <div className="text-gray-500 truncate">{e.text.slice(0,80)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -359,9 +396,15 @@ export default function InboxPage(){
                   if(!c||!selected) return
                   const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry about ${selected.product}. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
                   const { uid, now } = await import('../repositories/result')
+                  const draftId = uid()
+                  await db.emails.put({ id: draftId, accountId: selected.accountId, folder:'drafts', from: `Evan <evan@maxemblem.com>`, to: c.email||selected.from, subject:`Re: ${selected.subject}`, text: draft, html:'', date: new Date().toISOString(), isRead:false, hasAttachment:false, customerId: c.id, status:'待处理' } as any)
                   await db.communications.put({ id: uid(), type:'communication', title:`回复: ${selected.subject}`, description: draft, emoji:'✉️', tags:['AI生成'], createdAt:now(), updatedAt:now(), relations:[], channel:'email', direction:'outbound', summary: draft, communicatedAt: new Date().toISOString(), customerId: c.id } as any)
-                  await db.events.put({ id:`evt-${Date.now()}`, type:'object.created', actorType:'agent', objectType:'communication', objectId: c.id, payload:{title:selected.subject}, createdAt:new Date().toISOString()} as any)
-                  alert('AI草稿已生成并关联该客户（客户→时间轴/沟通记录可见）')
+                  setFolder('drafts')
+                  // 选中新草稿
+                  const nm = await db.emails.get(draftId) as any
+                  if(nm) setSelected(nm)
+                  const list = await listEmails(); setEmails(list)
+                  alert('AI草稿已生成到 草稿 箱并关联往来记录')
                 }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
                 <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); alert('翻译已更新到中栏')} }} className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
               </div>

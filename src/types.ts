@@ -1038,7 +1038,7 @@ export type EmailIntent =
 export interface EmailMessage {
   id: string
   accountId: string
-  folder: 'inbox'|'sent'
+  folder: 'inbox'|'sent'|'drafts'
   from: string
   fromName?: string
   to: string
