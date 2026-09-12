@@ -84,7 +84,8 @@ export default function InboxPage(){
       try{
         const cleanPass = authCode.replace(/\s/g,'')
         const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: cleanPass })
-        const n = await syncReal(id, 20)
+        const r:any = await syncReal(id, 20)
+        const n = typeof r==='object'? r.added : r
         alert(`已连接并拉取 ${n} 封真实邮件（来自你Gmail）`)
       }catch(e:any){
         const msg = String(e.message||e)

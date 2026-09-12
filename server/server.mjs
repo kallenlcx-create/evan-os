@@ -542,6 +542,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   let limit = Number(req.query.limit||20)
   if(req.query.limit==='all' || limit===0) limit=1000000
   limit=Math.min(1000000, Math.max(1, limit))
+  const offset = Math.max(0, Number(req.query.offset||0))
   const folder=String(req.query.folder||'INBOX')
   let acc=null
   if(dbReady){
@@ -559,12 +560,15 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const lock=await client.getMailboxLock(folder)
   try{
     const total=client.mailbox.exists
-    // 分批拉取，避免 1.5w 一次性 OOM/超时（每批200）
+    // 支持 offset 分页 + 分批，避免 1.5w 一次性超时
     const batchSize=200
-    const start=Math.max(1, total - limit +1)
+    const fetchLimit = Math.min(limit, 200) // 单次最多200，剩余由前端循环
+    const start=Math.max(1, total - offset - fetchLimit +1)
+    const end=Math.max(1, total - offset)
+    if(start> end) return res.json({ emails: [], total, hasMore:false })
     const out=[]
-    for(let s=start; s<=total; s+=batchSize){
-      const e=Math.min(s+batchSize-1, total)
+    for(let s=start; s<=end; s+=batchSize){
+      const e=Math.min(s+batchSize-1, end)
       for await (const msg of client.fetch(`${s}:${e}`,{ envelope:true, source:true, flags:true, uid:true })){
         try{
           const parsed=await simpleParser(msg.source)
@@ -587,7 +591,8 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     }
     // 新的在前
     out.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
-    res.json({ emails: out, total })
+    const hasMore = (offset + out.length) < total
+    res.json({ emails: out, total, hasMore, nextOffset: offset + out.length })
   }finally{ lock.release(); await client.logout().catch(()=>{}) }
 }))
 

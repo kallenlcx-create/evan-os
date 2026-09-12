@@ -50,26 +50,40 @@ function emitDone(detail:any){
 }
 
 export async function syncAllEmails(limit: number|'all' = 30): Promise<number>{
-  if(limit==='all') limit=1000000 as any
+  const lim = limit==='all' ? 1000000 : Number(limit)||30
   if(syncing) return 0
   syncing=true
   emitProgress({ status:'同步中...', done:0, total:1 })
   try{
     const accounts = await listAccounts()
     if(accounts.length===0) throw new Error('未绑定邮箱')
-    let total=0
+    let totalAdded=0
     for(let i=0;i<accounts.length;i++){
-      emitProgress({ status:`同步 ${accounts[i].email} (${i+1}/${accounts.length})`, done:i, total:accounts.length })
-      const n = await syncReal(accounts[i].id, limit as any)
-      total+=n
-      emitProgress({ done:i+1, total:accounts.length })
+      const acc = accounts[i]
+      let offset=0
+      let accTotal=0
+      // 分批拉取，每批200，实时展示数量
+      while(true){
+        emitProgress({ status:`同步 ${acc.email} 已拉 ${offset}封`, done: offset, total: 1 })
+        const res:any = await syncReal(acc.id, 200, offset)
+        const added = typeof res==='object' ? res.added : Number(res)||0
+        const hasMore = typeof res==='object' ? res.hasMore : false
+        const batchTotal = typeof res==='object' ? res.total : 0
+        if(added>0){ totalAdded+=added; offset+=added; accTotal+=added }
+        emitProgress({ status:`已同步 ${offset}/${batchTotal||'?'} 封`, done: offset, total: batchTotal||offset+1 })
+        // 达到本次限额或无更多则停
+        if(!hasMore || added===0) break
+        if(offset>=lim) break
+        // 让出主线程，避免阻塞UI
+        await new Promise(r=> setTimeout(r, 50))
+      }
     }
-    emitDone({ total, limit })
+    emitDone({ total: totalAdded, limit: lim })
     // 更新配置时间
     const cfg=loadConfig(); cfg.lastSyncAt=new Date().toISOString();
     cfg.nextSyncAt=new Date(Date.now()+ cfg.intervalMinutes*60000).toISOString();
     saveConfig(cfg)
-    return total
+    return totalAdded
   } finally {
     syncing=false
     emitProgress({ status:'空闲', done:0, total:0 })

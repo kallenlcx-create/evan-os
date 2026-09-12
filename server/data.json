@@ -1,0 +1,945 @@
+{
+  "Evan": {
+    "notifications": {
+      "9c163e5d-62e3-4af7-a20c-7b1f56ad7a08": {
+        "data": {
+          "id": "9c163e5d-62e3-4af7-a20c-7b1f56ad7a08",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:21:37.245Z"
+        },
+        "updatedAt": "2026-09-12T07:21:37.245Z",
+        "deleted": false
+      },
+      "c4d75eec-d111-4074-947a-9c33c0562e48": {
+        "data": {
+          "id": "c4d75eec-d111-4074-947a-9c33c0562e48",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:24:29.686Z"
+        },
+        "updatedAt": "2026-09-12T07:24:29.686Z",
+        "deleted": false
+      },
+      "dc717acd-d731-4dc7-a3af-3c0bdbd5add9": {
+        "data": {
+          "id": "dc717acd-d731-4dc7-a3af-3c0bdbd5add9",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:21:41.727Z"
+        },
+        "updatedAt": "2026-09-12T07:21:41.727Z",
+        "deleted": false
+      },
+      "dd883f33-3c7a-4210-b697-b81f7d28429b": {
+        "data": {
+          "id": "dd883f33-3c7a-4210-b697-b81f7d28429b",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:24:27.778Z"
+        },
+        "updatedAt": "2026-09-12T07:24:27.778Z",
+        "deleted": false
+      },
+      "fb27c731-6e8a-4511-b457-9ad5e93f7c0a": {
+        "data": {
+          "id": "fb27c731-6e8a-4511-b457-9ad5e93f7c0a",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:21:29.794Z"
+        },
+        "updatedAt": "2026-09-12T07:21:29.794Z",
+        "deleted": false
+      },
+      "fbf475d0-d3ae-415f-ad87-5f42d9fe7b6b": {
+        "data": {
+          "id": "fbf475d0-d3ae-415f-ad87-5f42d9fe7b6b",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T07:21:21.795Z"
+        },
+        "updatedAt": "2026-09-12T07:21:21.795Z",
+        "deleted": false
+      },
+      "a46eb646-4e7a-4d05-bc69-841ffe45d11e": {
+        "data": {
+          "id": "a46eb646-4e7a-4d05-bc69-841ffe45d11e",
+          "title": "操作失败",
+          "message": "TypeError: Failed to fetch",
+          "type": "system",
+          "read": false,
+          "createdAt": "2026-09-12T08:23:47.907Z"
+        },
+        "updatedAt": "2026-09-12T08:23:47.907Z",
+        "deleted": false
+      }
+    },
+    "agentTools": {
+      "context.build": {
+        "data": {
+          "id": "context.build",
+          "name": "context.build",
+          "level": "L1_auto",
+          "description": "构建 AIContext（经 ContextEngine）",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "dailyLog.latest": {
+        "data": {
+          "id": "dailyLog.latest",
+          "name": "dailyLog.latest",
+          "level": "L1_auto",
+          "description": "读取最近的每日日志",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "data.delete": {
+        "data": {
+          "id": "data.delete",
+          "name": "data.delete",
+          "level": "L3_approval",
+          "description": "删除重要数据",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "event.recent": {
+        "data": {
+          "id": "event.recent",
+          "name": "event.recent",
+          "level": "L1_auto",
+          "description": "读取最近事件流",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "external.request": {
+        "data": {
+          "id": "external.request",
+          "name": "external.request",
+          "level": "L3_approval",
+          "description": "执行外部 API / 发送邮件 / 支付等外部动作",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "hermes.draft_email": {
+        "data": {
+          "id": "hermes.draft_email",
+          "name": "hermes.draft_email",
+          "level": "L1_auto",
+          "description": "草拟跟进邮件",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "hermes.find_unreplied": {
+        "data": {
+          "id": "hermes.find_unreplied",
+          "name": "hermes.find_unreplied",
+          "level": "L1_auto",
+          "description": "找出过去 N 天未收到回复的客户",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "hermes.send_email": {
+        "data": {
+          "id": "hermes.send_email",
+          "name": "hermes.send_email",
+          "level": "L3_approval",
+          "description": "发送邮件（必须人工批准，经 CommandBus Mock 外呼）",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "inbox.annotate": {
+        "data": {
+          "id": "inbox.annotate",
+          "name": "inbox.annotate",
+          "level": "L1_auto",
+          "description": "为收集项标注 AI 分类与标签",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "inbox.list": {
+        "data": {
+          "id": "inbox.list",
+          "name": "inbox.list",
+          "level": "L1_auto",
+          "description": "读取未处理的收集项",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "knowledge.create": {
+        "data": {
+          "id": "knowledge.create",
+          "name": "knowledge.create",
+          "level": "L2_suggest",
+          "description": "创建知识条目",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "knowledge.get": {
+        "data": {
+          "id": "knowledge.get",
+          "name": "knowledge.get",
+          "level": "L1_auto",
+          "description": "读取知识详情/backlinks",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "knowledge.list_all": {
+        "data": {
+          "id": "knowledge.list_all",
+          "name": "knowledge.list_all",
+          "level": "L1_auto",
+          "description": "有界读取全部知识（供整理分析）",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "knowledge.search": {
+        "data": {
+          "id": "knowledge.search",
+          "name": "knowledge.search",
+          "level": "L1_auto",
+          "description": "按关键词搜索知识",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "memory.read": {
+        "data": {
+          "id": "memory.read",
+          "name": "memory.read",
+          "level": "L1_auto",
+          "description": "读取生效中的记忆",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "project.create": {
+        "data": {
+          "id": "project.create",
+          "name": "project.create",
+          "level": "L2_suggest",
+          "description": "创建项目",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "project.get": {
+        "data": {
+          "id": "project.get",
+          "name": "project.get",
+          "level": "L1_auto",
+          "description": "读取项目详情",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "project.tasks": {
+        "data": {
+          "id": "project.tasks",
+          "name": "project.tasks",
+          "level": "L1_auto",
+          "description": "读取项目下的任务关系",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "question.list_open": {
+        "data": {
+          "id": "question.list_open",
+          "name": "question.list_open",
+          "level": "L1_auto",
+          "description": "读取开放的问题",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "relation.create": {
+        "data": {
+          "id": "relation.create",
+          "name": "relation.create",
+          "level": "L1_auto",
+          "description": "创建 AI 建议的关系记录（置信度封顶）",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "research.create": {
+        "data": {
+          "id": "research.create",
+          "name": "research.create",
+          "level": "L2_suggest",
+          "description": "创建研究条目",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "review.create": {
+        "data": {
+          "id": "review.create",
+          "name": "review.create",
+          "level": "L2_suggest",
+          "description": "创建复盘记录",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "task.create": {
+        "data": {
+          "id": "task.create",
+          "name": "task.create",
+          "level": "L2_suggest",
+          "description": "创建任务",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "task.list_done": {
+        "data": {
+          "id": "task.list_done",
+          "name": "task.list_done",
+          "level": "L1_auto",
+          "description": "读取已完成任务（按更新时间倒序）",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "task.list_open": {
+        "data": {
+          "id": "task.list_open",
+          "name": "task.list_open",
+          "level": "L1_auto",
+          "description": "读取未完成任务",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      },
+      "task.status": {
+        "data": {
+          "id": "task.status",
+          "name": "task.status",
+          "level": "L2_suggest",
+          "description": "修改任务状态",
+          "updatedAt": "2026-09-12T06:17:35.166Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.166Z",
+        "deleted": false
+      }
+    },
+    "agentPermissions": {
+      "agent:destructive": {
+        "data": {
+          "id": "agent:destructive",
+          "actionType": "destructive",
+          "domain": "agent",
+          "level": "L3_approval",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:external_call": {
+        "data": {
+          "id": "agent:external_call",
+          "actionType": "external_call",
+          "domain": "agent",
+          "level": "L3_approval",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:inbox_annotate": {
+        "data": {
+          "id": "agent:inbox_annotate",
+          "actionType": "inbox_annotate",
+          "domain": "agent",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:knowledge_draft": {
+        "data": {
+          "id": "agent:knowledge_draft",
+          "actionType": "knowledge_draft",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:project_draft": {
+        "data": {
+          "id": "agent:project_draft",
+          "actionType": "project_draft",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:relation_suggest": {
+        "data": {
+          "id": "agent:relation_suggest",
+          "actionType": "relation_suggest",
+          "domain": "agent",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:research_draft": {
+        "data": {
+          "id": "agent:research_draft",
+          "actionType": "research_draft",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:review_draft": {
+        "data": {
+          "id": "agent:review_draft",
+          "actionType": "review_draft",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:status_change": {
+        "data": {
+          "id": "agent:status_change",
+          "actionType": "status_change",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:summary_generate": {
+        "data": {
+          "id": "agent:summary_generate",
+          "actionType": "summary_generate",
+          "domain": "agent",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "agent:task_draft": {
+        "data": {
+          "id": "agent:task_draft",
+          "actionType": "task_draft",
+          "domain": "agent",
+          "level": "L2_suggest",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:create_object": {
+        "data": {
+          "id": "workflow:create_object",
+          "actionType": "create_object",
+          "domain": "workflow",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:create_relation": {
+        "data": {
+          "id": "workflow:create_relation",
+          "actionType": "create_relation",
+          "domain": "workflow",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:delete_object": {
+        "data": {
+          "id": "workflow:delete_object",
+          "actionType": "delete_object",
+          "domain": "workflow",
+          "level": "L3_approval",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:external_mock": {
+        "data": {
+          "id": "workflow:external_mock",
+          "actionType": "external_mock",
+          "domain": "workflow",
+          "level": "L3_approval",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:run_agent": {
+        "data": {
+          "id": "workflow:run_agent",
+          "actionType": "run_agent",
+          "domain": "workflow",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:send_notification": {
+        "data": {
+          "id": "workflow:send_notification",
+          "actionType": "send_notification",
+          "domain": "workflow",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      },
+      "workflow:update_object": {
+        "data": {
+          "id": "workflow:update_object",
+          "actionType": "update_object",
+          "domain": "workflow",
+          "level": "L1_auto",
+          "updatedAt": "2026-09-12T06:17:35.177Z"
+        },
+        "updatedAt": "2026-09-12T06:17:35.177Z",
+        "deleted": false
+      }
+    },
+    "collections": {
+      "l1": {
+        "data": {
+          "id": "l1",
+          "kind": "study_log",
+          "data": {
+            "id": "l1",
+            "date": "2026-08-24",
+            "subject": "英语听力",
+            "duration": 30,
+            "notes": "BBC 6 Minute English，完成2集"
+          },
+          "createdAt": "2026-08-25T06:28:53.944Z",
+          "updatedAt": "2026-09-12T06:17:30.661Z"
+        },
+        "updatedAt": "2026-09-12T06:17:30.661Z",
+        "deleted": false
+      },
+      "l2": {
+        "data": {
+          "id": "l2",
+          "kind": "study_log",
+          "data": {
+            "id": "l2",
+            "date": "2026-08-24",
+            "subject": "Shopify 主题开发",
+            "duration": 45,
+            "notes": "学习 Liquid 模板语法"
+          },
+          "createdAt": "2026-08-25T06:28:53.944Z",
+          "updatedAt": "2026-09-12T06:17:30.661Z"
+        },
+        "updatedAt": "2026-09-12T06:17:30.661Z",
+        "deleted": false
+      },
+      "r1": {
+        "data": {
+          "id": "r1",
+          "kind": "study_resource",
+          "data": {
+            "id": "r1",
+            "title": "Shopify 官方文档",
+            "url": "https://shopify.dev",
+            "category": "shopify",
+            "bookmarked": true
+          },
+          "createdAt": "2026-08-25T06:28:53.946Z",
+          "updatedAt": "2026-09-12T06:17:30.662Z"
+        },
+        "updatedAt": "2026-09-12T06:17:30.662Z",
+        "deleted": false
+      },
+      "r2": {
+        "data": {
+          "id": "r2",
+          "kind": "study_resource",
+          "data": {
+            "id": "r2",
+            "title": "BBC Learning English",
+            "url": "https://bbc.co.uk/learningenglish",
+            "category": "english",
+            "bookmarked": true
+          },
+          "createdAt": "2026-08-25T06:28:53.946Z",
+          "updatedAt": "2026-09-12T06:17:30.662Z"
+        },
+        "updatedAt": "2026-09-12T06:17:30.662Z",
+        "deleted": false
+      },
+      "r3": {
+        "data": {
+          "id": "r3",
+          "kind": "study_resource",
+          "data": {
+            "id": "r3",
+            "title": "AI for Work (提示词库)",
+            "url": "https://aiforwork.com",
+            "category": "ai",
+            "bookmarked": true
+          },
+          "createdAt": "2026-08-25T06:28:53.946Z",
+          "updatedAt": "2026-09-12T06:17:30.662Z"
+        },
+        "updatedAt": "2026-09-12T06:17:30.662Z",
+        "deleted": false
+      },
+      "p1": {
+        "data": {
+          "id": "p1",
+          "kind": "prompt",
+          "data": {
+            "id": "p1",
+            "title": "客户邮件润色",
+            "category": "外贸",
+            "content": "请帮我润色以下外贸邮件，使其更加专业、礼貌，同时保持简洁：\n\n[粘贴邮件内容]"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "p2": {
+        "data": {
+          "id": "p2",
+          "kind": "prompt",
+          "data": {
+            "id": "p2",
+            "title": "产品描述生成",
+            "category": "独立站",
+            "content": "请为以下产品生成一段吸引人的 Shopify 产品描述，包含 SEO 关键词、卖点列表和使用场景：\n\n产品名：[名称]\n材质：[材质]\n卖点：[卖点]"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "p3": {
+        "data": {
+          "id": "p3",
+          "kind": "prompt",
+          "data": {
+            "id": "p3",
+            "title": "竞品分析",
+            "category": "独立站",
+            "content": "请帮我分析以下竞品网站，总结其产品策略、定价策略和营销策略：\n\n网站：[URL]"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "p4": {
+        "data": {
+          "id": "p4",
+          "kind": "prompt",
+          "data": {
+            "id": "p4",
+            "title": "学习计划制定",
+            "category": "成长",
+            "content": "我想在 [时间] 内学会 [技能]，每天可投入 [小时] 小时。请帮我制定一个详细的学习计划，包含每周学习目标、推荐资源和实践项目。"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "p5": {
+        "data": {
+          "id": "p5",
+          "kind": "prompt",
+          "data": {
+            "id": "p5",
+            "title": "日报/周报生成",
+            "category": "效率",
+            "content": "请根据以下要点帮我生成一份工作日报：\n\n1. [今日完成事项1]\n2. [今日完成事项2]\n3. [遇到的问题]\n4. [明日计划]"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "p6": {
+        "data": {
+          "id": "p6",
+          "kind": "prompt",
+          "data": {
+            "id": "p6",
+            "title": "头脑风暴",
+            "category": "创意",
+            "content": "请围绕 [主题] 进行头脑风暴，给出 10 个创意方案，每个方案包含简要说明和可行性评估（高/中/低）。"
+          },
+          "createdAt": "2026-08-25T06:11:07.773Z",
+          "updatedAt": "2026-09-12T08:21:41.286Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.286Z",
+        "deleted": false
+      },
+      "t1": {
+        "data": {
+          "id": "t1",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t1",
+            "name": "ChatGPT",
+            "url": "https://chat.openai.com",
+            "category": "对话",
+            "description": "通用 AI 对话助手"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t2": {
+        "data": {
+          "id": "t2",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t2",
+            "name": "Claude",
+            "url": "https://claude.ai",
+            "category": "对话",
+            "description": "擅长长文本分析和写作"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t3": {
+        "data": {
+          "id": "t3",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t3",
+            "name": "Cursor",
+            "url": "https://cursor.com",
+            "category": "编程",
+            "description": "AI 驱动的代码编辑器"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t4": {
+        "data": {
+          "id": "t4",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t4",
+            "name": "Midjourney",
+            "url": "https://midjourney.com",
+            "category": "图像",
+            "description": "AI 图像生成"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t5": {
+        "data": {
+          "id": "t5",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t5",
+            "name": "Notion AI",
+            "url": "https://notion.so",
+            "category": "效率",
+            "description": "笔记和知识管理 AI"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t6": {
+        "data": {
+          "id": "t6",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t6",
+            "name": "Zapier",
+            "url": "https://zapier.com",
+            "category": "自动化",
+            "description": "连接各种应用实现自动化"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t7": {
+        "data": {
+          "id": "t7",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t7",
+            "name": "n8n",
+            "url": "https://n8n.io",
+            "category": "自动化",
+            "description": "开源自动化工作流工具"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      },
+      "t8": {
+        "data": {
+          "id": "t8",
+          "kind": "ai_tool",
+          "data": {
+            "id": "t8",
+            "name": "Perplexity",
+            "url": "https://perplexity.ai",
+            "category": "搜索",
+            "description": "AI 驱动的搜索引擎"
+          },
+          "createdAt": "2026-08-25T06:11:07.774Z",
+          "updatedAt": "2026-09-12T08:21:41.288Z"
+        },
+        "updatedAt": "2026-09-12T08:21:41.288Z",
+        "deleted": false
+      }
+    },
+    "customers": {
+      "4fc67e31-b127-493f-9154-2b5d864dabc1": {
+        "data": {
+          "id": "4fc67e31-b127-493f-9154-2b5d864dabc1",
+          "type": "customer",
+          "title": "\"Quora\"",
+          "description": "",
+          "emoji": "👤",
+          "tags": [
+            "邮件"
+          ],
+          "createdAt": "2026-09-12T08:27:43.036Z",
+          "updatedAt": "2026-09-12T08:27:43.036Z",
+          "relations": [],
+          "company": "",
+          "email": "upvote-noreply@quora.com",
+          "stage": "lead",
+          "isKey": false,
+          "level": "C",
+          "followUpAt": "2026-09-15"
+        },
+        "updatedAt": "2026-09-12T08:27:43.036Z",
+        "deleted": false
+      },
+      "e863edc0-15b4-4a57-951b-22af555f85de": {
+        "data": {
+          "id": "e863edc0-15b4-4a57-951b-22af555f85de",
+          "type": "customer",
+          "title": "\"Fiverr\"",
+          "description": "",
+          "emoji": "👤",
+          "tags": [
+            "邮件"
+          ],
+          "createdAt": "2026-09-12T08:27:42.992Z",
+          "updatedAt": "2026-09-12T08:27:42.992Z",
+          "relations": [],
+          "company": "",
+          "email": "Team@announce.fiverr.com",
+          "stage": "lead",
+          "isKey": false,
+          "level": "C",
+          "followUpAt": "2026-09-15"
+        },
+        "updatedAt": "2026-09-12T08:27:42.992Z",
+        "deleted": false
+      }
+    }
+  }
+}
