@@ -8,6 +8,14 @@ export default function CampaignsPage(){
   const [filterLevel, setFilterLevel] = useState<string>('all')
   const [days, setDays] = useState(7)
   const [preview, setPreview] = useState('')
+  const [bulkFollow, setBulkFollow] = useState(()=> localStorage.getItem('evan:bulkFollow')!=='0')
+  const [bulkMarketing, setBulkMarketing] = useState(()=> localStorage.getItem('evan:bulkMarketing')!=='0')
+  const [bulkFollowTime, setBulkFollowTime] = useState(()=> localStorage.getItem('evan:bulkFollowTime')||'09:30')
+  const [bulkMarketingTime, setBulkMarketingTime] = useState(()=> localStorage.getItem('evan:bulkMarketingTime')||'10:00')
+  useEffect(()=> localStorage.setItem('evan:bulkFollow', bulkFollow?'1':'0'),[bulkFollow])
+  useEffect(()=> localStorage.setItem('evan:bulkMarketing', bulkMarketing?'1':'0'),[bulkMarketing])
+  useEffect(()=> localStorage.setItem('evan:bulkFollowTime', bulkFollowTime),[bulkFollowTime])
+  useEffect(()=> localStorage.setItem('evan:bulkMarketingTime', bulkMarketingTime),[bulkMarketingTime])
   useEffect(()=>{ (async()=> setCustomers(await db.customers.toArray()))() },[])
   const filtered = customers.filter(c=>{
     if(filterLevel!=='all' && c.level!==filterLevel) return false
@@ -32,17 +40,38 @@ export default function CampaignsPage(){
         <span className="text-xs text-gray-400">Campaign Builder · 差异化生成非群发</span>
       </div>
 
-      <div className="bg-white rounded-2xl border p-3 flex flex-wrap gap-2 items-center">
-        <Filter size={14} className="text-gray-400"/>
-        <select value={filterLevel} onChange={e=> setFilterLevel(e.target.value)} className="px-2 py-1 border rounded text-xs">
-          <option value="all">全部等级</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option>
-        </select>
-        <select value={days} onChange={e=> setDays(Number(e.target.value))} className="px-2 py-1 border rounded text-xs">
-          <option value={7}>7天未联系</option><option value={14}>14天</option><option value={30}>30天</option><option value={90}>90天</option>
-        </select>
-        <span className="text-xs text-gray-400">{filtered.length} 人命中</span>
-        <button onClick={toggleAll} className="ml-auto px-3 py-1 bg-white border rounded text-xs">{selected.size===filtered.length?'取消全选':'全选'}</button>
-        <button onClick={gen} className="px-3 py-1 bg-purple-600 text-white rounded text-xs flex items-center gap-1"><Sparkles size={12}/> AI 批量差异化生成</button>
+      <div className="bg-white rounded-2xl border p-3 space-y-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <Filter size={14} className="text-gray-400"/>
+          <select value={filterLevel} onChange={e=> setFilterLevel(e.target.value)} className="px-2 py-1 border rounded text-xs">
+            <option value="all">全部等级</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option>
+          </select>
+          <select value={days} onChange={e=> setDays(Number(e.target.value))} className="px-2 py-1 border rounded text-xs">
+            <option value={7}>7天未联系</option><option value={14}>14天</option><option value={30}>30天</option><option value={90}>90天</option>
+          </select>
+          <span className="text-xs text-gray-400">{filtered.length} 人命中</span>
+          <button onClick={toggleAll} className="ml-auto px-3 py-1 bg-white border rounded text-xs">{selected.size===filtered.length?'取消全选':'全选'}</button>
+          <button onClick={gen} disabled={!bulkFollow && !bulkMarketing} className="px-3 py-1 bg-purple-600 text-white rounded text-xs flex items-center gap-1 disabled:opacity-40"><Sparkles size={12}/> AI 批量差异化生成</button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <label className="flex items-center justify-between p-2 bg-gray-50 rounded-xl border">
+            <span className="text-xs font-medium">批量跟进</span>
+            <span className="flex items-center gap-2">
+              <input type="time" value={bulkFollowTime} onChange={e=> setBulkFollowTime(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
+              <input type="checkbox" checked={bulkFollow} onChange={e=> setBulkFollow(e.target.checked)} className="accent-blue-600"/>
+              <span className={`text-xs ${bulkFollow?'text-green-600':'text-gray-300'}`}>{bulkFollow?'开启':'关闭'}</span>
+            </span>
+          </label>
+          <label className="flex items-center justify-between p-2 bg-gray-50 rounded-xl border">
+            <span className="text-xs font-medium">批量营销</span>
+            <span className="flex items-center gap-2">
+              <input type="time" value={bulkMarketingTime} onChange={e=> setBulkMarketingTime(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
+              <input type="checkbox" checked={bulkMarketing} onChange={e=> setBulkMarketing(e.target.checked)} className="accent-purple-600"/>
+              <span className={`text-xs ${bulkMarketing?'text-purple-600':'text-gray-300'}`}>{bulkMarketing?'开启':'关闭'}</span>
+            </span>
+          </label>
+        </div>
+        {!bulkFollow && !bulkMarketing && <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">批量跟进与营销均已关闭，生成按钮已禁用</div>}
       </div>
 
       <div className="grid lg:grid-cols-[1fr_380px] gap-3">
