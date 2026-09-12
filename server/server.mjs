@@ -536,6 +536,36 @@ app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
   if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); saveEmailAccounts(); return res.json({ok:true}) }
   await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); res.json({ok:true})
 }))
+// 预读邮件总数：GET /email/count/:id?folder=INBOX（快速 IMAP EXISTS）
+app.get('/email/count/:id', auth, wrap(async (req,res)=>{
+  const accountId=req.params.id
+  const folder=String(req.query.folder||'INBOX')
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+  const pass=decAuth(acc.auth_enc)
+  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:15000, authTimeout:10000, socketTimeout:20000 })
+  try{
+    await client.connect()
+    const lock=await client.getMailboxLock(folder)
+    try{
+      const total=client.mailbox.exists
+      res.json({ total })
+    }finally{ lock.release() }
+  }catch(e){
+    res.status(500).json({error:'获取邮件数失败：'+(e.message||e)})
+  }finally{
+    await client.logout().catch(()=>{})
+  }
+}))
+
 // 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX
 app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
@@ -555,7 +585,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, socketTimeout: 30000 })
+  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
   await client.connect()
   const lock=await client.getMailboxLock(folder)
   try{

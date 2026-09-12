@@ -1,6 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Search, Plus, Menu, X } from 'lucide-react'
-import { useEffect, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import Sidebar from './Sidebar'
 import GlobalSearch from './GlobalSearch'
 import QuickCapture from './QuickCapture'
@@ -9,6 +9,7 @@ import SearchDeepLink from './SearchDeepLink'
 import { PageErrorBoundary } from './ErrorBoundary'
 import { useStore } from '../store'
 import { getPresetCss } from '../config/wallpapers'
+import { isEmailSyncing } from '../services/emailSyncService'
 
 export default function Layout() {
   // 按需订阅：Layout 包裹全部页面，整店订阅会让任何状态变化重渲染当前页
@@ -24,6 +25,19 @@ export default function Layout() {
   const runBackupNow = useStore(s => s.runBackupNow)
   const snoozeBackupReminder = useStore(s => s.snoozeBackupReminder)
   const location = useLocation()
+
+  // 全局邮件同步进度（常驻，切页可见）
+  const [globalSync, setGlobalSync] = useState<{active:boolean, status:string, done:number, total:number, errors:number}>({active:false, status:'', done:0, total:0, errors:0})
+  useEffect(()=>{
+    const onProg=(e:any)=>{
+      const d = e.detail||{}
+      setGlobalSync({ active: isEmailSyncing(), status: d.status||'', done: d.done||0, total: d.total||0, errors: d.errors||0 })
+    }
+    const onDone=()=> setGlobalSync({active:false, status:'', done:0, total:0, errors:0})
+    window.addEventListener('evan-email-sync-progress', onProg as any)
+    window.addEventListener('evan-email-synced', onDone as any)
+    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any) }
+  },[])
 
   // 应用壁纸（图片或预设渐变）+ 同步 body 背景
   const hasWallpaper = wallpaper.type === 'image' && !!wallpaper.imageDataUrl
@@ -145,6 +159,25 @@ export default function Layout() {
               <span>🛡️ 已经超过 7 天没有备份数据了</span>
               <button onClick={runBackupNow} className="ml-auto px-2.5 py-1 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600">立即备份</button>
               <button onClick={snoozeBackupReminder} className="px-2 py-1 text-amber-500 hover:text-amber-700">稍后</button>
+            </div>
+          </div>
+        )}
+
+        {/* 全局邮件同步进度条（常驻，切页可见） */}
+        {globalSync.active && (
+          <div className="px-4 md:px-6 pt-2">
+            <div className="max-w-7xl flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-3 py-1.5 text-[11px] text-blue-600">
+              <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"/>
+              <span className="truncate">{globalSync.status}</span>
+              {globalSync.errors>0 && <span className="text-red-500 shrink-0">⚠{globalSync.errors}</span>}
+              {globalSync.total>0 && (
+                <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                  <span className="text-blue-400">{globalSync.done}/{globalSync.total}</span>
+                  <div className="w-16 h-1 bg-blue-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{width:`${Math.min(100,Math.round(globalSync.done/globalSync.total*100))}%`}}/>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

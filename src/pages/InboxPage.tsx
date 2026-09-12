@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, StickyNote, UserCheck, Calendar, Send, Settings, Search } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { useAskText } from '../components/PromptModal'
@@ -36,14 +36,28 @@ export default function InboxPage(){
   const [customImap, setCustomImap] = useState('')
   const [customSmtp, setCustomSmtp] = useState('')
 
+  // 服务端邮箱总邮件数（绑定后自动查询）
+  const [serverCounts, setServerCounts] = useState<Record<string, number>>({})
+  const fetchServerCounts = useCallback(async(accs?: EmailAccount[]) => {
+    const list = accs || await listAccounts()
+    const counts: Record<string, number> = {}
+    await Promise.allSettled(list.map(async(a) => {
+      try { counts[a.id] = await getEmailCount(a.id) } catch { counts[a.id] = 0 }
+    }))
+    setServerCounts(counts)
+  }, [])
+
   const refresh = useCallback(async()=>{
-    setAccounts(await listAccounts())
+    const accs = await listAccounts()
+    setAccounts(accs)
     const list = await listEmails()
     // 补AI字段（懒计算）
     for(const m of list){ if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m)} }
     setEmails(list)
     if(list.length && !selected) setSelected(list[0])
-  },[])
+    // 自动查询各账号服务端总邮件数
+    fetchServerCounts(accs)
+  },[fetchServerCounts])
   useEffect(()=>{ void refresh() },[refresh])
 
   const ensureCustomer = async (emailRaw:string, nameRaw:string): Promise<Customer> =>{
@@ -62,9 +76,7 @@ export default function InboxPage(){
     if(!selected) { setCustomer(null); return }
     ;(async()=>{
       const c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()=== (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim().toLowerCase()).first() as any
-      // 懒创建：未关联时先不自动建，侧栏操作时再建，避免污染
       setCustomer(c||null)
-      // 自动翻译
       if(selected.text && !selected.translated){
         const t = await translateEnToZh(selected.text)
         selected.translated = t; await db.emails.put(selected); setTranslated(t)
@@ -73,6 +85,7 @@ export default function InboxPage(){
   },[selected?.id])
 
   const [syncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<{status:string, done:number, total:number, errors:number}>({status:'', done:0, total:0, errors:0})
   const handleAddAccount = async()=>{
     if(!emailAddr.trim()||!authCode.trim()) return alert('请填邮箱和16位授权码/应用密码')
     const preset = PROVIDER_PRESETS[provider]
@@ -80,17 +93,18 @@ export default function InboxPage(){
     const smtp = provider==='custom'? {host:customSmtp,port:465,ssl:true}: preset.smtp
     setSyncing(true)
     try{
-      // 优先走真实服务（需已登录云同步，Gmail 用应用专用密码16位）
       try{
         const cleanPass = authCode.replace(/\s/g,'')
         const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: cleanPass })
+        // 绑定成功后立即查询该邮箱全部邮件数
+        let totalEmails = 0
+        try { totalEmails = await getEmailCount(id) } catch {}
         const r:any = await syncReal(id, 20)
-        const n = typeof r==='object'? r.added : r
-        alert(`已连接并拉取 ${n} 封真实邮件（来自你Gmail）`)
+        const n = typeof r==='object' ? r.added : r
+        alert(`已连接 ${emailAddr.trim()}\n邮箱共 ${totalEmails} 封邮件，本次拉取 ${n} 封`)
       }catch(e:any){
         const msg = String(e.message||e)
         if(msg.includes('请先在 云同步 登录')){
-          // 未登录则本地演示
           const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.replace(/\s/g,'') })
           await mockSync(acc.id)
           alert('未登录云同步，已用本地演示数据（要看真实Gmail，请先到 ☁️云同步 登录同一账号再绑定）')
@@ -108,16 +122,19 @@ export default function InboxPage(){
   const [syncCount, setSyncCount] = useState<string>(()=> getEmailSyncConfig().limit.toString())
   const [syncInterval, setSyncInterval] = useState<number>(()=> getEmailSyncConfig().intervalMinutes)
   const [autoSync, setAutoSync] = useState<boolean>(()=> getEmailSyncConfig().enabled)
-  const [syncProgress, setSyncProgress] = useState<string>('')
   const [analyzing, setAnalyzing] = useState(false)
   useEffect(()=>{
-    const onProg=(e:any)=> setSyncProgress(e.detail.status||'')
+    const onProg=(e:any)=> setSyncProgress({status: e.detail.status||'', done: e.detail.done||0, total: e.detail.total||0, errors: e.detail.errors||0})
     const onDone=()=> refresh()
     window.addEventListener('evan-email-sync-progress', onProg as any)
     window.addEventListener('evan-email-synced', onDone as any)
-    // 定时刷新进度文案
-    const id=setInterval(()=> setSyncProgress(isEmailSyncing()? '同步中...': getEmailSyncConfig().nextSyncAt? `下次 ${new Date(getEmailSyncConfig().nextSyncAt!).toLocaleTimeString()}`:''), 5000)
-    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any); clearInterval(id)}
+    const refreshTimer = setInterval(()=>{ if(isEmailSyncing()) refresh() }, 3000)
+    const id=setInterval(()=> setSyncProgress(prev=>{
+      if(isEmailSyncing()) return prev
+      const cfg = getEmailSyncConfig()
+      return { status: cfg.nextSyncAt? `下次 ${new Date(cfg.nextSyncAt).toLocaleTimeString()}`:'', done:0, total:0, errors:0 }
+    }), 5000)
+    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any); clearInterval(id); clearInterval(refreshTimer) }
   },[])
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
@@ -172,7 +189,6 @@ export default function InboxPage(){
     if(note===null) return
     await db.followUps.put({ id:`fu-${Date.now()}`, customerId:c.id, dueAt: due, channel:['workbench'], note: note||'跟进', status:'pending', createdAt:new Date().toISOString()} as any)
     await db.customers.update(c.id, { followUpAt: due, notes: note } as any)
-    // 同时建 Task 用于提醒
     const { uid } = await import('../repositories/result')
     const { now } = await import('../repositories/result')
     await db.tasks.put({ id: uid(), type:'task', title:`跟进 ${customer.title||customer.email} - ${selected.subject.slice(0,20)}`, description: note||'', emoji:'📧', tags:['跟进'], createdAt:now(), updatedAt:now(), relations:[], status:'todo', priority:'high', importance:'high', isRecurring:false, todayOrder:0, dueDate:due } as any)
@@ -187,7 +203,6 @@ export default function InboxPage(){
     const next = !c.isKey
     await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
     setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
-    // 联动：写事件供拓扑/全景
     try{ await db.events.put({ id:`evt-${Date.now()}`, type:'object.updated', actorType:'user', objectType:'customer', objectId:c.id, payload:{title:c.title, isKey:next}, createdAt:new Date().toISOString()} as any)}catch{}
   }
 
@@ -259,32 +274,41 @@ export default function InboxPage(){
         </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
         <div className="relative">
-          <button onClick={()=> setShowAccountPop(v=>!v)} className="px-2 py-1 bg-gray-900 text-white rounded-full text-xs flex items-center gap-1">{accounts.length} 账号 · {emails.length} 封 ▾</button>
+          <button onClick={()=> setShowAccountPop(v=>!v)} className="px-2 py-1 bg-gray-900 text-white rounded-full text-xs flex items-center gap-1">{accounts.length} 账号 · {emails.length} 封 {Object.values(serverCounts).reduce((s,n)=>s+n,0)>0 && <span className="text-gray-400">/{Object.values(serverCounts).reduce((s,n)=>s+n,0)}封</span>} ▾</button>
           {showAccountPop && (
             <div className="absolute right-0 top-7 w-72 bg-white border rounded-xl shadow-lg p-3 z-20">
-              <div className="text-xs font-semibold mb-2">已绑定账号（点击查看） · 共 {emails.length} 封已同步（非固定100）</div>
+              <div className="text-xs font-semibold mb-2">已绑定账号 · 共 {emails.length} 封已同步 / {Object.values(serverCounts).reduce((s,n)=>s+n,0)} 封全部</div>
               {accounts.map(a=>{
                 const cnt = emails.filter(e=> e.accountId===a.id).length
+                const srvTotal = serverCounts[a.id]
                 return <div key={a.id} className="flex items-center gap-2 py-1.5 border-b last:border-0 text-xs">
                   <span className="w-2 h-2 bg-green-500 rounded-full"/>
                   <span className="truncate flex-1">{a.email}</span>
-                  <span className="text-gray-400">{cnt}封</span>
+                  <span className="text-gray-400">{cnt}封{srvTotal!=null && srvTotal>0 ? <span className="text-blue-400">/{srvTotal}</span> : ''}</span>
                   <span className="text-[10px] px-1 py-0.5 bg-gray-100 rounded">{a.provider}</span>
                   <button onClick={async(e)=>{ e.stopPropagation(); if(!confirm(`移除同步 ${a.email}？本地邮件保留`)) return; await deleteAccount(a.id); await refresh() }} className="px-1.5 py-0.5 text-red-400 hover:text-red-600 border rounded text-[10px]">移除</button>
                 </div>
               })}
               {accounts.length===0 && <div className="text-xs text-gray-400">暂无账号</div>}
-              <div className="text-[10px] text-gray-400 mt-2">“100封”是当前已同步的实际数量，非固定；选“全部”后此数会随同步增至 878/全部</div>
+              <div className="text-[10px] text-gray-400 mt-2">绑定后自动查询邮箱全部邮件数；已同步/全部 实时显示进度</div>
             </div>
           )}
         </div>
       </div>
 
       {/* 同步进度（后台常驻，切页不暂停） */}
-      {(syncing || syncProgress) && (
+      {(syncing || syncProgress.status) && (
         <div className="mx-2 mt-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${syncing?'bg-blue-500 animate-pulse':'bg-green-500'}`}/>
-          {syncing ? `后台同步中… ${syncProgress}` : syncProgress || `就绪 · 已同步 ${emails.length} 封 · ${autoSync?`自动每${syncInterval}分`:'手动'}`}
+          {syncing
+            ? `后台同步中… ${syncProgress.status}${syncProgress.total>0 ? ` (${Math.round(syncProgress.done/syncProgress.total*100)}%)` : ''}`
+            : syncProgress.status || `就绪 · 已同步 ${emails.length} 封 · ${autoSync?`自动每${syncInterval}分`:'手动'}`}
+          {syncProgress.errors>0 && <span className="text-red-500">⚠ {syncProgress.errors}批失败</span>}
+          {syncing && syncProgress.total>0 && (
+            <div className="flex-1 max-w-[200px] h-1.5 bg-blue-100 rounded-full overflow-hidden ml-2">
+              <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{width:`${Math.min(100,Math.round(syncProgress.done/syncProgress.total*100))}%`}}/>
+            </div>
+          )}
           <span className="ml-auto text-[10px] text-blue-400">切到其他页仍继续，已打通客户/全景/拓扑/跟进</span>
         </div>
       )}
@@ -323,9 +347,9 @@ export default function InboxPage(){
         </div>
       )}
 
-      {/* 三栏主体 - 按红/蓝线比例：左260 中1fr加宽至红线 右340贴蓝线 */}
+      {/* 三栏主体 */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(680px,1.9fr)_340px] gap-2 p-2 overflow-hidden">
-        {/* 左：邮件列表（未读/已发送/草稿） */}
+        {/* 左：邮件列表 */}
         <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
           <div className="p-2 border-b border-gray-100 space-y-2">
             <div className="flex items-center gap-1">
@@ -383,14 +407,12 @@ export default function InboxPage(){
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {/* 客户头 */}
                 <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-center gap-2">
                   <div className="text-sm font-semibold text-gray-700">客户：{customer?.contactName||selected.from.split('<')[0]} {customer?.isKey && <span className="ml-1 text-yellow-500">⭐ A级</span>}</div>
                   <span className="text-xs text-gray-500">{customer?.company||'—'}</span>
                   <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
                 </div>
 
-                {/* AI工作台卡 */}
                 <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
                   <div className="text-xs font-semibold text-gray-700">AI工作台</div>
                   {!showTrans ? (
@@ -408,7 +430,6 @@ export default function InboxPage(){
                   </div>
                   <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期（3天未回自动跟进）</div>
                 </div>
-                {/* 邮件往来 - Gmail式 从上至下 最新在最下方 支持表格/颜色/链接 */}
                 <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                   <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
                     <span>邮件往来</span><span className="text-[10px] text-gray-400">时间从上至下 · 最新在最下方 · 共 {thread.length} 封</span>
@@ -440,7 +461,6 @@ export default function InboxPage(){
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
                 </div>
-                {/* 草稿往来记录 */}
                 {selected.folder==='drafts' && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
                     <div className="text-xs font-semibold text-amber-700 mb-2">往来记录 · 草稿关联 {thread.length} 封</div>
@@ -505,7 +525,6 @@ export default function InboxPage(){
                   await db.emails.put({ id: draftId, accountId: selected.accountId, folder:'drafts', from: `Evan <evan@maxemblem.com>`, to: c.email||selected.from, subject:`Re: ${selected.subject}`, text: draft, html:'', date: new Date().toISOString(), isRead:false, hasAttachment:false, customerId: c.id, status:'待处理' } as any)
                   await db.communications.put({ id: uid(), type:'communication', title:`回复: ${selected.subject}`, description: draft, emoji:'✉️', tags:['AI生成'], createdAt:now(), updatedAt:now(), relations:[], channel:'email', direction:'outbound', summary: draft, communicatedAt: new Date().toISOString(), customerId: c.id } as any)
                   setFolder('drafts')
-                  // 选中新草稿
                   const nm = await db.emails.get(draftId) as any
                   if(nm) setSelected(nm)
                   const list = await listEmails(); setEmails(list)

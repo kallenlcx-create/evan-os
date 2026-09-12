@@ -51,6 +51,15 @@ export async function upsertAccount(a: Partial<EmailAccount>): Promise<EmailAcco
   await db.emailAccounts.put(rec)
   return rec
 }
+export async function getEmailCount(accountId:string): Promise<number>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/count/${accountId}`,{ headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`获取邮件数失败 ${r.status}`)
+  return Number(j.total)||0
+}
+
 export async function deleteAccount(id:string){
   const h = await serverHeaders()
   if(h){
@@ -76,14 +85,17 @@ export async function syncReal(accountId:string, limit:number|'all'=20, offset=0
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
   const emails: any[] = j.emails||[]
+  // 并行分类意图（批量 Promise.all，避免逐封 40ms 延迟）
+  const intents = await Promise.all(emails.map(e => classifyIntent(e.subject+' '+ (e.text||'').slice(0,500))))
   let added=0
-  for(const e of emails){
+  for(let idx=0; idx<emails.length; idx++){
+    const e = emails[idx]
     const m: EmailMessage = {
       id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
       from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
       date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
       product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
-      intent: await classifyIntent(e.subject+' '+ (e.text||'').slice(0,500)) as EmailIntent,
+      intent: intents[idx] as EmailIntent,
       priority: '中', status: e.isRead?'已处理':'待处理',
     }
     await db.emails.put(m); added++
