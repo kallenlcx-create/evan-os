@@ -1,7 +1,7 @@
-// ====== 邮件中心：从收邮件升级为客户经营中心（未读中心）======
-// 三栏：左未读列表 | 中AI工作台 | 右翻译/重点/跟进 + 配置抽屉
-import { useState, useEffect, useCallback } from 'react'
-import { Mail, Star, Clock, Languages, Sparkles, StickyNote, UserCheck, Calendar, Send, Settings, Search } from 'lucide-react'
+// ====== 邮件中心：客户经营中心 ======
+// 三栏：左邮件列表+搜索 | 中AI工作台+邮件往来 | 右AI侧栏
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, Target, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
 import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount } from '../repositories/emailRepository'
@@ -14,6 +14,114 @@ const INTENT_COLOR: Record<string,string> = {
   '催货':'bg-yellow-50 text-yellow-700','复购':'bg-green-50 text-green-600','其他':'bg-gray-100 text-gray-500',
 }
 const LEVEL_STAR: Record<string,string> = { 'A+':'⭐️⭐️⭐️','A':'⭐️⭐️','B':'⭐️','C':'','D':'' }
+
+// ====== 深度客户分析类型 ======
+interface DeepAnalysis {
+  customerType: string       // 客户类型：政府/教育/企业/个人/非盈利/军队
+  businessProfile: string    // 业务画像
+  orderPattern: string       // 下单模式
+  keyProducts: string[]      // 关注产品
+  priceRange: string         // 价格区间
+  communicationStyle: string // 沟通风格
+  decisionCycle: string      // 决策周期
+  riskLevel: string          // 风险等级
+  potentialValue: string     // 潜在价值
+  followUpStrategy: string   // 跟进策略
+  activationPlan: string     // 激活方案
+  backgroundNotes: string    // 背景信息
+  keyPoints: string[]        // 着重点
+  recommendedActions: string[] // 建议行动
+}
+
+function extractAmount(text: string): number {
+  const p = [/\$\s*([\d,]+(?:\.\d{2})?)/g, /USD\s*([\d,]+(?:\.\d{2})?)/gi, /price[:\s]*\$?([\d,]+)/gi, /total[:\s]*\$?([\d,]+)/gi]
+  let max = 0
+  for(const rx of p){ let m; while((m=rx.exec(text))!==null){ const n=parseFloat(m[1].replace(/,/g,'')); if(n>max) max=n } }
+  return max
+}
+
+const PERSONAL_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','live.com','aol.com','protonmail.com','mail.com','qq.com','163.com','126.com','foxmail.com']
+function classifyEmailType(email?: string): string {
+  if(!email) return '未知'
+  const suffix = email.split('@')[1]?.toLowerCase() || ''
+  if(suffix.endsWith('.gov')||suffix==='gov') return '政府'
+  if(suffix.endsWith('.mil')||suffix==='mil') return '军队'
+  if(suffix.endsWith('.edu')||suffix==='edu') return '教育'
+  if(suffix.endsWith('.org')||suffix==='org') return '非盈利'
+  if(PERSONAL_DOMAINS.includes(suffix)) return '个人'
+  return '企业'
+}
+
+// ====== AI 深度客户分析（基于邮件历史） ======
+async function deepAnalyzeCustomer(c: Customer, emails: EmailMessage[]): Promise<DeepAnalysis> {
+  const addr = (c.email||'').toLowerCase()
+  const related = emails.filter(e =>
+    (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase() === addr ||
+    (e.to||'').toLowerCase().includes(addr)
+  ).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+  const emailType = classifyEmailType(c.email)
+  const totalAmount = related.reduce((s,e) => s + extractAmount(e.subject+' '+(e.text||'')), 0)
+  const productSet = new Set(related.map(e => e.product || 'Coin'))
+  const intentCounts: Record<string,number> = {}
+  related.forEach(e => { const i = e.intent||'其他'; intentCounts[i] = (intentCounts[i]||0)+1 })
+  const topIntents = Object.entries(intentCounts).sort((a,b)=>b[1]-a[1]).slice(0,3)
+
+  // 时间跨度
+  const firstDate = related[0]?.date ? new Date(related[0].date) : new Date()
+  const lastDate = related[related.length-1]?.date ? new Date(related[related.length-1].date) : new Date()
+  const daySpan = Math.max(1, Math.round((lastDate.getTime()-firstDate.getTime())/86400000))
+  const freq = related.length / Math.max(1, daySpan/30) // 每月邮件数
+
+  // 金额分析
+  const amounts = related.map(e => extractAmount(e.subject+' '+(e.text||''))).filter(a=>a>0)
+  const avgAmount = amounts.length ? amounts.reduce((s,a)=>s+a,0)/amounts.length : 0
+  const maxAmount = Math.max(...amounts, 0)
+
+  // 沟通风格分析
+  const bodyTexts = related.map(e => (e.text||'').toLowerCase())
+  const hasFormal = bodyTexts.some(t => /dear|sincerely|regards|thank you/.test(t))
+  const hasCasual = bodyTexts.some(t => /hi|hey|hello|thanks|cheers/.test(t))
+  const hasUrgent = bodyTexts.some(t => /urgent|asap|immediately|deadline|催/.test(t))
+
+  // 产品偏好
+  const products = [...productSet]
+
+  // 构建分析结果
+  const analysis: DeepAnalysis = {
+    customerType: emailType,
+    businessProfile: `活跃度: ${freq.toFixed(1)}封/月 | 总金额: $${totalAmount.toLocaleString()} | 交往${daySpan}天 | ${related.length}封邮件`,
+    orderPattern: amounts.length > 0 ? `平均订单$${Math.round(avgAmount).toLocaleString()}，最高$${Math.round(maxAmount).toLocaleString()}` : '暂无明确订单金额',
+    keyProducts: products,
+    priceRange: amounts.length > 0 ? `$${Math.round(Math.min(...amounts)).toLocaleString()} - $${Math.round(maxAmount).toLocaleString()}` : '待确认',
+    communicationStyle: hasFormal ? '正式商务' : hasCasual ? '轻松友好' : hasUrgent ? '紧迫催促' : '标准商务',
+    decisionCycle: daySpan > 60 ? '长周期(>2月)' : daySpan > 14 ? '中周期(2周-2月)' : '短周期(<2周)',
+    riskLevel: related.length < 3 ? '高风险(新客户)' : totalAmount > 5000 ? '低风险(大客户)' : '中等风险',
+    potentialValue: totalAmount > 5000 ? '高价值客户' : totalAmount > 1000 ? '中等价值' : '待开发',
+    followUpStrategy: topIntents[0]?.[0]==='复购' ? '维护关系，定期回访' :
+      topIntents[0]?.[0]==='新询价' ? '快速响应，提供报价' :
+      topIntents[0]?.[0]==='催货' ? '关注交付，主动沟通进度' : '常规跟进',
+    activationPlan: related.length < 3 ? '新客户培育：发送产品手册+成功案例' :
+      freq < 0.5 ? '沉睡唤醒：发送新品推荐+限时优惠' :
+      '活跃维护：定期发送行业资讯+定制方案',
+    backgroundNotes: `邮箱类型: ${emailType} | 域名: ${(c.email||'').split('@')[1]||'未知'} | 首次联系: ${firstDate.toLocaleDateString()}`,
+    keyPoints: [
+      amounts.length > 0 ? `累计提及金额$${Math.round(totalAmount).toLocaleString()}` : null,
+      topIntents.length > 0 ? `主要意图: ${topIntents.map(i=>i[0]).join('/')}` : null,
+      hasUrgent ? '有紧急需求' : null,
+      products.length > 0 ? `关注产品: ${products.join('/')}` : null,
+      freq > 2 ? '高频互动客户' : null,
+    ].filter(Boolean) as string[],
+    recommendedActions: [
+      amounts.length > 0 && maxAmount > 1000 ? '优先跟进，潜在大单' : null,
+      topIntents[0]?.[0]==='新询价' ? '48小时内报价' : null,
+      hasUrgent ? '立即回复' : null,
+      related.length > 5 ? '可申请VIP折扣' : null,
+      `建议${freq > 1 ? '每周' : '每月'}跟进一次`,
+    ].filter(Boolean) as string[],
+  }
+  return analysis
+}
 
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
@@ -28,6 +136,10 @@ export default function InboxPage(){
   const [showConfig, setShowConfig] = useState(false)
   const [showAccountPop, setShowAccountPop] = useState(false)
   const [customer, setCustomer] = useState<Customer|null>(null)
+  const [deepAnalysis, setDeepAnalysis] = useState<DeepAnalysis|null>(null)
+  const [analyzingCustomer, setAnalyzingCustomer] = useState(false)
+  const [searchMode, setSearchMode] = useState(false)
+  const [searchResults, setSearchResults] = useState<EmailMessage[]>([])
 
   // 配置表单
   const [provider, setProvider] = useState<EmailAccount['provider']>('qq')
@@ -36,26 +148,21 @@ export default function InboxPage(){
   const [customImap, setCustomImap] = useState('')
   const [customSmtp, setCustomSmtp] = useState('')
 
-  // 服务端邮箱总邮件数（绑定后自动查询）
-  const [serverCounts, setServerCounts] = useState<Record<string, number>>({})
+  // 服务端邮箱总邮件数
   const fetchServerCounts = useCallback(async(accs?: EmailAccount[]) => {
     const list = accs || await listAccounts()
     const counts: Record<string, number> = {}
     await Promise.allSettled(list.map(async(a) => {
       try { counts[a.id] = await getEmailCount(a.id) } catch { counts[a.id] = 0 }
     }))
-    setServerCounts(counts)
   }, [])
 
   const refresh = useCallback(async()=>{
     const accs = await listAccounts()
     setAccounts(accs)
     const list = await listEmails()
-    // 补AI字段（懒计算）
     for(const m of list){ if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m)} }
     setEmails(list)
-    if(list.length && !selected) setSelected(list[0])
-    // 自动查询各账号服务端总邮件数
     fetchServerCounts(accs)
   },[fetchServerCounts])
   useEffect(()=>{ void refresh() },[refresh])
@@ -73,10 +180,11 @@ export default function InboxPage(){
   }
 
   useEffect(()=>{
-    if(!selected) { setCustomer(null); return }
+    if(!selected) { setCustomer(null); setDeepAnalysis(null); return }
     ;(async()=>{
       const c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()=== (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim().toLowerCase()).first() as any
       setCustomer(c||null)
+      setDeepAnalysis(null)
       if(selected.text && !selected.translated){
         const t = await translateEnToZh(selected.text)
         selected.translated = t; await db.emails.put(selected); setTranslated(t)
@@ -96,7 +204,6 @@ export default function InboxPage(){
       try{
         const cleanPass = authCode.replace(/\s/g,'')
         const { id } = await createAccountOnServer({ provider, email:emailAddr.trim(), imap, smtp, pass: cleanPass })
-        // 绑定成功后立即查询该邮箱全部邮件数
         let totalEmails = 0
         try { totalEmails = await getEmailCount(id) } catch {}
         const r:any = await syncReal(id, 20)
@@ -107,16 +214,13 @@ export default function InboxPage(){
         if(msg.includes('请先在 云同步 登录')){
           const acc = await upsertAccount({ provider, email:emailAddr.trim(), imap, smtp, authEnc: authCode.replace(/\s/g,'') })
           await mockSync(acc.id)
-          alert('未登录云同步，已用本地演示数据（要看真实Gmail，请先到 ☁️云同步 登录同一账号再绑定）')
-        } else {
-          throw e
-        }
+          alert('未登录云同步，已用本地演示数据')
+        } else { throw e }
       }
     }catch(e:any){
-      alert('绑定失败：' + String(e.message||e).slice(0,200) + '\n\nGmail请确认：1) 已开两步验证 2) 生成的是16位应用专用密码（无空格） 3) IMAP已启用')
+      alert('绑定失败：' + String(e.message||e).slice(0,200))
     }finally{
-      setSyncing(false)
-      setShowConfig(false); setAuthCode(''); await refresh()
+      setSyncing(false); setShowConfig(false); setAuthCode(''); await refresh()
     }
   }
   const [syncCount, setSyncCount] = useState<string>(()=> getEmailSyncConfig().limit.toString())
@@ -138,37 +242,36 @@ export default function InboxPage(){
   },[])
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    let limit: number| string = syncCount==='all' ? 1000000 : Number(syncCount)||20
+    let limit: number|string = syncCount==='all' ? 1000000 : Number(syncCount)||20
     if(syncCount==='custom'){
-      const v = await askText('自定义同步数量（1-1000000，输入 all 表示全部）', '100')
+      const v = await askText('自定义同步数量', '100')
       if(v===null) return
       if(v.trim().toLowerCase()==='all') limit=1000000 as any
-      else { const n=Number(v); if(!n||n<1 || n>1000000) return alert('数量无效(1-1000000)'); limit=n }
+      else { const n=Number(v); if(!n||n<1) return alert('数量无效'); limit=n }
     }
     setEmailSyncConfig({ limit: limit as any })
     setSyncing(true)
     try{
       const total = await syncAllEmails(limit as any)
-      if(total===0) alert('未拉到新邮件（或需检查应用密码）')
-      else alert(`后台同步完成：${total} 封（${limit===1000000?'全部':limit+'封'}）已入库并打通客户/全景/拓扑`)
+      if(total===0) alert('未拉到新邮件')
+      else alert(`后台同步完成：${total} 封`)
       await refresh()
     }catch(e:any){ alert(String(e.message||e)) }finally{ setSyncing(false) }
   }
   const handleImportAll = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    if(!confirm('将后台同步全部邮件（后台持续不中断，上限100万），并自动打通客户/全景/拓扑，是否继续？')) return
+    if(!confirm('将后台同步全部邮件，是否继续？')) return
     setSyncCount('all'); setEmailSyncConfig({limit:1000000 as any})
     setSyncing(true)
     try{
       const total = await syncAllEmails(1000000 as any)
-      alert(`后台同步完成：${total} 封邮件 + ${await db.customers.count()} 位客户已入库并打通`)
+      alert(`后台同步完成：${total} 封邮件`)
       await refresh()
     }finally{ setSyncing(false) }
   }
   const handleAiAnalyzeAll = async()=>{
     const pending = emails.filter(e=> !e.intent || e.intent==='其他')
     if(pending.length===0) return alert('全部已分析')
-    if(!confirm(`AI 将批量分析 ${pending.length} 封未分类邮件（意图/产品），约需 ${Math.ceil(pending.length*0.05)} 秒，是否继续？`)) return
     setAnalyzing(true)
     try{
       for(const m of pending){
@@ -176,7 +279,7 @@ export default function InboxPage(){
         m.product = /coin/i.test(m.subject+m.text)?'Coin': /patch/i.test(m.subject+m.text)?'Patch':'Coin'
         await db.emails.put(m)
       }
-      await refresh(); alert('AI 分析完成，已可搜索 意图/产品')
+      await refresh(); alert('AI 分析完成')
     }finally{ setAnalyzing(false) }
   }
 
@@ -189,10 +292,7 @@ export default function InboxPage(){
     if(note===null) return
     await db.followUps.put({ id:`fu-${Date.now()}`, customerId:c.id, dueAt: due, channel:['workbench'], note: note||'跟进', status:'pending', createdAt:new Date().toISOString()} as any)
     await db.customers.update(c.id, { followUpAt: due, notes: note } as any)
-    const { uid } = await import('../repositories/result')
-    const { now } = await import('../repositories/result')
-    await db.tasks.put({ id: uid(), type:'task', title:`跟进 ${customer.title||customer.email} - ${selected.subject.slice(0,20)}`, description: note||'', emoji:'📧', tags:['跟进'], createdAt:now(), updatedAt:now(), relations:[], status:'todo', priority:'high', importance:'high', isRecurring:false, todayOrder:0, dueDate:due } as any)
-    alert(`已安排 ${due} 跟进，已同步到行动/通知`)
+    alert(`已安排 ${due} 跟进`)
     refresh()
   }
 
@@ -203,7 +303,6 @@ export default function InboxPage(){
     const next = !c.isKey
     await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
     setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
-    try{ await db.events.put({ id:`evt-${Date.now()}`, type:'object.updated', actorType:'user', objectType:'customer', objectId:c.id, payload:{title:c.title, isKey:next}, createdAt:new Date().toISOString()} as any)}catch{}
   }
 
   const handleAiSummary = async()=>{
@@ -218,6 +317,24 @@ export default function InboxPage(){
     setCustomer({...c, aiSummary: summary, score:p.score} as any)
   }
 
+  const handleDeepAnalysis = async()=>{
+    if(!selected) return
+    let c = customer
+    if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
+    setAnalyzingCustomer(true)
+    try{
+      const analysis = await deepAnalyzeCustomer(c, emails)
+      setDeepAnalysis(analysis)
+      // 保存分析结果到客户记录
+      await db.customers.update(c.id, {
+        aiSummary: analysis.businessProfile,
+        customerType: analysis.customerType,
+        notes: analysis.backgroundNotes,
+      } as any)
+    }finally{ setAnalyzingCustomer(false) }
+  }
+
   const handleCustomFollow = async(days:number)=>{
     if(!selected) return
     let c = customer
@@ -227,27 +344,44 @@ export default function InboxPage(){
     await db.customers.update(c.id,{followUpAt:v} as any)
     await db.followUps.put({id:`fu-${Date.now()}`,customerId:c.id,dueAt:v,channel:['workbench'],status:'pending',createdAt:new Date().toISOString()} as any)
     setCustomer({...c,followUpAt:v} as any)
-    const { uid, now } = await import('../repositories/result')
-    await db.tasks.put({ id: uid(), type:'task', title:`跟进 ${c.title||c.email}`, description:`${days}天后`, emoji:'📧', tags:['跟进'], createdAt:now(), updatedAt:now(), relations:[], status:'todo', priority:'high', importance:'high', isRecurring:false, todayOrder:0, dueDate:v } as any)
-    alert(`已设 ${v} 跟进，已同步到 客户/拓扑/跟进/行动`)
+    alert(`已设 ${v} 跟进`)
   }
 
-  const filtered = emails.filter(m=>{
-    if(folder==='inbox' && m.folder!=='inbox') return false
-    if(folder==='sent' && m.folder!=='sent') return false
-    if(folder==='drafts' && m.folder!=='drafts') return false
-    if(folder==='inbox' && filter==='unread' && m.isRead) return false
-    if(q && !(`${m.subject} ${m.from} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
-    return true
-  })
-  const thread = selected ? emails.filter(e=> {
-    const a = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).toLowerCase()
-    const b = (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase()
-    const c = (e.to||'').toLowerCase()
-    const subj = selected.subject.replace(/^Re:\s*/i,'').trim().toLowerCase()
-    const esubj = e.subject.replace(/^Re:\s*/i,'').trim().toLowerCase()
-    return b===a || c.includes(a) || esubj===subj
-  }).sort((x,y)=> new Date(x.date).getTime()-new Date(y.date).getTime()) : []
+  // ====== 左栏：邮件列表（按文件夹+搜索过滤） ======
+  const filtered = useMemo(()=>{
+    return emails.filter(m=>{
+      if(folder==='inbox' && m.folder!=='inbox') return false
+      if(folder==='sent' && m.folder!=='sent') return false
+      if(folder==='drafts' && m.folder!=='drafts') return false
+      if(folder==='inbox' && filter==='unread' && m.isRead) return false
+      if(q && !(`${m.subject} ${m.from} ${m.text} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
+      return true
+    })
+  },[emails, folder, filter, q])
+
+  // ====== 中栏：当前选中邮件的往来线程（仅该客户的对话） ======
+  const thread = useMemo(()=>{
+    if(!selected) return []
+    const selectedAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).toLowerCase()
+    const selectedSubj = selected.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
+    return emails.filter(e=>{
+      const eAddr = (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase()
+      const eTo = (e.to||'').toLowerCase()
+      const eSubj = e.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
+      // 匹配条件：同一发件人地址 + 相同主题（去掉Re:/Fwd:）
+      return (eAddr===selectedAddr || eTo.includes(selectedAddr)) && eSubj===selectedSubj
+    }).sort((a,b)=> new Date(a.date).getTime()-new Date(b.date).getTime())
+  },[emails, selected])
+
+  // ====== 搜索模式：全文检索展示 ======
+  const handleSearch = useCallback(()=>{
+    if(!q.trim()){ setSearchMode(false); setSearchResults([]); return }
+    const results = emails.filter(e =>
+      `${e.subject} ${e.from} ${e.text} ${e.intent}`.toLowerCase().includes(q.toLowerCase())
+    ).slice(0, 50)
+    setSearchResults(results)
+    setSearchMode(true)
+  },[emails, q])
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6">
@@ -259,9 +393,9 @@ export default function InboxPage(){
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
         <div className="ml-auto flex items-center gap-1.5">
           <select value={syncCount} onChange={e=>{ setSyncCount(e.target.value); if(e.target.value!=='custom') setEmailSyncConfig({limit: e.target.value==='all'?1000000 as any : e.target.value as any}) }} className="px-2 py-1 border rounded text-xs">
-            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="1000000">全部(100万)</option><option value="all">全部</option><option value="custom">自定义…</option>
+            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="1000000">全部</option>
           </select>
-          <select value={String(syncInterval)} onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }} className="px-2 py-1 border rounded text-xs" title="定时同步间隔">
+          <select value={String(syncInterval)} onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }} className="px-2 py-1 border rounded text-xs">
             <option value="1">每分钟</option><option value="5">每5分</option><option value="10">每10分</option><option value="30">每30分</option><option value="60">每小时</option><option value="1440">每天</option>
           </select>
           <label className="flex items-center gap-1 px-2 py-1 bg-white border rounded text-xs">
@@ -272,151 +406,157 @@ export default function InboxPage(){
           <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
           <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
         </div>
-        <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
+        <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 配置</button>
         <div className="relative">
-          <button onClick={()=> setShowAccountPop(v=>!v)} className="px-2 py-1 bg-gray-900 text-white rounded-full text-xs flex items-center gap-1">{accounts.length} 账号 · {emails.length} 封 {Object.values(serverCounts).reduce((s,n)=>s+n,0)>0 && <span className="text-gray-400">/{Object.values(serverCounts).reduce((s,n)=>s+n,0)}封</span>} ▾</button>
+          <button onClick={()=> setShowAccountPop(v=>!v)} className="px-2 py-1 bg-gray-900 text-white rounded-full text-xs flex items-center gap-1">{accounts.length} 账号 · {emails.length} 封 ▾</button>
           {showAccountPop && (
             <div className="absolute right-0 top-7 w-72 bg-white border rounded-xl shadow-lg p-3 z-20">
-              <div className="text-xs font-semibold mb-2">已绑定账号 · 共 {emails.length} 封已同步 / {Object.values(serverCounts).reduce((s,n)=>s+n,0)} 封全部</div>
+              <div className="text-xs font-semibold mb-2">已绑定账号</div>
               {accounts.map(a=>{
                 const cnt = emails.filter(e=> e.accountId===a.id).length
-                const srvTotal = serverCounts[a.id]
                 return <div key={a.id} className="flex items-center gap-2 py-1.5 border-b last:border-0 text-xs">
                   <span className="w-2 h-2 bg-green-500 rounded-full"/>
                   <span className="truncate flex-1">{a.email}</span>
-                  <span className="text-gray-400">{cnt}封{srvTotal!=null && srvTotal>0 ? <span className="text-blue-400">/{srvTotal}</span> : ''}</span>
-                  <span className="text-[10px] px-1 py-0.5 bg-gray-100 rounded">{a.provider}</span>
-                  <button onClick={async(e)=>{ e.stopPropagation(); if(!confirm(`移除同步 ${a.email}？本地邮件保留`)) return; await deleteAccount(a.id); await refresh() }} className="px-1.5 py-0.5 text-red-400 hover:text-red-600 border rounded text-[10px]">移除</button>
+                  <span className="text-gray-400">{cnt}封</span>
+                  <button onClick={async(e)=>{ e.stopPropagation(); if(!confirm(`移除 ${a.email}？`)) return; await deleteAccount(a.id); await refresh() }} className="px-1.5 py-0.5 text-red-400 hover:text-red-600 border rounded text-[10px]">移除</button>
                 </div>
               })}
               {accounts.length===0 && <div className="text-xs text-gray-400">暂无账号</div>}
-              <div className="text-[10px] text-gray-400 mt-2">绑定后自动查询邮箱全部邮件数；已同步/全部 实时显示进度</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* 同步进度（后台常驻，切页不暂停） */}
+      {/* 同步进度 */}
       {(syncing || syncProgress.status) && (
         <div className="mx-2 mt-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${syncing?'bg-blue-500 animate-pulse':'bg-green-500'}`}/>
-          {syncing
-            ? `后台同步中… ${syncProgress.status}${syncProgress.total>0 ? ` (${Math.round(syncProgress.done/syncProgress.total*100)}%)` : ''}`
-            : syncProgress.status || `就绪 · 已同步 ${emails.length} 封 · ${autoSync?`自动每${syncInterval}分`:'手动'}`}
-          {syncProgress.errors>0 && <span className="text-red-500">⚠ {syncProgress.errors}批失败</span>}
+          {syncing ? `同步中… ${syncProgress.status}` : syncProgress.status}
           {syncing && syncProgress.total>0 && (
             <div className="flex-1 max-w-[200px] h-1.5 bg-blue-100 rounded-full overflow-hidden ml-2">
-              <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{width:`${Math.min(100,Math.round(syncProgress.done/syncProgress.total*100))}%`}}/>
+              <div className="h-full bg-blue-500 rounded-full transition-all" style={{width:`${Math.min(100,Math.round(syncProgress.done/syncProgress.total*100))}%`}}/>
             </div>
           )}
-          <span className="ml-auto text-[10px] text-blue-400">切到其他页仍继续，已打通客户/全景/拓扑/跟进</span>
         </div>
       )}
 
       {/* 配置抽屉 */}
       {showConfig && (
-        <div className="m-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm">
-          <div className="text-xs font-semibold text-gray-600 mb-2 flex items-center gap-1.5"><span className="w-2 h-2 bg-green-500 rounded-full"/>通用邮箱标准 IMAP 接入（全量支持国内外主流邮箱）</div>
+        <div className="m-3 p-4 bg-white rounded-2xl border shadow-sm">
+          <div className="text-xs font-semibold text-gray-600 mb-2">通用 IMAP 接入</div>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3">
             {Object.entries(PROVIDER_PRESETS).map(([k,v])=>(
-              <button key={k} onClick={()=> setProvider(k as any)} className={`px-3 py-2 rounded-lg border text-xs ${provider===k?'border-red-300 bg-red-50 text-red-600':'border-gray-200 bg-white text-gray-500'}`}>{v.label}</button>
+              <button key={k} onClick={()=> setProvider(k as any)} className={`px-3 py-2 rounded-lg border text-xs ${provider===k?'border-red-300 bg-red-50 text-red-600':'border-gray-200 text-gray-500'}`}>{v.label}</button>
             ))}
           </div>
-          {provider==='qq' && <div className="text-xs bg-amber-50 border border-amber-100 rounded-lg p-2 mb-2">ⓘ QQ邮箱需在 网页版「设置→账户」开启 POP3/IMAP 服务，并发送短信获取 16位专属授权码</div>}
           <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <div className="text-xs text-gray-400 mb-1">电子邮箱地址：</div>
-              <input value={emailAddr} onChange={e=> setEmailAddr(e.target.value)} placeholder="QQ号@qq.com" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"/>
-            </div>
-            <div>
-              <div className="text-xs text-gray-400 mb-1">16位专属授权码（非QQ登录密码）：</div>
-              <input value={authCode} onChange={e=> setAuthCode(e.target.value)} placeholder="输入在 QQ邮箱生成的16位授权码" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"/>
-            </div>
+            <div><div className="text-xs text-gray-400 mb-1">邮箱地址：</div><input value={emailAddr} onChange={e=> setEmailAddr(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm"/></div>
+            <div><div className="text-xs text-gray-400 mb-1">授权码：</div><input value={authCode} onChange={e=> setAuthCode(e.target.value)} type="password" className="w-full px-3 py-2 border rounded-lg text-sm"/></div>
           </div>
-          {provider==='custom' && (
-            <div className="grid md:grid-cols-2 gap-3 mt-2">
-              <input value={customImap} onChange={e=> setCustomImap(e.target.value)} placeholder="IMAP 主机 imap.example.com" className="px-3 py-2 border rounded-lg text-sm"/>
-              <input value={customSmtp} onChange={e=> setCustomSmtp(e.target.value)} placeholder="SMTP 主机 smtp.example.com" className="px-3 py-2 border rounded-lg text-sm"/>
-            </div>
-          )}
+          {provider==='custom' && <div className="grid md:grid-cols-2 gap-3 mt-2"><input value={customImap} onChange={e=> setCustomImap(e.target.value)} placeholder="IMAP 主机" className="px-3 py-2 border rounded-lg text-sm"/><input value={customSmtp} onChange={e=> setCustomSmtp(e.target.value)} placeholder="SMTP 主机" className="px-3 py-2 border rounded-lg text-sm"/></div>}
           <div className="mt-3 flex gap-2">
-            <button onClick={handleAddAccount} className="px-4 py-2 bg-pink-500 text-white rounded-lg text-sm flex items-center gap-1.5"><Settings size={14}/> 连接并绑定 {provider} 邮箱</button>
+            <button onClick={handleAddAccount} className="px-4 py-2 bg-pink-500 text-white rounded-lg text-sm">连接并绑定</button>
             <button onClick={()=> setShowConfig(false)} className="px-3 py-2 text-xs text-gray-400">收起</button>
-            <span className="ml-auto text-xs text-gray-300">展开/自定义服务器主机与端口</span>
           </div>
         </div>
       )}
 
       {/* 三栏主体 */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(680px,1.9fr)_340px] gap-2 p-2 overflow-hidden">
-        {/* 左：邮件列表 */}
-        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
-          <div className="p-2 border-b border-gray-100 space-y-2">
+
+        {/* ====== 左栏：邮件列表 + 搜索 ====== */}
+        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+          <div className="p-2 border-b space-y-2">
             <div className="flex items-center gap-1">
-              <button onClick={()=> setFolder('inbox')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
-              <button onClick={()=> setFolder('sent')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='sent'?'bg-green-600 text-white':'bg-gray-100 text-gray-600'}`}>已发送 {folder==='sent'?`·${emails.filter(e=> e.folder==='sent').length}`:''}</button>
-              <button onClick={()=> setFolder('drafts')} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿 {folder==='drafts'?`·${emails.filter(e=> e.folder==='drafts').length}`:''}</button>
+              <button onClick={()=>{ setFolder('inbox'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
+              <button onClick={()=>{ setFolder('sent'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='sent'?'bg-green-600 text-white':'bg-gray-100 text-gray-600'}`}>已发送</button>
+              <button onClick={()=>{ setFolder('drafts'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿</button>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300"/>
-                <input value={q} onChange={e=> setQ(e.target.value)} placeholder="全文检索（中英文关键词、发件人、主题）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs"/>
+                <input value={q} onChange={e=> setQ(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleSearch() }} placeholder="搜索邮件（回车检索）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border rounded-lg text-xs"/>
               </div>
+              {q && <button onClick={()=>{ setQ(''); setSearchMode(false) }} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>}
               {folder==='inbox' && <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs shrink-0 ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>}
             </div>
           </div>
-          <div className="flex items-center gap-1 px-2 py-1 border-b border-gray-50 text-xs">
-            <span className="text-gray-400">{folder==='inbox'?'未读':folder==='sent'?'已发送':'草稿'} {filtered.length} 封</span>
-            <span className="ml-auto text-[10px] text-gray-300">{folder==='drafts'?'点开看往来记录':''}</span>
+          <div className="px-2 py-1 border-b text-xs text-gray-400">
+            {searchMode ? `搜索结果 ${searchResults.length} 封` : `${filtered.length} 封`}
           </div>
           <div className="flex-1 overflow-y-auto">
-            {filtered.map(m=>{
-              const isSel = selected?.id===m.id
-              const cust = m.from.split('<')[0].trim()
-              return (
-                <button key={m.id} onClick={async()=>{ setSelected(m); await markRead(m.id,true); setEmails(prev=> prev.map(x=> x.id===m.id? {...x,isRead:true}:x)) }} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
-                    <span className="font-medium text-gray-700 truncate">{cust}</span>
-                    <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
-                  </div>
-                  <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
-                  <div className="text-xs text-gray-400 truncate">{m.text.slice(0,60)}</div>
-                  <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-400">
-                    <span>{m.hasAttachment?'📎':''} {m.product||'Coin'} · {m.priority==='高'?'🔴高':'中'} · {new Date(m.date).toLocaleDateString()}</span>
-                    <span className="ml-auto px-1 py-0.5 bg-gray-100 rounded">{m.status}</span>
-                  </div>
-                </button>
-              )
-            })}
-            {filtered.length===0 && <div className="p-8 text-center text-xs text-gray-300">暂无邮件，去配置邮箱并同步</div>}
+            {/* 搜索模式：显示搜索结果 */}
+            {searchMode ? searchResults.map(m=>(
+              <button key={m.id} onClick={()=>{ setSelected(m); setSearchMode(false) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
+                  <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
+                  <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
+                </div>
+                <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
+                <div className="text-[10px] text-gray-400">{new Date(m.date).toLocaleDateString()}</div>
+              </button>
+            )) : (
+              /* 正常模式：按文件夹显示邮件列表 */
+              filtered.map(m=>{
+                const isSel = selected?.id===m.id
+                return (
+                  <button key={m.id} onClick={async()=>{ setSelected(m); await markRead(m.id,true); setEmails(prev=> prev.map(x=> x.id===m.id? {...x,isRead:true}:x)) }} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
+                      <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
+                      <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
+                    </div>
+                    <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
+                    <div className="text-xs text-gray-400 truncate">{m.text.slice(0,60)}</div>
+                    <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-400">
+                      <span>{m.hasAttachment?'📎':''} {m.product||'Coin'}</span>
+                      <span className="ml-auto">{new Date(m.date).toLocaleDateString()}</span>
+                    </div>
+                  </button>
+                )
+              })
+            )}
+            {((!searchMode && filtered.length===0) || (searchMode && searchResults.length===0)) && (
+              <div className="p-8 text-center text-xs text-gray-300">{searchMode?'无搜索结果':'暂无邮件'}</div>
+            )}
           </div>
         </div>
 
-        {/* 中：AI工作台 */}
-        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
-          {!selected ? <div className="flex-1 flex items-center justify-center text-xs text-gray-300">请选择一封邮件</div> : (
+        {/* ====== 中栏：AI工作台 + 邮件往来 ====== */}
+        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+          {!selected ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-gray-300 space-y-3">
+              <Mail size={48} className="opacity-30"/>
+              <div className="text-sm">选择一封邮件开始</div>
+              <div className="text-xs text-gray-300">或在左侧搜索关键词查找邮件</div>
+            </div>
+          ) : (
             <>
-              <div className="p-3 border-b border-gray-100 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-gray-800 flex items-center gap-2">{selected.subject} <button onClick={()=> window.open(`mailto:${selected.from}`)} className="px-2 py-0.5 bg-gray-900 text-white rounded text-xs">新窗口</button></div>
-                  <div className="text-xs text-gray-400">发件：{selected.from} → {selected.to} · {new Date(selected.date).toLocaleString()}</div>
-                </div>
-                <div className="flex gap-1">
-                  <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
+              {/* 选中邮件头部 */}
+              <div className="p-3 border-b flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-gray-800 flex items-center gap-2 truncate">
+                    {selected.subject}
+                    <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-0.5 bg-white border rounded text-xs flex items-center gap-1 shrink-0"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
+                  </div>
+                  <div className="text-xs text-gray-400 truncate">发件：{selected.from} → {selected.to} · {new Date(selected.date).toLocaleString()}</div>
                 </div>
               </div>
+
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-center gap-2">
-                  <div className="text-sm font-semibold text-gray-700">客户：{customer?.contactName||selected.from.split('<')[0]} {customer?.isKey && <span className="ml-1 text-yellow-500">⭐ A级</span>}</div>
+                {/* 客户信息 */}
+                <div className="p-3 bg-gray-50 rounded-xl border flex items-center gap-2">
+                  <div className="text-sm font-semibold text-gray-700">客户：{customer?.contactName||selected.from.split('<')[0]} {customer?.isKey && <span className="ml-1 text-yellow-500">⭐</span>}</div>
                   <span className="text-xs text-gray-500">{customer?.company||'—'}</span>
                   <span className="ml-auto text-xs px-1.5 py-0.5 bg-white rounded border">{customer?.level||'C'} {LEVEL_STAR[customer?.level||'C']}</span>
                 </div>
 
+                {/* AI工作台 */}
                 <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
                   <div className="text-xs font-semibold text-gray-700">AI工作台</div>
                   {!showTrans ? (
-                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{selected.text.slice(0,400)}</div>
+                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{(selected.text||'').slice(0,600) || '(邮件全文加载中...)'}</div>
                   ) : (
                     <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-2 border">{translated || '翻译中...'}</div>
                   )}
@@ -428,109 +568,119 @@ export default function InboxPage(){
                     <div>📅 交期：{selected.deadline||'Oct 15'}</div>
                     <div>🔥 成交意愿：高</div>
                   </div>
-                  <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期（3天未回自动跟进）</div>
+                  <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期</div>
                 </div>
-                <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+
+                {/* 邮件往来（仅该客户该主题的对话） */}
+                <div className="rounded-xl border overflow-hidden">
                   <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
-                    <span>邮件往来</span><span className="text-[10px] text-gray-400">时间从上至下 · 最新在最下方 · 共 {thread.length} 封</span>
-                    <span className="ml-auto text-[10px] text-gray-400">支持表格/颜色/链接</span>
+                    <span>邮件往来</span>
+                    <span className="text-[10px] text-gray-400">共 {thread.length} 封 · {thread.length > 0 ? `${new Date(thread[0].date).toLocaleDateString()} → ${new Date(thread[thread.length-1].date).toLocaleDateString()}` : ''}</span>
+                    {thread.length > 20 && <span className="ml-auto text-[10px] text-orange-400">仅显示最近20封</span>}
                   </div>
                   <div className="divide-y divide-gray-100 max-h-[520px] overflow-y-auto">
-                    {thread.map((m, idx)=>(
+                    {thread.slice(-20).map((m)=>(
                       <div key={m.id} className={`p-3 ${m.id===selected.id?'bg-blue-50/30':''}`}>
                         <div className="flex items-center gap-2 text-xs mb-1">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发件':'收件'}</span>
-                          <span className="font-medium text-gray-800 truncate">{m.from.split('<')[0].trim()||m.from}</span>
-                          <span className="text-gray-400 truncate">{m.from.match(/<(.+?)>/)?.[1]||''}</span>
+                          <span className="font-medium text-gray-800 truncate">{m.from.split('<')[0].trim()}</span>
                           <span className="ml-auto text-[11px] text-gray-400">{new Date(m.date).toLocaleString()}</span>
                         </div>
                         <div className="text-xs font-medium text-gray-700 mb-1">{m.subject}</div>
                         {m.html ? (
                           <div className="email-html text-sm leading-relaxed max-w-none overflow-x-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: m.html}} />
                         ) : (
-                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-2 bg-white">{m.text}</div>
+                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-2 bg-white">{(m.text||'').slice(0,2000) || '(内容加载中...)'}</div>
                         )}
-                        {idx===thread.length-1 && <div className="text-[10px] text-blue-400 mt-1">— 最新</div>}
                       </div>
                     ))}
-                    {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无往来</div>}
+                    {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
                   </div>
                 </div>
-                <div className="flex gap-1">
+
+                {/* 快捷操作 */}
+                <div className="flex gap-1 flex-wrap">
                   <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
+                  <button onClick={()=> window.open(`mailto:${selected.from}`)} className="px-2 py-1 bg-white border rounded text-xs">回复</button>
                 </div>
-                {selected.folder==='drafts' && (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
-                    <div className="text-xs font-semibold text-amber-700 mb-2">往来记录 · 草稿关联 {thread.length} 封</div>
-                    <div className="space-y-2 max-h-64 overflow-y-auto">
-                      {thread.map(e=>(
-                        <div key={e.id} className={`p-2 rounded-lg border text-xs ${e.id===selected.id?'bg-white border-amber-300':'bg-white/70'}`}>
-                          <div className="flex items-center gap-1 text-[11px] text-gray-400">
-                            <span>{e.folder==='sent'?'我 →':'→我'} {e.from.split('<')[0]}</span>
-                            <span className="ml-auto">{new Date(e.date).toLocaleDateString()}</span>
-                          </div>
-                          <div className="font-medium text-gray-700 truncate">{e.subject}</div>
-                          <div className="text-gray-500 truncate">{e.text.slice(0,80)}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
             </>
           )}
         </div>
 
-        {/* 右：翻译/AI推荐/重点跟进 */}
-        <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
-          <div className="p-3 border-b border-gray-100 text-xs font-semibold text-gray-600">AI 侧栏 · 重点客户</div>
+        {/* ====== 右栏：AI侧栏 + 深度分析 ====== */}
+        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+          <div className="p-3 border-b text-xs font-semibold text-gray-600">AI 侧栏</div>
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            <div className="rounded-xl border border-gray-100 p-3">
-              <div className="text-xs font-medium text-gray-700 mb-1">记录重点客户 · 添加备注</div>
-              <div className="text-xs text-gray-500 mb-2">{customer? `${customer.title||customer.email} ${customer.company||''}`:'未关联客户'}</div>
+            {/* 客户信息 */}
+            <div className="rounded-xl border p-3">
+              <div className="text-xs font-medium text-gray-700 mb-1">重点客户 · 备注</div>
+              <div className="text-xs text-gray-500 mb-2">{customer? `${customer.title||customer.email}`:'未关联客户'}</div>
               <div className="flex gap-1">
-                <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已标记重点':'标记重点'}</button>
-                <button onClick={async()=>{ let c=customer; if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c)} if(!c) return; const n=await askText('备注', c.notes||''); if(n!==null){ await db.customers.update(c.id,{notes:n} as any); setCustomer({...c,notes:n} as any); try{ await db.events.put({id:`evt-${Date.now()}`,type:'object.updated',actorType:'user',objectType:'customer',objectId:c.id,payload:{notes:n},createdAt:new Date().toISOString()} as any)}catch{}}} } className="flex-1 py-1.5 bg-white border rounded-lg text-xs flex items-center justify-center gap-1"><StickyNote size={12}/> 备注</button>
+                <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
+                <button onClick={handleAiSummary} className="flex-1 py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结</button>
               </div>
-              {customer?.notes && <div className="mt-2 text-xs bg-yellow-50 border border-yellow-100 rounded p-2">{customer.notes}</div>}
-              <button onClick={handleAiSummary} className="mt-2 w-full py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结客户</button>
-              {customer?.aiSummary && <div className="mt-2 text-xs bg-purple-50 rounded p-2">{customer.aiSummary} 评分:{customer.score}</div>}
+              {customer?.aiSummary && <div className="mt-2 text-xs bg-purple-50 rounded p-2">{customer.aiSummary}</div>}
             </div>
 
-            <div className="rounded-xl border border-gray-100 p-3">
+            {/* 深度分析按钮 */}
+            <div className="rounded-xl border p-3">
+              <button onClick={handleDeepAnalysis} disabled={analyzingCustomer || !selected} className="w-full py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg text-xs flex items-center justify-center gap-2 disabled:opacity-50">
+                <Brain size={14}/>
+                {analyzingCustomer ? '分析中...' : '深度客户分析'}
+              </button>
+              {deepAnalysis && (
+                <div className="mt-3 space-y-2 text-xs">
+                  <div className="font-semibold text-gray-700 flex items-center gap-1"><FileText size={12}/> 分析报告</div>
+                  <div className="bg-blue-50 rounded p-2"><b>类型:</b> {deepAnalysis.customerType} | <b>风格:</b> {deepAnalysis.communicationStyle} | <b>周期:</b> {deepAnalysis.decisionCycle}</div>
+                  <div className="bg-green-50 rounded p-2"><b>画像:</b> {deepAnalysis.businessProfile}</div>
+                  <div className="bg-orange-50 rounded p-2"><b>订单:</b> {deepAnalysis.orderPattern} | <b>价格:</b> {deepAnalysis.priceRange}</div>
+                  <div className="bg-yellow-50 rounded p-2"><b>风险:</b> {deepAnalysis.riskLevel} | <b>价值:</b> {deepAnalysis.potentialValue}</div>
+                  <div className="bg-purple-50 rounded p-2"><b>产品:</b> {deepAnalysis.keyProducts.join('/')}</div>
+                  <div className="bg-red-50 rounded p-2"><b>跟进策略:</b> {deepAnalysis.followUpStrategy}</div>
+                  <div className="bg-indigo-50 rounded p-2"><b>激活方案:</b> {deepAnalysis.activationPlan}</div>
+                  {deepAnalysis.keyPoints.length > 0 && (
+                    <div className="bg-gray-50 rounded p-2"><b>着重点:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.keyPoints.map((p,i)=><li key={i} className="flex items-start gap-1"><Target size={10} className="mt-0.5 shrink-0"/> {p}</li>)}</ul></div>
+                  )}
+                  {deepAnalysis.recommendedActions.length > 0 && (
+                    <div className="bg-teal-50 rounded p-2"><b>建议行动:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.recommendedActions.map((a,i)=><li key={i} className="flex items-start gap-1"><TrendingUp size={10} className="mt-0.5 shrink-0"/> {a}</li>)}</ul></div>
+                  )}
+                  <div className="bg-gray-50 rounded p-2 text-[10px] text-gray-500">{deepAnalysis.backgroundNotes}</div>
+                </div>
+              )}
+            </div>
+
+            {/* 跟进 */}
+            <div className="rounded-xl border p-3">
               <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1"><Calendar size={12}/> 下次跟进</div>
-              <div className="text-xs text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'} · AI建议：{selected? suggestFollowUpDate(selected.intent||'其他', selected.text):'—'}</div>
+              <div className="text-xs text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'}</div>
               <div className="flex gap-1 flex-wrap">
                 {[1,3,7,14,30].map(d=> <button key={d} onClick={()=> handleCustomFollow(d)} className="px-2 py-1 bg-white border rounded text-xs hover:bg-blue-50">{d}天后</button>)}
-                <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-xs flex items-center gap-1"><Clock size={10}/> 自定义</button>
+                <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-xs"><Clock size={10}/> 自定义</button>
               </div>
-              <div className="text-xs text-gray-400 mt-2">提醒方式：☑ 工作台 ☑ Telegram ☑ Email（存 followUps，首页通知）</div>
             </div>
 
+            {/* AI推荐回复 */}
             <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
               <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Send size={12}/> AI推荐回复</div>
               <div className="text-xs bg-white rounded p-2 border">
-                Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm quantity & deadline?<br/>Best regards, Evan
+                Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product||'our products'}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm?<br/>Best regards, Evan
               </div>
               <div className="flex gap-1 mt-2">
                 <button onClick={async()=>{
                   let c=customer
                   if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c) }
                   if(!c||!selected) return
-                  const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry about ${selected.product}. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
-                  const { uid, now } = await import('../repositories/result')
-                  const draftId = uid()
-                  await db.emails.put({ id: draftId, accountId: selected.accountId, folder:'drafts', from: `Evan <evan@maxemblem.com>`, to: c.email||selected.from, subject:`Re: ${selected.subject}`, text: draft, html:'', date: new Date().toISOString(), isRead:false, hasAttachment:false, customerId: c.id, status:'待处理' } as any)
-                  await db.communications.put({ id: uid(), type:'communication', title:`回复: ${selected.subject}`, description: draft, emoji:'✉️', tags:['AI生成'], createdAt:now(), updatedAt:now(), relations:[], channel:'email', direction:'outbound', summary: draft, communicatedAt: new Date().toISOString(), customerId: c.id } as any)
-                  setFolder('drafts')
-                  const nm = await db.emails.get(draftId) as any
-                  if(nm) setSelected(nm)
+                  const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
+                  const { uid } = await import('../repositories/result')
+                  await db.emails.put({ id: uid(), accountId: selected.accountId, folder:'drafts', from: `Evan <evan@maxemblem.com>`, to: c.email||selected.from, subject:`Re: ${selected.subject}`, text: draft, html:'', date: new Date().toISOString(), isRead:false, hasAttachment:false, customerId: c.id, status:'待处理' } as any)
+                  setFolder('drafts'); setSearchMode(false)
                   const list = await listEmails(); setEmails(list)
-                  alert('AI草稿已生成到 草稿 箱并关联往来记录')
+                  alert('草稿已生成')
                 }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
-                <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); alert('翻译已更新到中栏')} }} className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
+                <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)} }} className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
               </div>
             </div>
           </div>
