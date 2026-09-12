@@ -199,3 +199,15 @@ export async function mockSync(accountId:string): Promise<number> {
   return added
 }
 
+export async function sendEmail(accountId: string, to: string, subject: string, text: string, html?: string, inReplyTo?: string, references?: string): Promise<{ok:boolean;messageId?:string}>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('未登录云同步')
+  const r = await fetch(`${h.url}/email/send`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json', ...bypassHeaders(h)},
+    body: JSON.stringify({ accountId, to, subject, text, html: html||text, inReplyTo, references })
+  })
+  if(!r.ok) throw new Error('发送失败: ' + (await r.json().catch(()=>({error:r.statusText}))).error)
+  return await r.json()
+}
+

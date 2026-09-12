@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -33,6 +33,13 @@ export default function InboxPage(){
   const [analyzingCustomer, setAnalyzingCustomer] = useState(false)
   const [searchMode, setSearchMode] = useState(false)
   const [searchResults, setSearchResults] = useState<EmailMessage[]>([])
+
+  // 回复邮件
+  const [showReply, setShowReply] = useState(false)
+  const [replyTo, setReplyTo] = useState('')
+  const [replySubject, setReplySubject] = useState('')
+  const [replyBody, setReplyBody] = useState('')
+  const [sending, setSending] = useState(false)
 
   // 配置表单
   const [provider, setProvider] = useState<EmailAccount['provider']>('qq')
@@ -196,6 +203,42 @@ export default function InboxPage(){
     const next = !c.isKey
     await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
     setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
+  }
+
+  const handleOpenReply = ()=>{
+    if(!selected) return
+    const fromAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim()
+    setReplyTo(fromAddr)
+    setReplySubject(selected.subject.startsWith('Re:') ? selected.subject : `Re: ${selected.subject}`)
+    setReplyBody('')
+    setShowReply(true)
+  }
+
+  const handleSendReply = async()=>{
+    if(!selected || !replyTo || !replyBody.trim()) return
+    setSending(true)
+    try{
+      // 找到对应账号
+      const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
+      if(!acc){ alert('无可用邮箱账号'); return }
+      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody)
+      if(result.ok){
+        // 保存到已发送
+        const { uid: uidFn } = await import('../repositories/result')
+        await db.emails.put({
+          id: uidFn(), accountId: acc.id, folder:'sent',
+          from: acc.email, to: replyTo, subject: replySubject,
+          text: replyBody, html: '', date: new Date().toISOString(),
+          isRead: true, hasAttachment: false,
+          customerId: customer?.id, intent: selected.intent, product: selected.product,
+        } as any)
+        alert('邮件已发送！')
+        setShowReply(false)
+        const list = await listEmails(); setEmails(list)
+      }
+    }catch(e:any){
+      alert('发送失败：' + String(e.message||e).slice(0,200))
+    }finally{ setSending(false) }
   }
 
   const handleAiSummary = async()=>{
@@ -479,7 +522,7 @@ export default function InboxPage(){
                   <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
-                  <button onClick={()=> window.open(`mailto:${selected.from}`)} className="px-2 py-1 bg-white border rounded text-xs">回复</button>
+                  <button onClick={handleOpenReply} className="px-2 py-1 bg-blue-50 text-blue-600 border border-blue-200 rounded text-xs flex items-center gap-1"><Send size={10}/> 回复</button>
                 </div>
               </div>
             </>
@@ -622,12 +665,44 @@ export default function InboxPage(){
                   const list = await listEmails(); setEmails(list)
                   alert('草稿已生成')
                 }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-[11px]">一键生成</button>
+                <button onClick={handleOpenReply} className="flex-1 py-1.5 bg-green-50 text-green-600 border border-green-200 rounded text-[11px] flex items-center justify-center gap-1"><Send size={10}/> 回复</button>
                 <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)} }} className="flex-1 py-1.5 bg-white border rounded text-[11px]">翻译对照</button>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* 回复邮件弹窗 */}
+      {showReply && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowReply(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold text-gray-800">回复邮件</div>
+              <button onClick={()=> setShowReply(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
+                <span className="text-gray-400">收件人</span>
+                <input value={replyTo} onChange={e=> setReplyTo(e.target.value)} className="px-3 py-2 border rounded-lg text-sm bg-gray-50"/>
+              </div>
+              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
+                <span className="text-gray-400">主题</span>
+                <input value={replySubject} onChange={e=> setReplySubject(e.target.value)} className="px-3 py-2 border rounded-lg text-sm"/>
+              </div>
+              <div className="text-xs text-gray-400">正文</div>
+              <textarea value={replyBody} onChange={e=> setReplyBody(e.target.value)} placeholder="输入回复内容..." className="w-full h-60 px-4 py-3 border rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"/>
+            </div>
+            <div className="px-5 py-3 border-t flex items-center gap-2">
+              <button onClick={()=> setShowReply(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
+              <div className="flex-1"/>
+              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">
+                <Send size={12}/> {sending ? '发送中...' : '发送'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

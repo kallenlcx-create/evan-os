@@ -748,6 +748,44 @@ app.post('/email/full-batch', auth, wrap(async (req,res)=>{
   res.json({results})
 }))
 
+// 发送邮件：POST /email/send  {accountId, to, subject, text, html, inReplyTo, references}
+app.post('/email/send', auth, wrap(async (req,res)=>{
+  const { accountId, to, subject, text, html, inReplyTo, references } = req.body||{}
+  if(!accountId || !to || !subject) return res.status(400).json({error:'需要accountId, to, subject'})
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+  const pass=decAuth(acc.auth_enc)
+  // 动态导入 nodemailer
+  const nodemailer = await import('nodemailer')
+  const transporter = nodemailer.default.createTransport({
+    host: acc.smtp_host || 'smtp.gmail.com',
+    port: acc.smtp_port || 465,
+    secure: (acc.smtp_port || 465) === 465,
+    auth: { user: acc.email, pass },
+    connectionTimeout: 15000,
+    socketTimeout: 30000,
+  })
+  const mailOpts = {
+    from: acc.email,
+    to,
+    subject,
+    text: text || '',
+    html: html || text || '',
+  }
+  if(inReplyTo) mailOpts.inReplyTo = inReplyTo
+  if(references) mailOpts.references = references
+  const info = await transporter.sendMail(mailOpts)
+  res.json({ ok:true, messageId: info.messageId })
+}))
+
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
