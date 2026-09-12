@@ -29,7 +29,11 @@ import EmailGraphPage from './pages/EmailGraph'
 import EmailPanoramaPage from './pages/EmailPanorama'
 import CampaignsPage from './pages/CampaignsPage'
 
+import { useEffect } from 'react'
+import { initEmailSync } from './services/emailSyncService'
+
 export default function App() {
+  useEffect(()=>{ initEmailSync() },[])
   return (
     <HashRouter>
       <Routes>

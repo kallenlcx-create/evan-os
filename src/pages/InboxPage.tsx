@@ -6,6 +6,7 @@ import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
 import { listAccounts, upsertAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
+import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { useAskText } from '../components/PromptModal'
 
 const INTENT_COLOR: Record<string,string> = {
@@ -102,34 +103,46 @@ export default function InboxPage(){
       setShowConfig(false); setAuthCode(''); await refresh()
     }
   }
-  const [syncCount, setSyncCount] = useState<string>('30')
+  const [syncCount, setSyncCount] = useState<string>(()=> getEmailSyncConfig().limit.toString())
+  const [syncInterval, setSyncInterval] = useState<number>(()=> getEmailSyncConfig().intervalMinutes)
+  const [autoSync, setAutoSync] = useState<boolean>(()=> getEmailSyncConfig().enabled)
+  const [syncProgress, setSyncProgress] = useState<string>('')
   const [analyzing, setAnalyzing] = useState(false)
+  useEffect(()=>{
+    const onProg=(e:any)=> setSyncProgress(e.detail.status||'')
+    const onDone=()=> refresh()
+    window.addEventListener('evan-email-sync-progress', onProg as any)
+    window.addEventListener('evan-email-synced', onDone as any)
+    // 定时刷新进度文案
+    const id=setInterval(()=> setSyncProgress(isEmailSyncing()? '同步中...': getEmailSyncConfig().nextSyncAt? `下次 ${new Date(getEmailSyncConfig().nextSyncAt!).toLocaleTimeString()}`:''), 5000)
+    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any); clearInterval(id)}
+  },[])
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    let limit: number| string = syncCount==='all' ? 2000 : Number(syncCount)||20
+    let limit: number| string = syncCount==='all' ? 'all' : Number(syncCount)||20
     if(syncCount==='custom'){
       const v = await askText('自定义同步数量（1-2000，输入 all 表示全部）', '100')
       if(v===null) return
       if(v.trim().toLowerCase()==='all') limit='all' as any
       else { const n=Number(v); if(!n||n<1) return alert('数量无效'); limit=n }
     }
+    setEmailSyncConfig({ limit: limit as any })
     setSyncing(true)
     try{
-      let total=0
-      for(const a of accounts){ try{ total += await syncReal(a.id, limit as any) }catch(e){ console.warn(e)} }
+      const total = await syncAllEmails(limit as any)
       if(total===0) alert('未拉到新邮件（或需检查应用密码）')
-      else alert(`已同步 ${total} 封真实邮件（${limit==='all'||limit===2000?'全部':limit+'封'}）\n已自动去重建客户，Ctrl+K 可秒搜客户/邮件`)
+      else alert(`后台同步完成：${total} 封（${limit==='all'?'全部':limit+'封'}）已入库并打通客户/全景/拓扑`)
       await refresh()
-    }finally{ setSyncing(false) }
+    }catch(e:any){ alert(String(e.message||e)) }finally{ setSyncing(false) }
   }
   const handleImportAll = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
-    if(!confirm('将同步全部邮件（约878封，需20-40秒），并自动导入所有客户，是否继续？')) return
-    setSyncCount('all'); setSyncing(true)
+    if(!confirm('将后台同步全部邮件（约878封，后台持续不中断），并自动打通客户/全景/拓扑，是否继续？')) return
+    setSyncCount('all'); setEmailSyncConfig({limit:'all' as any})
+    setSyncing(true)
     try{
-      let total=0
-      for(const a of accounts) total += await syncReal(a.id, 'all' as any)
-      alert(`全部导入完成：${total} 封邮件 + ${await db.customers.count()} 位客户已入库（IndexedDB 本机，Tailscale 可跨设备）`)
+      const total = await syncAllEmails('all' as any)
+      alert(`后台同步完成：${total} 封邮件 + ${await db.customers.count()} 位客户已入库并打通`)
       await refresh()
     }finally{ setSyncing(false) }
   }
@@ -228,16 +241,32 @@ export default function InboxPage(){
         <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
         <div className="ml-auto flex items-center gap-1.5">
-          <select value={syncCount} onChange={e=> setSyncCount(e.target.value)} className="px-2 py-1 border rounded text-xs">
+          <select value={syncCount} onChange={e=>{ setSyncCount(e.target.value); if(e.target.value!=='custom') setEmailSyncConfig({limit: e.target.value as any}) }} className="px-2 py-1 border rounded text-xs">
             <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="all">全部</option><option value="custom">自定义…</option>
           </select>
-          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+          <select value={String(syncInterval)} onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }} className="px-2 py-1 border rounded text-xs" title="定时同步间隔">
+            <option value="1">每分钟</option><option value="5">每5分</option><option value="10">每10分</option><option value="30">每30分</option><option value="60">每小时</option><option value="1440">每天</option>
+          </select>
+          <label className="flex items-center gap-1 px-2 py-1 bg-white border rounded text-xs">
+            <input type="checkbox" checked={autoSync} onChange={e=>{ setAutoSync(e.target.checked); setEmailSyncConfig({enabled:e.target.checked}) }}/>
+            自动
+          </label>
+          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
           <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
           <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
         </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
         <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
       </div>
+
+      {/* 同步进度（后台常驻，切页不暂停） */}
+      {(syncing || syncProgress) && (
+        <div className="mx-2 mt-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${syncing?'bg-blue-500 animate-pulse':'bg-green-500'}`}/>
+          {syncing ? `后台同步中… ${syncProgress}` : syncProgress || `就绪 · 已同步 ${emails.length} 封 · ${autoSync?`自动每${syncInterval}分`:'手动'}`}
+          <span className="ml-auto text-[10px] text-blue-400">切到其他页仍继续，已打通客户/全景/拓扑/跟进</span>
+        </div>
+      )}
 
       {/* 配置抽屉 */}
       {showConfig && (

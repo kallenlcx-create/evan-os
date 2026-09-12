@@ -8,7 +8,7 @@ export default function CustomersPage(){
   const [filter, setFilter] = useState<'all'|'A+'|'A'|'B'|'C'|'D'|'key'>( 'all')
   const [q,setQ]=useState('')
   const load=async()=> setList(await db.customers.toArray() as any)
-  useEffect(()=>{void load()},[])
+  useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[])
   const filtered = list.filter(c=>{
     if(filter==='key' && !c.isKey) return false
     if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false

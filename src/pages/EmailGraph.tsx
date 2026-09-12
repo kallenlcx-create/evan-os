@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+﻿import { useState, useEffect, useMemo } from 'react'
 import { db } from '../db'
 import KnowledgeGraph from '../components/KnowledgeGraph'
 
@@ -6,11 +6,7 @@ export default function EmailGraphPage(){
   const [onlyKey, setOnlyKey]=useState(true)
   const [customers,setCustomers]=useState<any[]>([])
   const [emails,setEmails]=useState<any[]>([])
-  useEffect(()=>{ (async()=>{
-    setCustomers(await db.customers.toArray())
-    setEmails(await db.emails.toArray())
-  })()},[])
-  // 构建简易图：中心为“我”，节点为联系人，按封数
+  useEffect(()=>{ const load=async()=>{ setCustomers(await db.customers.toArray()); setEmails(await db.emails.toArray())}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[])
   const stats = useMemo(()=>{
     const map=new Map<string,number>()
     for(const e of emails){ const addr=e.from.match(/<(.+?)>/)?.[1]||e.from; map.set(addr,(map.get(addr)||0)+1)}

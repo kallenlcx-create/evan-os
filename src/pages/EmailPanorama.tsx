@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
+﻿import { useState, useEffect, useMemo } from 'react'
 import { db } from '../db'
 
 export default function EmailPanorama(){
   const [emails,setEmails]=useState<any[]>([])
   const [accounts,setAccounts]=useState<any[]>([])
-  useEffect(()=>{ (async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray())})()},[])
+  useEffect(()=>{ const load=async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray())}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); return ()=> window.removeEventListener('evan-emails-updated', h)},[])
   const hasAttach = emails.filter(e=> e.hasAttachment).length
   const services = useMemo(()=>{
     const m=new Map<string,number>()
