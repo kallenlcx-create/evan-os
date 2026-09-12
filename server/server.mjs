@@ -45,10 +45,16 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   charset: 'utf8mb4',
 })
-// 内存降级（MySQL 不可用时）
+// 内存降级（MySQL 不可用时）+ 文件持久（重启不丢绑定）
 const memUsers = new Map()
 const memEmailAccounts = new Map() // username -> accounts[]
 let dbReady = true
+const EMAIL_ACCOUNTS_FILE = path.join(process.cwd(), 'email_accounts.json')
+function loadEmailAccounts(){
+  try{ if(fs.existsSync(EMAIL_ACCOUNTS_FILE)){ const j=JSON.parse(fs.readFileSync(EMAIL_ACCOUNTS_FILE,'utf8')); for(const [k,v] of Object.entries(j)) memEmailAccounts.set(k, v) } }catch{}
+}
+function saveEmailAccounts(){ try{ fs.writeFileSync(EMAIL_ACCOUNTS_FILE, JSON.stringify(Object.fromEntries(memEmailAccounts), null, 2)) }catch{} }
+loadEmailAccounts()
 
 const app = express()
 // 认证/写入路由单独限制 body 大小（全局 20mb 过宽，易被单请求吃内存）
@@ -449,7 +455,7 @@ app.post('/email/accounts', auth, wrap(async (req,res)=>{
     await pool.query(`INSERT INTO email_accounts (id, username, email, provider, imap_host, imap_port, smtp_host, smtp_port, auth_enc) VALUES (?,?,?,?,?,?,?,?,?)`,
       [id, req.user, email, provider||'custom', ih, ip, sh||'', sp||0, encAuth(String(pass))])
   } else {
-    const arr=memEmailAccounts.get(req.user)||[]; arr.push({ id, email, provider:provider||'custom', imap_host:ih, imap_port:ip, smtp_host:sh, smtp_port:sp||0, auth_enc: encAuth(String(pass)), created_at: new Date().toISOString()}); memEmailAccounts.set(req.user, arr)
+    const arr=memEmailAccounts.get(req.user)||[]; arr.push({ id, email, provider:provider||'custom', imap_host:ih, imap_port:ip, smtp_host:sh, smtp_port:sp||0, auth_enc: encAuth(String(pass)), created_at: new Date().toISOString()}); memEmailAccounts.set(req.user, arr); saveEmailAccounts()
   }
   res.json({ id, email, provider })
 }))
@@ -461,7 +467,7 @@ app.get('/email/accounts', auth, wrap(async (req,res)=>{
   res.json(rows)
 }))
 app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
-  if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); return res.json({ok:true}) }
+  if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); saveEmailAccounts(); return res.json({ok:true}) }
   await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); res.json({ok:true})
 }))
 // 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX
