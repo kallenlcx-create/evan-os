@@ -103,6 +103,7 @@ export default function InboxPage(){
     }
   }
   const [syncCount, setSyncCount] = useState<string>('30')
+  const [analyzing, setAnalyzing] = useState(false)
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
     let limit: number| string = syncCount==='all' ? 2000 : Number(syncCount)||20
@@ -117,9 +118,34 @@ export default function InboxPage(){
       let total=0
       for(const a of accounts){ try{ total += await syncReal(a.id, limit as any) }catch(e){ console.warn(e)} }
       if(total===0) alert('未拉到新邮件（或需检查应用密码）')
-      else alert(`已同步 ${total} 封真实邮件（${limit==='all'||limit===2000?'全部':limit+'封'}）`)
+      else alert(`已同步 ${total} 封真实邮件（${limit==='all'||limit===2000?'全部':limit+'封'}）\n已自动去重建客户，Ctrl+K 可秒搜客户/邮件`)
       await refresh()
     }finally{ setSyncing(false) }
+  }
+  const handleImportAll = async()=>{
+    if(accounts.length===0) return alert('先绑定邮箱')
+    if(!confirm('将同步全部邮件（约878封，需20-40秒），并自动导入所有客户，是否继续？')) return
+    setSyncCount('all'); setSyncing(true)
+    try{
+      let total=0
+      for(const a of accounts) total += await syncReal(a.id, 'all' as any)
+      alert(`全部导入完成：${total} 封邮件 + ${await db.customers.count()} 位客户已入库（IndexedDB 本机，Tailscale 可跨设备）`)
+      await refresh()
+    }finally{ setSyncing(false) }
+  }
+  const handleAiAnalyzeAll = async()=>{
+    const pending = emails.filter(e=> !e.intent || e.intent==='其他')
+    if(pending.length===0) return alert('全部已分析')
+    if(!confirm(`AI 将批量分析 ${pending.length} 封未分类邮件（意图/产品），约需 ${Math.ceil(pending.length*0.05)} 秒，是否继续？`)) return
+    setAnalyzing(true)
+    try{
+      for(const m of pending){
+        m.intent = await classifyIntent(m.subject+' '+(m.text||'').slice(0,500)) as any
+        m.product = /coin/i.test(m.subject+m.text)?'Coin': /patch/i.test(m.subject+m.text)?'Patch':'Coin'
+        await db.emails.put(m)
+      }
+      await refresh(); alert('AI 分析完成，已可搜索 意图/产品')
+    }finally{ setAnalyzing(false) }
   }
 
   const handleFollowUp = async()=>{
@@ -205,7 +231,9 @@ export default function InboxPage(){
           <select value={syncCount} onChange={e=> setSyncCount(e.target.value)} className="px-2 py-1 border rounded text-xs">
             <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="all">全部</option><option value="custom">自定义…</option>
           </select>
-          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+          <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
+          <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
         </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
         <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
