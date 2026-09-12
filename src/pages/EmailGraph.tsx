@@ -48,6 +48,8 @@ export default function EmailGraphPage(){
   const [customers,setCustomers]=useState<Customer[]>([])
   const [emails,setEmails]=useState<EmailMessage[]>([])
   const [onlyKey,setOnlyKey]=useState(true)
+  const [levelFilter,setLevelFilter]=useState<string>('all')
+  const [typeFilter,setTypeFilter]=useState<string>('all')
   const [selected,setSelected]=useState<PosNode|null>(null)
   const [selectedCustomer,setSelectedCustomer]=useState<Customer|null>(null)
   const [selectedSummary,setSelectedSummary]=useState<{count:number;totalAmount:number;lastDate:string;topSubjects:string[];emailType:string}|null>(null)
@@ -84,6 +86,9 @@ export default function EmailGraphPage(){
       if(onlyKey && !c.isKey) continue
       if(s && s.count===0) continue
       const emailType=classifyEmailType(c.email)
+      const cLevel=c.level||'C'
+      if(levelFilter!=='all' && cLevel!==levelFilter) continue
+      if(typeFilter!=='all' && emailType!==typeFilter) continue
       const count=s?.count||0
       const amount=s?.totalAmount||0
       ns.push({
@@ -106,7 +111,7 @@ export default function EmailGraphPage(){
       if(fromC&&toC){ for(const a of fromC) for(const b of toC){ if(a!==b) es.push({source:a,target:b}) } }
     }
     return {nodes:ns,edges:es,statsMap:smap}
-  },[customers,emails,onlyKey])
+  },[customers,emails,onlyKey,levelFilter,typeFilter])
 
   const positioned=useMemo(()=>forceLayout([...nodes],edges,780,480,nodes.length<20?40:70),[nodes,edges])
 
@@ -127,6 +132,13 @@ export default function EmailGraphPage(){
         <h1 className="text-xl font-bold">🕸️ 客户拓扑</h1>
         <span className="text-xs text-gray-400">力导向 · {nodes.length} 节点</span>
         <label className="ml-auto flex items-center gap-1 text-xs"><input type="checkbox" checked={onlyKey} onChange={e=>setOnlyKey(e.target.checked)}/> 只看重点</label>
+      </div>
+      <div className="flex gap-1 flex-wrap text-[10px]">
+        <span className="text-gray-400 self-center mr-1">等级:</span>
+        {(['all','A+','A','B','C','D'] as const).map(l=> <button key={l} onClick={()=>setLevelFilter(l)} className={`px-2 py-0.5 rounded-full border ${levelFilter===l?'bg-blue-600 text-white':'bg-white text-gray-600'}`}>{l==='all'?'全部':l}</button>)}
+        <span className="text-gray-300 self-center mx-1">|</span>
+        <span className="text-gray-400 self-center mr-1">类型:</span>
+        {(['all','政府','军队','教育','非盈利','个人','企业'] as const).map(t=> <button key={t} onClick={()=>setTypeFilter(t)} className={`px-2 py-0.5 rounded-full border ${typeFilter===t?'bg-blue-600 text-white':'bg-white text-gray-600'}`}>{t==='all'?'全部':t}</button>)}
       </div>
       <div className="grid lg:grid-cols-[1fr_300px] gap-3">
         {/* 图谱 */}

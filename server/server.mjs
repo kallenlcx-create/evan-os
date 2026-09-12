@@ -611,13 +611,15 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
         try{
           if(headersOnly){
             // 快速模式：只用 envelope（不解析原始邮件）
+            const toAddrs = msg.envelope.to || []
+            const toText = toAddrs.map(a => a.address ? `${a.name||''} <${a.address}>` : '').filter(Boolean).join(', ') || acc.email
             out.push({
               id: `${accountId}-${msg.uid}`,
               accountId,
               folder: folder.toLowerCase(),
               from: msg.envelope.from?.[0]?.address ? `${msg.envelope.from[0].name||''} <${msg.envelope.from[0].address}>` : '',
               fromName: msg.envelope.from?.[0]?.name || '',
-              to: acc.email,
+              to: toText,
               subject: msg.envelope.subject || '(无主题)',
               text: '',
               html: '',
