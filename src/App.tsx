@@ -27,6 +27,7 @@ import CustomersPage from './pages/CustomersPage'
 import FollowUpsPage from './pages/FollowUpsPage'
 import EmailGraphPage from './pages/EmailGraph'
 import EmailPanoramaPage from './pages/EmailPanorama'
+import CampaignsPage from './pages/CampaignsPage'
 
 export default function App() {
   return (
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="followups" element={<FollowUpsPage />} />
           <Route path="graph" element={<EmailGraphPage />} />
           <Route path="panorama" element={<EmailPanoramaPage />} />
+          <Route path="campaigns" element={<CampaignsPage />} />
         </Route>
       </Routes>
     </HashRouter>

@@ -4,7 +4,7 @@ import {
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
   ChevronLeft, ChevronRight, Plus, Settings, BarChart3, Eye, Zap,
   Plug, FlaskConical, Database, CloudUpload,
-  ChevronDown, Layers, File
+  ChevronDown, Layers, File, Users
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
@@ -19,6 +19,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/followups': { icon: CalendarCheck, label: '跟进', emoji: '⏰' },
   '/graph': { icon: Brain, label: '客户拓扑', emoji: '🕸️' },
   '/panorama': { icon: BarChart3, label: '资产全景', emoji: '📊' },
+  '/campaigns': { icon: Users, label: '批量营销', emoji: '📣' },
   '/goals': { icon: Target, label: '目标', emoji: '🎯' },
   '/work': { icon: Briefcase, label: '工作台', emoji: '💼' },
   '/projects': { icon: FolderKanban, label: '项目', emoji: '🚀' },
@@ -44,7 +45,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 // ====== 分组定义 ======
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
   { key: 'core', label: '概览', paths: ['/', '/inbox', '/goals', '/actions', '/life'] },
-  { key: 'work', label: '工作', paths: ['/work', '/projects', '/customers', '/followups'] },
+  { key: 'work', label: '工作', paths: ['/work', '/projects', '/customers', '/followups', '/campaigns'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
   { key: 'system', label: '系统', paths: ['/panorama', '/graph', '/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
