@@ -355,10 +355,10 @@ export default function InboxPage(){
       )}
 
       {/* 三栏主体 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_320px] gap-2 p-2 overflow-hidden">
+      <div className="flex-1 flex gap-2 p-2 overflow-hidden min-w-0">
 
         {/* ====== 左栏：邮件列表 + 搜索 ====== */}
-        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+        <div className="w-[240px] shrink-0 bg-white rounded-2xl border flex flex-col overflow-hidden">
           <div className="p-2 border-b space-y-2">
             <div className="flex items-center gap-1">
               <button onClick={()=>{ setFolder('inbox'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
@@ -417,7 +417,7 @@ export default function InboxPage(){
         </div>
 
         {/* ====== 中栏：邮件往来（纯邮件展示） ====== */}
-        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+        <div className="flex-1 min-w-0 bg-white rounded-2xl border flex flex-col overflow-hidden">
           {!selected ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-300 space-y-3">
               <Mail size={48} className="opacity-30"/>
@@ -487,7 +487,7 @@ export default function InboxPage(){
         </div>
 
         {/* ====== 右栏：AI 侧栏（含客户信息 + AI工作台 + 深度分析 + 跟进 + 推荐回复） ====== */}
-        <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
+        <div className="w-[320px] shrink-0 bg-white rounded-2xl border flex flex-col overflow-hidden">
           <div className="p-3 border-b text-xs font-semibold text-gray-600 flex items-center gap-1.5">
             <Brain size={12}/> AI 侧栏
             {customer && <span className="ml-auto text-[10px] text-gray-400">{customer.title||customer.email}</span>}
