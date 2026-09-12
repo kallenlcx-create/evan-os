@@ -503,10 +503,23 @@ app.post('/email/accounts', auth, wrap(async (req,res)=>{
   // 校验 IMAP 连通性（5s超时）
   const client=new ImapFlow({ host: ih, port: ip, secure: ip===993, auth:{user:email, pass}, logger:false, socketTimeout: 8000 })
   try{ await client.connect(); await client.logout(); }catch(e){ return res.status(400).json({error:'IMAP连接失败：'+(e.message||e)}) }
+  // 去重：同邮箱只更新
+  if(dbReady){
+    const [exists]=await pool.query('SELECT id FROM email_accounts WHERE username=? AND email=?',[req.user, email])
+    if(exists.length>0){
+      const id=exists[0].id
+      await pool.query('UPDATE email_accounts SET auth_enc=?, imap_host=?, imap_port=?, smtp_host=?, smtp_port=? WHERE id=?',[encAuth(String(pass)), ih, ip, sh||'', sp||0, id])
+      return res.json({ id, email, provider })
+    }
+  } else {
+    const arr0=memEmailAccounts.get(req.user)||[]
+    const found=arr0.find(a=> a.email.toLowerCase()===email.toLowerCase())
+    if(found){ found.auth_enc=encAuth(String(pass)); found.imap_host=ih; found.imap_port=ip; found.smtp_host=sh; found.smtp_port=sp||0; saveEmailAccounts(); return res.json({ id: found.id, email, provider }) }
+  }
   const id=crypto.randomUUID()
   if(dbReady){
     await pool.query(`INSERT INTO email_accounts (id, username, email, provider, imap_host, imap_port, smtp_host, smtp_port, auth_enc) VALUES (?,?,?,?,?,?,?,?,?)`,
-      [id, req.user, email, provider||'custom', ih, ip, sh||'', sp||0, encAuth(String(pass))])
+        [id, req.user, email, provider||'custom', ih, ip, sh||'', sp||0, encAuth(String(pass))])
   } else {
     const arr=memEmailAccounts.get(req.user)||[]; arr.push({ id, email, provider:provider||'custom', imap_host:ih, imap_port:ip, smtp_host:sh, smtp_port:sp||0, auth_enc: encAuth(String(pass)), created_at: new Date().toISOString()}); memEmailAccounts.set(req.user, arr); saveEmailAccounts()
   }
@@ -541,31 +554,36 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, socketTimeout: 10000 })
+  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, socketTimeout: 30000 })
   await client.connect()
   const lock=await client.getMailboxLock(folder)
   try{
     const total=client.mailbox.exists
+    // 分批拉取，避免 1.5w 一次性 OOM/超时（每批200）
+    const batchSize=200
     const start=Math.max(1, total - limit +1)
     const out=[]
-    for await (const msg of client.fetch(`${start}:*`,{ envelope:true, source:true, flags:true, uid:true })){
-      try{
-        const parsed=await simpleParser(msg.source)
-        out.push({
-          id: `${accountId}-${msg.uid}`,
-          accountId,
-          folder: folder.toLowerCase(),
-          from: parsed.from?.text || msg.envelope.from?.[0]?.address || '',
-          fromName: parsed.from?.value?.[0]?.name || '',
-          to: parsed.to?.text || acc.email,
-          subject: parsed.subject || msg.envelope.subject || '(无主题)',
-          text: parsed.text || parsed.html || '',
-          html: parsed.html || '',
-          date: parsed.date?.toISOString() || new Date().toISOString(),
-          isRead: msg.flags.has('\\Seen'),
-          hasAttachment: (parsed.attachments||[]).length>0,
-        })
-      }catch{}
+    for(let s=start; s<=total; s+=batchSize){
+      const e=Math.min(s+batchSize-1, total)
+      for await (const msg of client.fetch(`${s}:${e}`,{ envelope:true, source:true, flags:true, uid:true })){
+        try{
+          const parsed=await simpleParser(msg.source)
+          out.push({
+            id: `${accountId}-${msg.uid}`,
+            accountId,
+            folder: folder.toLowerCase(),
+            from: parsed.from?.text || msg.envelope.from?.[0]?.address || '',
+            fromName: parsed.from?.value?.[0]?.name || '',
+            to: parsed.to?.text || acc.email,
+            subject: parsed.subject || msg.envelope.subject || '(无主题)',
+            text: parsed.text || parsed.html || '',
+            html: parsed.html || '',
+            date: parsed.date?.toISOString() || new Date().toISOString(),
+            isRead: msg.flags.has('\\Seen'),
+            hasAttachment: (parsed.attachments||[]).length>0,
+          })
+        }catch{}
+      }
     }
     // 新的在前
     out.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())

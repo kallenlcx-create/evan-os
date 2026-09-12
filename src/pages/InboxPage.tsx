@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, StickyNote, UserCheck, Calendar, Send, Settings, Search } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { useAskText } from '../components/PromptModal'
@@ -269,6 +269,7 @@ export default function InboxPage(){
                   <span className="truncate flex-1">{a.email}</span>
                   <span className="text-gray-400">{cnt}封</span>
                   <span className="text-[10px] px-1 py-0.5 bg-gray-100 rounded">{a.provider}</span>
+                  <button onClick={async(e)=>{ e.stopPropagation(); if(!confirm(`移除同步 ${a.email}？本地邮件保留`)) return; await deleteAccount(a.id); await refresh() }} className="px-1.5 py-0.5 text-red-400 hover:text-red-600 border rounded text-[10px]">移除</button>
                 </div>
               })}
               {accounts.length===0 && <div className="text-xs text-gray-400">暂无账号</div>}
