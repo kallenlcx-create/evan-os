@@ -43,11 +43,23 @@ export default function InboxPage(){
   },[])
   useEffect(()=>{ void refresh() },[refresh])
 
+  const ensureCustomer = async (emailRaw:string, nameRaw:string): Promise<Customer> =>{
+    const addr = emailRaw.match(/<(.+?)>/)?.[1] || emailRaw
+    const clean = addr.trim().toLowerCase()
+    let c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===clean).first() as any
+    if(!c){
+      const { uid } = await import('../repositories/result'); const { now } = await import('../repositories/result')
+      const rec:any = { id: uid(), type:'customer', title: nameRaw.split('<')[0].trim()||clean.split('@')[0], description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email: clean, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) }
+      await db.customers.put(rec); c = rec
+    }
+    return c
+  }
+
   useEffect(()=>{
     if(!selected) { setCustomer(null); return }
     ;(async()=>{
-      const addr = selected.from.match(/<(.+?)>/)?.[1] || selected.from
-      const c = await db.customers.where('email').equals(addr).first() as any
+      const c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()=== (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim().toLowerCase()).first() as any
+      // 懒创建：未关联时先不自动建，侧栏操作时再建，避免污染
       setCustomer(c||null)
       // 自动翻译
       if(selected.text && !selected.translated){
@@ -110,12 +122,14 @@ export default function InboxPage(){
   }
 
   const handleFollowUp = async()=>{
-    if(!customer || !selected) return
+    if(!selected) return
+    let c = customer
+    if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
     const due = suggestFollowUpDate(selected.intent||'其他', selected.text)
     const note = await askText('跟进备注', '')
     if(note===null) return
-    await db.followUps.put({ id:`fu-${Date.now()}`, customerId:customer.id, dueAt: due, channel:['workbench'], note: note||'跟进', status:'pending', createdAt:new Date().toISOString()} as any)
-    await db.customers.update(customer.id, { followUpAt: due, notes: note } as any)
+    await db.followUps.put({ id:`fu-${Date.now()}`, customerId:c.id, dueAt: due, channel:['workbench'], note: note||'跟进', status:'pending', createdAt:new Date().toISOString()} as any)
+    await db.customers.update(c.id, { followUpAt: due, notes: note } as any)
     // 同时建 Task 用于提醒
     const { uid } = await import('../repositories/result')
     const { now } = await import('../repositories/result')
@@ -125,19 +139,40 @@ export default function InboxPage(){
   }
 
   const handleMarkKey = async()=>{
-    if(!customer) return
-    const next = !customer.isKey
-    await db.customers.update(customer.id, { isKey: next, level: next? 'A': 'C' } as any)
-    setCustomer({...customer, isKey: next} as any)
+    let c = customer
+    if(!c && selected){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
+    const next = !c.isKey
+    await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
+    setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
+    // 联动：写事件供拓扑/全景
+    try{ await db.events.put({ id:`evt-${Date.now()}`, type:'object.updated', actorType:'user', objectType:'customer', objectId:c.id, payload:{title:c.title, isKey:next}, createdAt:new Date().toISOString()} as any)}catch{}
   }
 
   const handleAiSummary = async()=>{
-    if(!customer || !selected) return
-    const hist = emails.filter(e=> e.from.includes(customer.email||'') || e.to.includes(customer.email||''))
-    const p = await buildPortrait(customer.email||'', hist)
+    if(!selected) return
+    let c = customer
+    if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
+    const hist = emails.filter(e=> e.from.includes(c.email||'') || e.to.includes(c.email||''))
+    const p = await buildPortrait(c.email||'', hist)
     const summary = `${p.business} 评分${p.score} 潜在:${p.potential.join('、')}`
-    await db.customers.update(customer.id, { aiSummary: summary, score:p.score, portrait: p as any } as any)
-    setCustomer({...customer, aiSummary: summary, score:p.score} as any)
+    await db.customers.update(c.id, { aiSummary: summary, score:p.score, portrait: p as any } as any)
+    setCustomer({...c, aiSummary: summary, score:p.score} as any)
+  }
+
+  const handleCustomFollow = async(days:number)=>{
+    if(!selected) return
+    let c = customer
+    if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
+    const d=new Date(); d.setDate(d.getDate()+days); const v=d.toISOString().slice(0,10)
+    await db.customers.update(c.id,{followUpAt:v} as any)
+    await db.followUps.put({id:`fu-${Date.now()}`,customerId:c.id,dueAt:v,channel:['workbench'],status:'pending',createdAt:new Date().toISOString()} as any)
+    setCustomer({...c,followUpAt:v} as any)
+    const { uid, now } = await import('../repositories/result')
+    await db.tasks.put({ id: uid(), type:'task', title:`跟进 ${c.title||c.email}`, description:`${days}天后`, emoji:'📧', tags:['跟进'], createdAt:now(), updatedAt:now(), relations:[], status:'todo', priority:'high', importance:'high', isRecurring:false, todayOrder:0, dueDate:v } as any)
+    alert(`已设 ${v} 跟进，已同步到 客户/拓扑/跟进/行动`)
   }
 
   const filtered = emails.filter(m=>{
@@ -198,8 +233,8 @@ export default function InboxPage(){
         </div>
       )}
 
-      {/* 三栏主体 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[340px_1fr_360px] gap-3 p-3 overflow-hidden">
+      {/* 三栏主体 - 中栏加宽 */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[300px_minmax(620px,1.6fr)_360px] gap-3 p-3 overflow-hidden">
         {/* 左：未读邮件列表 */}
         <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
           <div className="p-2 border-b border-gray-100 flex items-center gap-2">
@@ -295,7 +330,7 @@ export default function InboxPage(){
               <div className="text-xs text-gray-500 mb-2">{customer? `${customer.title||customer.email} ${customer.company||''}`:'未关联客户'}</div>
               <div className="flex gap-1">
                 <button onClick={handleMarkKey} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 ${customer?.isKey?'bg-yellow-50 text-yellow-600 border border-yellow-200':'bg-gray-50 text-gray-500'}`}><UserCheck size={12}/> {customer?.isKey?'已标记重点':'标记重点'}</button>
-                <button onClick={async()=>{ if(!customer) return; const n=await askText('备注', customer.notes||''); if(n!==null){ await db.customers.update(customer.id,{notes:n} as any); setCustomer({...customer,notes:n} as any)}} } className="flex-1 py-1.5 bg-white border rounded-lg text-xs flex items-center justify-center gap-1"><StickyNote size={12}/> 备注</button>
+                <button onClick={async()=>{ let c=customer; if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c)} if(!c) return; const n=await askText('备注', c.notes||''); if(n!==null){ await db.customers.update(c.id,{notes:n} as any); setCustomer({...c,notes:n} as any); try{ await db.events.put({id:`evt-${Date.now()}`,type:'object.updated',actorType:'user',objectType:'customer',objectId:c.id,payload:{notes:n},createdAt:new Date().toISOString()} as any)}catch{}}} } className="flex-1 py-1.5 bg-white border rounded-lg text-xs flex items-center justify-center gap-1"><StickyNote size={12}/> 备注</button>
               </div>
               {customer?.notes && <div className="mt-2 text-xs bg-yellow-50 border border-yellow-100 rounded p-2">{customer.notes}</div>}
               <button onClick={handleAiSummary} className="mt-2 w-full py-1.5 bg-purple-50 text-purple-600 rounded-lg text-xs flex items-center justify-center gap-1"><Sparkles size={12}/> AI总结客户</button>
@@ -306,10 +341,7 @@ export default function InboxPage(){
               <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1"><Calendar size={12}/> 下次跟进</div>
               <div className="text-xs text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'} · AI建议：{selected? suggestFollowUpDate(selected.intent||'其他', selected.text):'—'}</div>
               <div className="flex gap-1 flex-wrap">
-                {[1,3,7,14,30].map(d=>{
-                  const dd=new Date(); dd.setDate(dd.getDate()+d); const v=dd.toISOString().slice(0,10)
-                  return <button key={d} onClick={async()=>{ if(!customer) return; await db.customers.update(customer.id,{followUpAt:v} as any); setCustomer({...customer,followUpAt:v} as any); await db.followUps.put({id:`fu-${Date.now()}`,customerId:customer.id,dueAt:v,channel:['workbench'],status:'pending',createdAt:new Date().toISOString()} as any); alert(`已设 ${v} 跟进`)}} className="px-2 py-1 bg-white border rounded text-xs">{d}天后</button>
-                })}
+                {[1,3,7,14,30].map(d=> <button key={d} onClick={()=> handleCustomFollow(d)} className="px-2 py-1 bg-white border rounded text-xs hover:bg-blue-50">{d}天后</button>)}
                 <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-xs flex items-center gap-1"><Clock size={10}/> 自定义</button>
               </div>
               <div className="text-xs text-gray-400 mt-2">提醒方式：☑ 工作台 ☑ Telegram ☑ Email（存 followUps，首页通知）</div>
@@ -321,8 +353,17 @@ export default function InboxPage(){
                 Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm quantity & deadline?<br/>Best regards, Evan
               </div>
               <div className="flex gap-1 mt-2">
-                <button onClick={()=> alert('已插入到起草（Mock），走 L3审批后发送')} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
-                <button className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
+                <button onClick={async()=>{
+                  let c=customer
+                  if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+                  if(!c||!selected) return
+                  const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry about ${selected.product}. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
+                  const { uid, now } = await import('../repositories/result')
+                  await db.communications.put({ id: uid(), type:'communication', title:`回复: ${selected.subject}`, description: draft, emoji:'✉️', tags:['AI生成'], createdAt:now(), updatedAt:now(), relations:[], channel:'email', direction:'outbound', summary: draft, communicatedAt: new Date().toISOString(), customerId: c.id } as any)
+                  await db.events.put({ id:`evt-${Date.now()}`, type:'object.created', actorType:'agent', objectType:'communication', objectId: c.id, payload:{title:selected.subject}, createdAt:new Date().toISOString()} as any)
+                  alert('AI草稿已生成并关联该客户（客户→时间轴/沟通记录可见）')
+                }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">一键生成</button>
+                <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); alert('翻译已更新到中栏')} }} className="flex-1 py-1.5 bg-white border rounded text-xs">翻译对照</button>
               </div>
             </div>
           </div>

@@ -366,6 +366,11 @@ export class EvanOSDatabase extends Dexie {
       followUps: 'id, customerId, dueAt, status',
     })
 
+    // v12: 客户邮箱索引（修复 AI侧栏未关联）
+    this.version(12).stores({
+      customers: 'id, type, company, stage, email, createdAt',
+    })
+
     // 全局删除捕获中间件：任何表的 delete 自动写入墓碑（云同步传播删除）
     this.use({
       stack: 'dbcore',

@@ -89,7 +89,7 @@ export async function syncReal(accountId:string, limit=20): Promise<number>{
     try{
       const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
       if(addr && addr.includes('@')){
-        const exist = await db.customers.where('email').equals(addr).first() as any
+        const exist = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===addr.toLowerCase()).first() as any
         if(!exist){
           const { uid:uid2 } = await import('./result')
           await db.customers.put({ id: uid2(), type:'customer', title: (e.from.split('<')[0].trim()||addr.split('@')[0]), description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email:addr, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) } as any)
@@ -147,7 +147,7 @@ export async function mockSync(accountId:string): Promise<number> {
     await db.emails.put(m); added++
     try {
       const emailAddr = s.from.match(/<(.+?)>/)?.[1] || s.from
-      const existing = await db.customers.where('email').equals(emailAddr).first() as any
+      const existing = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===emailAddr.toLowerCase()).first() as any
       if (!existing) {
         const { uid:uid2 } = await import('./result')
         await db.customers.put({ id: uid2(), type:'customer', title: s.from.split('<')[0].trim()||'客户', description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:(s as any).company||'', email:emailAddr, stage:'lead', isKey: Math.random()>0.6, level: (['A+','A','B','C'] as any)[Math.floor(Math.random()*4)], followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10), score: 70+Math.floor(Math.random()*25) } as any)
@@ -157,3 +157,4 @@ export async function mockSync(accountId:string): Promise<number> {
   await db.emailAccounts.update(accountId,{lastSyncAt:now()} as any)
   return added
 }
+
