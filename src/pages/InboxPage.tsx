@@ -233,8 +233,8 @@ export default function InboxPage(){
         </div>
       )}
 
-      {/* 三栏主体 - 中栏加宽 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[300px_minmax(620px,1.6fr)_360px] gap-3 p-3 overflow-hidden">
+      {/* 三栏主体 - 按红/蓝线比例：左260 中1fr加宽至红线 右340贴蓝线 */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(680px,1.9fr)_340px] gap-2 p-2 overflow-hidden">
         {/* 左：未读邮件列表 */}
         <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden">
           <div className="p-2 border-b border-gray-100 flex items-center gap-2">
