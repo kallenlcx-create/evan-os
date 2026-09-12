@@ -91,7 +91,7 @@ export async function syncAllEmails(limit: number|'all' = 30): Promise<number>{
           })
           let res:any
           try{
-            res = await syncReal(acc.id, 200, offset)
+            res = await syncReal(acc.id, 500, offset, true)
           }catch(batchErr:any){
             // 单批失败：记录错误，跳过该账号剩余部分
             totalErrors++

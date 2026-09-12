@@ -77,38 +77,45 @@ export async function createAccountOnServer(opts:{ provider:string, email:string
   return j
 }
 
-export async function syncReal(accountId:string, limit:number|'all'=20, offset=0): Promise<{added:number, total:number, hasMore:boolean}>{
+export async function syncReal(accountId:string, limit:number|'all'=20, offset=0, headersOnly=false): Promise<{added:number, total:number, hasMore:boolean}>{
   const lim = limit==='all' ? 1000000 : limit
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}`,{ headers: bypassHeaders(h) })
+  const ho = headersOnly ? '&headersOnly=true' : ''
+  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}${ho}`,{ headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
   const emails: any[] = j.emails||[]
-  // 并行分类意图（批量 Promise.all，避免逐封 40ms 延迟）
+  // 并行分类意图（批量 Promise.all）
   const intents = await Promise.all(emails.map(e => classifyIntent(e.subject+' '+ (e.text||'').slice(0,500))))
+  // 并行写 IndexedDB（分组50一批避免锁冲突）
+  const BATCH = 50
   let added=0
-  for(let idx=0; idx<emails.length; idx++){
-    const e = emails[idx]
-    const m: EmailMessage = {
-      id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
-      from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
-      date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
-      product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
-      intent: intents[idx] as EmailIntent,
-      priority: '中', status: e.isRead?'已处理':'待处理',
-    }
-    await db.emails.put(m); added++
-    try{
-      const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
-      if(addr && addr.includes('@')){
-        const exist = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===addr.toLowerCase()).first() as any
-        if(!exist){
-          const { uid:uid2 } = await import('./result')
-          await db.customers.put({ id: uid2(), type:'customer', title: (e.from.split('<')[0].trim()||addr.split('@')[0]), description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email:addr, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) } as any)
-        }
+  for(let i=0; i<emails.length; i+=BATCH){
+    const chunk = emails.slice(i, i+BATCH)
+    const intentChunk = intents.slice(i, i+BATCH)
+    await Promise.all(chunk.map(async(e, idx)=>{
+      const m: EmailMessage = {
+        id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
+        from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
+        date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
+        product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
+        intent: intentChunk[idx] as EmailIntent,
+        priority: '中', status: e.isRead?'已处理':'待处理',
       }
-    }catch{}
+      await db.emails.put(m)
+      try{
+        const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
+        if(addr && addr.includes('@')){
+          const exist = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===addr.toLowerCase()).first() as any
+          if(!exist){
+            const { uid:uid2 } = await import('./result')
+            await db.customers.put({ id: uid2(), type:'customer', title: (e.from.split('<')[0].trim()||addr.split('@')[0]), description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email:addr, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) } as any)
+          }
+        }
+      }catch{}
+    }))
+    added += chunk.length
   }
   await db.emailAccounts.update(accountId,{lastSyncAt: now()} as any).catch(()=>{})
   return { added, total: (j as any).total||0, hasMore: !!(j as any).hasMore }

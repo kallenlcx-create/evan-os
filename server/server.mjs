@@ -589,41 +589,62 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:180000 })
   await client.connect()
   const lock=await client.getMailboxLock(folder)
   try{
     const total=client.mailbox.exists
-    // 支持 offset 分页 + 分批，避免 1.5w 一次性超时
-    const batchSize=200
-    const fetchLimit = Math.min(limit, 200) // 单次最多200，剩余由前端循环
+    const batchSize=500
+    const fetchLimit = Math.min(limit, batchSize)
     const start=Math.max(1, total - offset - fetchLimit +1)
     const end=Math.max(1, total - offset)
     if(start> end) return res.json({ emails: [], total, hasMore:false })
     const out=[]
+    // headersOnly=true 时跳过 simpleParser，用 envelope 代替（速度快 10 倍）
+    const headersOnly = req.query.headersOnly === 'true'
     for(let s=start; s<=end; s+=batchSize){
       const e=Math.min(s+batchSize-1, end)
-      for await (const msg of client.fetch(`${s}:${e}`,{ envelope:true, source:true, flags:true, uid:true })){
+      const fields = headersOnly
+        ? { envelope:true, flags:true, uid:true }
+        : { envelope:true, source:true, flags:true, uid:true }
+      for await (const msg of client.fetch(`${s}:${e}`, fields)){
         try{
-          const parsed=await simpleParser(msg.source)
-          out.push({
-            id: `${accountId}-${msg.uid}`,
-            accountId,
-            folder: folder.toLowerCase(),
-            from: parsed.from?.text || msg.envelope.from?.[0]?.address || '',
-            fromName: parsed.from?.value?.[0]?.name || '',
-            to: parsed.to?.text || acc.email,
-            subject: parsed.subject || msg.envelope.subject || '(无主题)',
-            text: parsed.text || parsed.html || '',
-            html: parsed.html || '',
-            date: parsed.date?.toISOString() || new Date().toISOString(),
-            isRead: msg.flags.has('\\Seen'),
-            hasAttachment: (parsed.attachments||[]).length>0,
-          })
+          if(headersOnly){
+            // 快速模式：只用 envelope（不解析原始邮件）
+            out.push({
+              id: `${accountId}-${msg.uid}`,
+              accountId,
+              folder: folder.toLowerCase(),
+              from: msg.envelope.from?.[0]?.address ? `${msg.envelope.from[0].name||''} <${msg.envelope.from[0].address}>` : '',
+              fromName: msg.envelope.from?.[0]?.name || '',
+              to: acc.email,
+              subject: msg.envelope.subject || '(无主题)',
+              text: '',
+              html: '',
+              date: msg.envelope.date?.toISOString() || new Date().toISOString(),
+              isRead: msg.flags.has('\\Seen'),
+              hasAttachment: false,
+            })
+          } else {
+            const parsed=await simpleParser(msg.source)
+            out.push({
+              id: `${accountId}-${msg.uid}`,
+              accountId,
+              folder: folder.toLowerCase(),
+              from: parsed.from?.text || msg.envelope.from?.[0]?.address || '',
+              fromName: parsed.from?.value?.[0]?.name || '',
+              to: parsed.to?.text || acc.email,
+              subject: parsed.subject || msg.envelope.subject || '(无主题)',
+              text: parsed.text || parsed.html || '',
+              html: parsed.html || '',
+              date: parsed.date?.toISOString() || new Date().toISOString(),
+              isRead: msg.flags.has('\\Seen'),
+              hasAttachment: (parsed.attachments||[]).length>0,
+            })
+          }
         }catch{}
       }
     }
-    // 新的在前
     out.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
     const hasMore = (offset + out.length) < total
     res.json({ emails: out, total, hasMore, nextOffset: offset + out.length })
