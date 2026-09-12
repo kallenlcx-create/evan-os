@@ -467,7 +467,9 @@ app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
 // 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX
 app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
-  const limit=Math.min(50, Number(req.query.limit||20))
+  let limit = Number(req.query.limit||20)
+  if(req.query.limit==='all' || limit===0) limit=2000
+  limit=Math.min(2000, Math.max(1, limit))
   const folder=String(req.query.folder||'INBOX')
   let acc=null
   if(dbReady){

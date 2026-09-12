@@ -89,14 +89,22 @@ export default function InboxPage(){
       setShowConfig(false); setAuthCode(''); await refresh()
     }
   }
+  const [syncCount, setSyncCount] = useState<string>('30')
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
+    let limit: number| string = syncCount==='all' ? 2000 : Number(syncCount)||20
+    if(syncCount==='custom'){
+      const v = await askText('自定义同步数量（1-2000，输入 all 表示全部）', '100')
+      if(v===null) return
+      if(v.trim().toLowerCase()==='all') limit='all' as any
+      else { const n=Number(v); if(!n||n<1) return alert('数量无效'); limit=n }
+    }
     setSyncing(true)
     try{
       let total=0
-      for(const a of accounts){ try{ total += await syncReal(a.id, 20) }catch(e){ console.warn(e)} }
+      for(const a of accounts){ try{ total += await syncReal(a.id, limit as any) }catch(e){ console.warn(e)} }
       if(total===0) alert('未拉到新邮件（或需检查应用密码）')
-      else alert(`已同步 ${total} 封真实邮件`)
+      else alert(`已同步 ${total} 封真实邮件（${limit==='all'||limit===2000?'全部':limit+'封'}）`)
       await refresh()
     }finally{ setSyncing(false) }
   }
@@ -142,11 +150,16 @@ export default function InboxPage(){
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6">
       {askModal}
       {/* 顶部配置条 */}
-      <div className="px-4 py-2 border-b border-gray-100 bg-white flex items-center gap-2">
+      <div className="px-4 py-2 border-b border-gray-100 bg-white flex items-center gap-2 flex-wrap">
         <Mail size={18} className="text-blue-500"/>
         <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
-        <button onClick={handleSyncSelected} disabled={syncing} className="ml-auto px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步真实邮件'}</button>
+        <div className="ml-auto flex items-center gap-1.5">
+          <select value={syncCount} onChange={e=> setSyncCount(e.target.value)} className="px-2 py-1 border rounded text-xs">
+            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="all">全部</option><option value="custom">自定义…</option>
+          </select>
+          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+        </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
         <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
       </div>
