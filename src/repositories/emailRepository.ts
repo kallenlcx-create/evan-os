@@ -4,7 +4,7 @@ import { classifyIntent } from '../services/emailAiService'
 import { uid, now } from './result'
 import { getSyncConfig } from '../services/cloudSync'
 
-async function serverHeaders(): Promise<{url:string, token:string}|null>{
+export async function serverHeaders(): Promise<{url:string, token:string}|null>{
   try{
     const cfg = await getSyncConfig()
     if(!cfg?.serverUrl || !cfg?.token) return null
@@ -21,7 +21,7 @@ export const PROVIDER_PRESETS: Record<string, { imap:{host:string,port:number,ss
   'custom': { label:'Custom IMAP', imap:{host:'',port:993,ssl:true}, smtp:{host:'',port:465,ssl:true} },
 }
 
-function bypassHeaders(h:{url:string,token:string}){
+export function bypassHeaders(h:{url:string,token:string}){
   const hdr: Record<string,string> = { 'x-evan-token': h.token }
   if(h.url.includes('loca.lt')) hdr['Bypass-Tunnel-Reminder']='true'
   return hdr

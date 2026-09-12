@@ -1,5 +1,5 @@
 // 后台常驻邮件同步服务 - 不随切页暂停，全局单例
-import { listAccounts, syncReal, getEmailCount } from '../repositories/emailRepository'
+import { listAccounts, syncReal, getEmailCount, serverHeaders } from '../repositories/emailRepository'
 
 export type EmailSyncConfig = {
   enabled: boolean
@@ -23,7 +23,7 @@ function loadConfig(): EmailSyncConfig{
     const raw = localStorage.getItem(LS_KEY)
     if(raw) return JSON.parse(raw)
   }catch{}
-  return { enabled:false, intervalMinutes:30, limit:30 }
+  return { enabled:true, intervalMinutes:2, limit:30 }
 }
 function saveConfig(c: EmailSyncConfig){
   localStorage.setItem(LS_KEY, JSON.stringify(c))
@@ -178,4 +178,48 @@ export function stopAutoSync(){
 export function initEmailSync(){
   const cfg=loadConfig()
   if(cfg.enabled) startAutoSync()
+  // 启动 IDLE 实时推送
+  startIdleListeners()
+}
+
+// ====== IMAP IDLE 实时推送 ======
+let idleEventSources: Record<string, EventSource> = {}
+
+async function startIdleListeners(){
+  // 先关闭旧连接
+  for(const k of Object.keys(idleEventSources)){
+    idleEventSources[k].close()
+    delete idleEventSources[k]
+  }
+  const h = await serverHeaders()
+  if(!h) return
+  const accounts = await listAccounts()
+  for(const acc of accounts){
+    try{
+      const url = `${h.url}/email/idle/${acc.id}`
+      const es = new EventSource(url)
+      es.onmessage = (ev)=>{
+        try{
+          const data = JSON.parse(ev.data)
+          if(data.type === 'new_emails' && data.emails?.length > 0){
+            // 有新邮件，触发同步
+            console.log(`[IDLE] ${acc.email} 收到 ${data.emails.length} 封新邮件`)
+            syncAllEmails(loadConfig().limit).catch(()=>{})
+          }
+        }catch{}
+      }
+      es.onerror = ()=>{
+        // 连接断开，30秒后重连
+        setTimeout(()=>{ startIdleListeners() }, 30000)
+      }
+      idleEventSources[acc.id] = es
+    }catch{}
+  }
+}
+
+export function stopIdleListeners(){
+  for(const k of Object.keys(idleEventSources)){
+    idleEventSources[k].close()
+    delete idleEventSources[k]
+  }
 }

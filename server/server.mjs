@@ -786,6 +786,95 @@ app.post('/email/send', auth, wrap(async (req,res)=>{
   res.json({ ok:true, messageId: info.messageId })
 }))
 
+// IMAP IDLE 实时推送：GET /email/idle/:accountId  (SSE)
+// 保持 IMAP 连接，新邮件到达时立即推送通知
+const idleClients = new Map() // accountId -> { client, timer, res }
+
+app.get('/email/idle/:accountId', auth, wrap(async (req,res)=>{
+  const { accountId } = req.params
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+
+  // SSE 头
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.write(':ok\n\n')
+
+  const pass=decAuth(acc.auth_enc)
+  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+
+  try{
+    await client.connect()
+    const lock = await client.getMailboxLock('INBOX')
+    try{
+      // 记录当前邮件数
+      let lastCount = client.mailbox.exists || 0
+
+      // 发送初始状态
+      res.write(`data: ${JSON.stringify({type:'connected', count:lastCount})}\n\n`)
+
+      // 轮询检查新邮件（imapflow 的 IDLE 需要特殊处理，用简单轮询替代）
+      const checkInterval = setInterval(async()=>{
+        try{
+          // 重新获取邮箱信息
+          const box = await client.mailboxStatus('INBOX')
+          const newCount = box.exists || 0
+          if(newCount > lastCount){
+            // 有新邮件！获取最新邮件信息
+            const newEmails = []
+            for(let uid = lastCount + 1; uid <= newCount; uid++){
+              try{
+                const msg = await client.fetchOne(uid, { envelope:true, uid:true }, {uid:true})
+                if(msg && msg.envelope){
+                  newEmails.push({
+                    uid,
+                    from: msg.envelope.from?.map(f=>`${f.name||''} <${f.address}>`).join(', ') || '',
+                    to: msg.envelope.to?.map(f=>`${f.name||''} <${f.address}>`).join(', ') || '',
+                    subject: msg.envelope.subject || '',
+                    date: msg.envelope.date?.toISOString() || '',
+                  })
+                }
+              }catch{}
+            }
+            lastCount = newCount
+            res.write(`data: ${JSON.stringify({type:'new_emails', count:newCount, emails:newEmails})}\n\n`)
+          }
+        }catch(e){
+          res.write(`data: ${JSON.stringify({type:'error', message:String(e.message||e).slice(0,100)})}\n\n`)
+        }
+      }, 30000) // 每30秒检查一次
+
+      // 客户端断开时清理
+      req.on('close', ()=>{
+        clearInterval(checkInterval)
+        lock.release()
+        client.logout().catch(()=>{})
+        idleClients.delete(accountId)
+      })
+
+      idleClients.set(accountId, { client, timer: checkInterval, res })
+    }catch(e){
+      lock.release()
+      throw e
+    }
+  }catch(e){
+    res.write(`data: ${JSON.stringify({type:'error', message:String(e.message||e).slice(0,100)})}\n\n`)
+    res.end()
+  }
+}))
+
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
