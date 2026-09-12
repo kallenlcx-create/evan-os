@@ -536,10 +536,10 @@ app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
   if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); saveEmailAccounts(); return res.json({ok:true}) }
   await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); res.json({ok:true})
 }))
-// 预读邮件总数：GET /email/count/:id?folder=INBOX（快速 IMAP EXISTS）
+// 预读邮件总数：GET /email/count/:id（默认查 [Gmail]/All Mail 获取全部邮件数）
 app.get('/email/count/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
-  const folder=String(req.query.folder||'INBOX')
+  const folder=String(req.query.folder||'[Gmail]/All Mail')
   let acc=null
   if(dbReady){
     const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
@@ -551,12 +551,16 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:15000, authTimeout:10000, socketTimeout:20000 })
+  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:30000 })
   try{
     await client.connect()
     const lock=await client.getMailboxLock(folder)
     try{
-      const total=client.mailbox.exists
+      const existsCount=client.mailbox.exists||0
+      let searchCount=0
+      try{ const r=await client.search('ALL'); if(Array.isArray(r)) searchCount=r.length }catch{}
+      const total=Math.max(existsCount, searchCount)
+      console.log(`[email-count] ${acc.email} EXISTS=${existsCount} SEARCH=${searchCount} → ${total}`)
       res.json({ total })
     }finally{ lock.release() }
   }catch(e){
@@ -573,7 +577,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   if(req.query.limit==='all' || limit===0) limit=1000000
   limit=Math.min(1000000, Math.max(1, limit))
   const offset = Math.max(0, Number(req.query.offset||0))
-  const folder=String(req.query.folder||'INBOX')
+  const folder=String(req.query.folder||'[Gmail]/All Mail')
   let acc=null
   if(dbReady){
     const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
