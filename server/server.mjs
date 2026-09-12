@@ -24,7 +24,16 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 
 const PORT = process.env.PORT || 3000
-const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex')
+// SECRET 持久化：未配环境变量时落盘 secret.key，重启不丢令牌
+function loadSecret(){
+  if(process.env.SECRET) return process.env.SECRET
+  const p = path.join(process.cwd(), 'secret.key')
+  try{ if(fs.existsSync(p)) return fs.readFileSync(p,'utf8').trim() }catch{}
+  const s=crypto.randomBytes(32).toString('hex')
+  try{ fs.writeFileSync(p,s,'utf8') }catch{}
+  return s
+}
+const SECRET = loadSecret()
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30 // 30 天
 
 const pool = mysql.createPool({
