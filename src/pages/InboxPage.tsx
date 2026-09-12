@@ -1,12 +1,13 @@
 // ====== 邮件中心：客户经营中心 ======
 // 三栏：左邮件列表+搜索 | 中AI工作台+邮件往来 | 右AI侧栏
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, Target, TrendingUp, X } from 'lucide-react'
+import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
 import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
+import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
 import { useAskText } from '../components/PromptModal'
 
 const INTENT_COLOR: Record<string,string> = {
@@ -14,114 +15,6 @@ const INTENT_COLOR: Record<string,string> = {
   '催货':'bg-yellow-50 text-yellow-700','复购':'bg-green-50 text-green-600','其他':'bg-gray-100 text-gray-500',
 }
 const LEVEL_STAR: Record<string,string> = { 'A+':'⭐️⭐️⭐️','A':'⭐️⭐️','B':'⭐️','C':'','D':'' }
-
-// ====== 深度客户分析类型 ======
-interface DeepAnalysis {
-  customerType: string       // 客户类型：政府/教育/企业/个人/非盈利/军队
-  businessProfile: string    // 业务画像
-  orderPattern: string       // 下单模式
-  keyProducts: string[]      // 关注产品
-  priceRange: string         // 价格区间
-  communicationStyle: string // 沟通风格
-  decisionCycle: string      // 决策周期
-  riskLevel: string          // 风险等级
-  potentialValue: string     // 潜在价值
-  followUpStrategy: string   // 跟进策略
-  activationPlan: string     // 激活方案
-  backgroundNotes: string    // 背景信息
-  keyPoints: string[]        // 着重点
-  recommendedActions: string[] // 建议行动
-}
-
-function extractAmount(text: string): number {
-  const p = [/\$\s*([\d,]+(?:\.\d{2})?)/g, /USD\s*([\d,]+(?:\.\d{2})?)/gi, /price[:\s]*\$?([\d,]+)/gi, /total[:\s]*\$?([\d,]+)/gi]
-  let max = 0
-  for(const rx of p){ let m; while((m=rx.exec(text))!==null){ const n=parseFloat(m[1].replace(/,/g,'')); if(n>max) max=n } }
-  return max
-}
-
-const PERSONAL_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','live.com','aol.com','protonmail.com','mail.com','qq.com','163.com','126.com','foxmail.com']
-function classifyEmailType(email?: string): string {
-  if(!email) return '未知'
-  const suffix = email.split('@')[1]?.toLowerCase() || ''
-  if(suffix.endsWith('.gov')||suffix==='gov') return '政府'
-  if(suffix.endsWith('.mil')||suffix==='mil') return '军队'
-  if(suffix.endsWith('.edu')||suffix==='edu') return '教育'
-  if(suffix.endsWith('.org')||suffix==='org') return '非盈利'
-  if(PERSONAL_DOMAINS.includes(suffix)) return '个人'
-  return '企业'
-}
-
-// ====== AI 深度客户分析（基于邮件历史） ======
-async function deepAnalyzeCustomer(c: Customer, emails: EmailMessage[]): Promise<DeepAnalysis> {
-  const addr = (c.email||'').toLowerCase()
-  const related = emails.filter(e =>
-    (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase() === addr ||
-    (e.to||'').toLowerCase().includes(addr)
-  ).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-
-  const emailType = classifyEmailType(c.email)
-  const totalAmount = related.reduce((s,e) => s + extractAmount(e.subject+' '+(e.text||'')), 0)
-  const productSet = new Set(related.map(e => e.product || 'Coin'))
-  const intentCounts: Record<string,number> = {}
-  related.forEach(e => { const i = e.intent||'其他'; intentCounts[i] = (intentCounts[i]||0)+1 })
-  const topIntents = Object.entries(intentCounts).sort((a,b)=>b[1]-a[1]).slice(0,3)
-
-  // 时间跨度
-  const firstDate = related[0]?.date ? new Date(related[0].date) : new Date()
-  const lastDate = related[related.length-1]?.date ? new Date(related[related.length-1].date) : new Date()
-  const daySpan = Math.max(1, Math.round((lastDate.getTime()-firstDate.getTime())/86400000))
-  const freq = related.length / Math.max(1, daySpan/30) // 每月邮件数
-
-  // 金额分析
-  const amounts = related.map(e => extractAmount(e.subject+' '+(e.text||''))).filter(a=>a>0)
-  const avgAmount = amounts.length ? amounts.reduce((s,a)=>s+a,0)/amounts.length : 0
-  const maxAmount = Math.max(...amounts, 0)
-
-  // 沟通风格分析
-  const bodyTexts = related.map(e => (e.text||'').toLowerCase())
-  const hasFormal = bodyTexts.some(t => /dear|sincerely|regards|thank you/.test(t))
-  const hasCasual = bodyTexts.some(t => /hi|hey|hello|thanks|cheers/.test(t))
-  const hasUrgent = bodyTexts.some(t => /urgent|asap|immediately|deadline|催/.test(t))
-
-  // 产品偏好
-  const products = [...productSet]
-
-  // 构建分析结果
-  const analysis: DeepAnalysis = {
-    customerType: emailType,
-    businessProfile: `活跃度: ${freq.toFixed(1)}封/月 | 总金额: $${totalAmount.toLocaleString()} | 交往${daySpan}天 | ${related.length}封邮件`,
-    orderPattern: amounts.length > 0 ? `平均订单$${Math.round(avgAmount).toLocaleString()}，最高$${Math.round(maxAmount).toLocaleString()}` : '暂无明确订单金额',
-    keyProducts: products,
-    priceRange: amounts.length > 0 ? `$${Math.round(Math.min(...amounts)).toLocaleString()} - $${Math.round(maxAmount).toLocaleString()}` : '待确认',
-    communicationStyle: hasFormal ? '正式商务' : hasCasual ? '轻松友好' : hasUrgent ? '紧迫催促' : '标准商务',
-    decisionCycle: daySpan > 60 ? '长周期(>2月)' : daySpan > 14 ? '中周期(2周-2月)' : '短周期(<2周)',
-    riskLevel: related.length < 3 ? '高风险(新客户)' : totalAmount > 5000 ? '低风险(大客户)' : '中等风险',
-    potentialValue: totalAmount > 5000 ? '高价值客户' : totalAmount > 1000 ? '中等价值' : '待开发',
-    followUpStrategy: topIntents[0]?.[0]==='复购' ? '维护关系，定期回访' :
-      topIntents[0]?.[0]==='新询价' ? '快速响应，提供报价' :
-      topIntents[0]?.[0]==='催货' ? '关注交付，主动沟通进度' : '常规跟进',
-    activationPlan: related.length < 3 ? '新客户培育：发送产品手册+成功案例' :
-      freq < 0.5 ? '沉睡唤醒：发送新品推荐+限时优惠' :
-      '活跃维护：定期发送行业资讯+定制方案',
-    backgroundNotes: `邮箱类型: ${emailType} | 域名: ${(c.email||'').split('@')[1]||'未知'} | 首次联系: ${firstDate.toLocaleDateString()}`,
-    keyPoints: [
-      amounts.length > 0 ? `累计提及金额$${Math.round(totalAmount).toLocaleString()}` : null,
-      topIntents.length > 0 ? `主要意图: ${topIntents.map(i=>i[0]).join('/')}` : null,
-      hasUrgent ? '有紧急需求' : null,
-      products.length > 0 ? `关注产品: ${products.join('/')}` : null,
-      freq > 2 ? '高频互动客户' : null,
-    ].filter(Boolean) as string[],
-    recommendedActions: [
-      amounts.length > 0 && maxAmount > 1000 ? '优先跟进，潜在大单' : null,
-      topIntents[0]?.[0]==='新询价' ? '48小时内报价' : null,
-      hasUrgent ? '立即回复' : null,
-      related.length > 5 ? '可申请VIP折扣' : null,
-      `建议${freq > 1 ? '每周' : '每月'}跟进一次`,
-    ].filter(Boolean) as string[],
-  }
-  return analysis
-}
 
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
@@ -136,7 +29,7 @@ export default function InboxPage(){
   const [showConfig, setShowConfig] = useState(false)
   const [showAccountPop, setShowAccountPop] = useState(false)
   const [customer, setCustomer] = useState<Customer|null>(null)
-  const [deepAnalysis, setDeepAnalysis] = useState<DeepAnalysis|null>(null)
+  const [deepAnalysis, setDeepAnalysis] = useState<FullAnalysis|null>(null)
   const [analyzingCustomer, setAnalyzingCustomer] = useState(false)
   const [searchMode, setSearchMode] = useState(false)
   const [searchResults, setSearchResults] = useState<EmailMessage[]>([])
@@ -324,13 +217,13 @@ export default function InboxPage(){
     if(!c) return
     setAnalyzingCustomer(true)
     try{
-      const analysis = await deepAnalyzeCustomer(c, emails)
+      const analysis = await generateFullAnalysis(c)
       setDeepAnalysis(analysis)
-      // 保存分析结果到客户记录
       await db.customers.update(c.id, {
-        aiSummary: analysis.businessProfile,
-        customerType: analysis.customerType,
-        notes: analysis.backgroundNotes,
+        aiSummary: analysis.strategy.elevator,
+        score: analysis.health.overall,
+        customerType: analysis.profile.type,
+        portrait: analysis as any,
       } as any)
     }finally{ setAnalyzingCustomer(false) }
   }
@@ -634,20 +527,41 @@ export default function InboxPage(){
               {deepAnalysis && (
                 <div className="mt-3 space-y-2 text-xs">
                   <div className="font-semibold text-gray-700 flex items-center gap-1"><FileText size={12}/> 分析报告</div>
-                  <div className="bg-blue-50 rounded p-2"><b>类型:</b> {deepAnalysis.customerType} | <b>风格:</b> {deepAnalysis.communicationStyle} | <b>周期:</b> {deepAnalysis.decisionCycle}</div>
-                  <div className="bg-green-50 rounded p-2"><b>画像:</b> {deepAnalysis.businessProfile}</div>
-                  <div className="bg-orange-50 rounded p-2"><b>订单:</b> {deepAnalysis.orderPattern} | <b>价格:</b> {deepAnalysis.priceRange}</div>
-                  <div className="bg-yellow-50 rounded p-2"><b>风险:</b> {deepAnalysis.riskLevel} | <b>价值:</b> {deepAnalysis.potentialValue}</div>
-                  <div className="bg-purple-50 rounded p-2"><b>产品:</b> {deepAnalysis.keyProducts.join('/')}</div>
-                  <div className="bg-red-50 rounded p-2"><b>跟进策略:</b> {deepAnalysis.followUpStrategy}</div>
-                  <div className="bg-indigo-50 rounded p-2"><b>激活方案:</b> {deepAnalysis.activationPlan}</div>
-                  {deepAnalysis.keyPoints.length > 0 && (
-                    <div className="bg-gray-50 rounded p-2"><b>着重点:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.keyPoints.map((p,i)=><li key={i} className="flex items-start gap-1"><Target size={10} className="mt-0.5 shrink-0"/> {p}</li>)}</ul></div>
+                  {/* RFM 分析 */}
+                  <div className="bg-amber-50 rounded p-2">
+                    <b>RFM分群:</b> <span style={{color:deepAnalysis.rfm.segmentColor}}>{deepAnalysis.rfm.segment}</span>
+                    <span className="ml-2">R:{deepAnalysis.rfm.recency} F:{deepAnalysis.rfm.frequency} M:{deepAnalysis.rfm.monetary} = {deepAnalysis.rfm.rfmTotal}/15</span>
+                  </div>
+                  {/* BANT 资质 */}
+                  <div className="bg-blue-50 rounded p-2">
+                    <b>BANT:</b> <span className={`font-bold ${deepAnalysis.bant.grade==='A'?'text-green-600':deepAnalysis.bant.grade==='B'?'text-blue-600':'text-orange-600'}`}>{deepAnalysis.bant.grade}</span> ({deepAnalysis.bant.total}/100)
+                    <div className="mt-1 text-[10px]">B:{deepAnalysis.bant.budget} A:{deepAnalysis.bant.authority} N:{deepAnalysis.bant.need} T:{deepAnalysis.bant.timeline}</div>
+                  </div>
+                  {/* 健康度 */}
+                  <div className="bg-green-50 rounded p-2">
+                    <b>健康度:</b> <span style={{color:deepAnalysis.health.statusColor}}>{deepAnalysis.health.overall}/100 {deepAnalysis.health.trend==='up'?'↑':deepAnalysis.health.trend==='down'?'↓':'→'}</span>
+                    <div className="mt-1 text-[10px]">互动:{Math.round(deepAnalysis.health.engagement)} 关系:{Math.round(deepAnalysis.health.relationship)} 价值:{Math.round(deepAnalysis.health.value)}</div>
+                  </div>
+                  {/* 画像 */}
+                  <div className="bg-purple-50 rounded p-2"><b>画像:</b> {deepAnalysis.profile.type} · {deepAnalysis.profile.communicationStyle} · {deepAnalysis.profile.engagementLevel}</div>
+                  <div className="bg-orange-50 rounded p-2"><b>订单:</b> {deepAnalysis.profile.orderPattern}</div>
+                  <div className="bg-indigo-50 rounded p-2"><b>产品:</b> {deepAnalysis.profile.productPreference.join('/')}</div>
+                  {/* 跟进方案 */}
+                  <div className="bg-red-50 rounded p-2"><b>跟进:</b> {deepAnalysis.strategy.followUpType} · {deepAnalysis.strategy.followUpCadence}</div>
+                  <div className="bg-teal-50 rounded p-2"><b>激活:</b> {deepAnalysis.strategy.activationPlan}</div>
+                  {deepAnalysis.strategy.keyTopics.length > 0 && (
+                    <div className="bg-gray-50 rounded p-2"><b>关键话题:</b> {deepAnalysis.strategy.keyTopics.join(' | ')}</div>
                   )}
-                  {deepAnalysis.recommendedActions.length > 0 && (
-                    <div className="bg-teal-50 rounded p-2"><b>建议行动:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.recommendedActions.map((a,i)=><li key={i} className="flex items-start gap-1"><TrendingUp size={10} className="mt-0.5 shrink-0"/> {a}</li>)}</ul></div>
+                  {deepAnalysis.strategy.riskFactors.length > 0 && (
+                    <div className="bg-red-50 rounded p-2"><b>风险:</b> {deepAnalysis.strategy.riskFactors.join(' | ')}</div>
                   )}
-                  <div className="bg-gray-50 rounded p-2 text-[10px] text-gray-500">{deepAnalysis.backgroundNotes}</div>
+                  {deepAnalysis.strategy.opportunities.length > 0 && (
+                    <div className="bg-yellow-50 rounded p-2"><b>机会:</b> {deepAnalysis.strategy.opportunities.join(' | ')}</div>
+                  )}
+                  {deepAnalysis.strategy.nextActions.length > 0 && (
+                    <div className="bg-blue-50 rounded p-2"><b>行动:</b><ul className="mt-1 space-y-0.5">{deepAnalysis.strategy.nextActions.map((a,i)=><li key={i} className="flex items-start gap-1"><TrendingUp size={10} className="mt-0.5 shrink-0"/> {a}</li>)}</ul></div>
+                  )}
+                  <div className="bg-gray-50 rounded p-2 text-[10px] text-gray-500">{deepAnalysis.background.summary}</div>
                 </div>
               )}
             </div>
