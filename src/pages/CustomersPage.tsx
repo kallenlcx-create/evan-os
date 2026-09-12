@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
-import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
+import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark, Download } from 'lucide-react'
+import { fetchFullEmail } from '../repositories/emailRepository'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -76,6 +77,9 @@ export default function CustomersPage(){
   const [customerEmails, setCustomerEmails] = useState<EmailMessage[]>([])
   const [emailStats, setEmailStats] = useState<Record<string, { count: number; totalAmount: number }>>({})
   const [autoClassified, setAutoClassified] = useState(false)
+  const [fullContent, setFullContent] = useState<Record<string, {text:string;html:string}>>({})
+  const [loadingContent, setLoadingContent] = useState<Record<string, boolean>>({})
+  const requestedRef = useRef(new Set<string>())
 
   const load = useCallback(async()=>{
     const customers = await db.customers.toArray() as any[]
@@ -114,6 +118,9 @@ export default function CustomersPage(){
   // 点击客户 → 加载该客户所有邮件
   const handleCustomerClick = useCallback(async(c: Customer)=>{
     setSelectedCustomer(c)
+    requestedRef.current.clear()
+    setFullContent({})
+    setLoadingContent({})
     const allEmails = await db.emails.toArray() as EmailMessage[]
     const addr = (c.email||'').toLowerCase()
     const matched = allEmails.filter(e=>{
@@ -123,6 +130,27 @@ export default function CustomersPage(){
     }).sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
     setCustomerEmails(matched)
   },[])
+
+  // 按需加载单封邮件全文（headersOnly 模式下 text/html 为空）
+  const loadFullContent = useCallback(async(e: EmailMessage)=>{
+    if(fullContent[e.id]) return // 已加载
+    if(loadingContent[e.id]) return
+    if(e.text || e.html) return // 已有内容
+    // 从 id 中提取 uid（格式: accountId-uid）
+    const parts = e.id.split('-')
+    const uid = parts[parts.length-1]
+    const accountId = e.accountId || parts[0]
+    setLoadingContent(prev=>({...prev,[e.id]:true}))
+    try{
+      const full = await fetchFullEmail(accountId, uid)
+      if(full && (full.text || full.html)){
+        setFullContent(prev=>({...prev,[e.id]:{text:full.text||'',html:full.html||''}}))
+        // 同步回 IndexedDB
+        await db.emails.update(e.id,{ text:full.text||e.text, html:full.html||e.html } as any)
+      }
+    }catch{}
+    setLoadingContent(prev=>({...prev,[e.id]:false}))
+  },[fullContent,loadingContent])
 
   const filtered = list.filter(c=>{
     if(filter==='key' && !c.isKey) return false
@@ -224,6 +252,16 @@ export default function CustomersPage(){
               {customerEmails.length===0 && <div className="text-center text-gray-400 py-8">暂无邮件来往记录</div>}
               {customerEmails.map(e=>{
                 const isSent = e.folder==='sent' || (e.from||'').toLowerCase().includes('evan@maxemblem.com')
+                const loaded = fullContent[e.id]
+                const loading = loadingContent[e.id]
+                const hasContent = !!(loaded?.text || loaded?.html || e.text || e.html)
+                const displayText = loaded?.text || e.text || ''
+                const displayHtml = loaded?.html || e.html || ''
+                // 自动触发加载（仅首次）
+                if(!hasContent && !loading && !loaded && !requestedRef.current.has(e.id)){
+                  requestedRef.current.add(e.id)
+                  setTimeout(()=>loadFullContent(e), 0)
+                }
                 return(
                   <div key={e.id} className={`p-3 rounded-xl border ${isSent?'bg-green-50/50 border-green-100 ml-8':'bg-blue-50/50 border-blue-100 mr-8'}`}>
                     <div className="flex items-center gap-2 text-xs mb-1">
@@ -232,10 +270,19 @@ export default function CustomersPage(){
                       <span className="ml-auto text-[10px] text-gray-400">{new Date(e.date).toLocaleString()}</span>
                     </div>
                     <div className="text-xs font-medium text-gray-700 mb-1">{e.subject}</div>
-                    {e.html ? (
-                      <div className="email-html text-[11px] leading-relaxed max-h-32 overflow-hidden border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: e.html}} />
+                    {loading ? (
+                      <div className="text-[11px] text-blue-400 py-2 flex items-center gap-1">
+                        <span className="animate-spin">⏳</span> 正在加载邮件全文...
+                      </div>
+                    ) : displayHtml ? (
+                      <div className="email-html text-[11px] leading-relaxed max-h-40 overflow-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: displayHtml}} />
+                    ) : displayText ? (
+                      <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-auto border rounded-lg p-2 bg-white">{displayText.slice(0,2000)}</div>
                     ) : (
-                      <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-32 overflow-hidden border rounded-lg p-2 bg-white">{e.text.slice(0,500)}</div>
+                      <div className="text-[11px] text-gray-400 py-2 flex items-center gap-2">
+                        <span>暂无内容</span>
+                        <button onClick={()=>loadFullContent(e)} className="text-blue-500 hover:underline flex items-center gap-0.5"><Download size={10}/> 加载全文</button>
+                      </div>
                     )}
                   </div>
                 )

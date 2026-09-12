@@ -133,6 +133,16 @@ export async function markRead(id:string, isRead:boolean){
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 
+export async function fetchFullEmail(accountId: string, uid: string): Promise<{text:string;html:string;from:string;to:string;subject:string}|null>{
+  const h = await serverHeaders()
+  if(!h) return null
+  try{
+    const r = await fetch(`${h.url}/email/full/${accountId}/${uid}`,{ headers: bypassHeaders(h) })
+    if(!r.ok) return null
+    return await r.json()
+  }catch{ return null }
+}
+
 // Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {
   const acc = await db.emailAccounts.get(accountId)

@@ -653,6 +653,50 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   }finally{ lock.release(); await client.logout().catch(()=>{}) }
 }))
 
+// 按需加载单封邮件全文：GET /email/full/:accountId/:uid
+app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
+  const { accountId, uid } = req.params
+  let acc=null
+  if(dbReady){
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    if(rows.length===0) return res.status(404).json({error:'账号不存在'})
+    acc=rows[0]
+  } else {
+    const arr=memEmailAccounts.get(req.user)||[]
+    acc=arr.find(a=> a.id===accountId)
+    if(!acc) return res.status(404).json({error:'账号不存在'})
+  }
+  const pass=decAuth(acc.auth_enc)
+  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:60000 })
+  await client.connect()
+  // 搜索所有文件夹找这封邮件
+  const folders = ['INBOX','[Gmail]/All Mail','[Gmail]/Sent Mail','[Gmail]/Drafts','Sent','Drafts']
+  for(const folder of folders){
+    try{
+      const lock = await client.getMailboxLock(folder)
+      try{
+        const uidNum = Number(uid)
+        if(!isFinite(uidNum)) continue
+        const r = await client.fetchOne(uidNum, { source:true, uid:true }, {uid:true})
+        if(!r || !r.source) continue
+        const parsed = await simpleParser(r.source)
+        res.json({
+          id: `${accountId}-${uid}`,
+          from: parsed.from?.text || '',
+          to: parsed.to?.text || '',
+          subject: parsed.subject || '',
+          text: parsed.text || '',
+          html: parsed.html || '',
+          date: parsed.date?.toISOString() || '',
+          hasAttachment: (parsed.attachments||[]).length > 0,
+        })
+        return
+      }finally{ lock.release() }
+    }catch{}
+  }
+  res.status(404).json({error:'未找到该邮件'})
+}))
+
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
