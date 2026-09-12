@@ -26,6 +26,7 @@ export default function InboxPage(){
   const [translated, setTranslated] = useState('')
   const [showTrans, setShowTrans] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
+  const [showAccountPop, setShowAccountPop] = useState(false)
   const [customer, setCustomer] = useState<Customer|null>(null)
 
   // 配置表单
@@ -256,7 +257,25 @@ export default function InboxPage(){
           <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
         </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 系统配置与多邮箱接入</button>
-        <span className="text-xs text-gray-300">{accounts.length} 账号 · {emails.length} 封</span>
+        <div className="relative">
+          <button onClick={()=> setShowAccountPop(v=>!v)} className="px-2 py-1 bg-gray-900 text-white rounded-full text-xs flex items-center gap-1">{accounts.length} 账号 · {emails.length} 封 ▾</button>
+          {showAccountPop && (
+            <div className="absolute right-0 top-7 w-72 bg-white border rounded-xl shadow-lg p-3 z-20">
+              <div className="text-xs font-semibold mb-2">已绑定账号（点击查看） · 共 {emails.length} 封已同步（非固定100）</div>
+              {accounts.map(a=>{
+                const cnt = emails.filter(e=> e.accountId===a.id).length
+                return <div key={a.id} className="flex items-center gap-2 py-1.5 border-b last:border-0 text-xs">
+                  <span className="w-2 h-2 bg-green-500 rounded-full"/>
+                  <span className="truncate flex-1">{a.email}</span>
+                  <span className="text-gray-400">{cnt}封</span>
+                  <span className="text-[10px] px-1 py-0.5 bg-gray-100 rounded">{a.provider}</span>
+                </div>
+              })}
+              {accounts.length===0 && <div className="text-xs text-gray-400">暂无账号</div>}
+              <div className="text-[10px] text-gray-400 mt-2">“100封”是当前已同步的实际数量，非固定；选“全部”后此数会随同步增至 878/全部</div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 同步进度（后台常驻，切页不暂停） */}
