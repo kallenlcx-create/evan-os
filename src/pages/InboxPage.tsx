@@ -373,7 +373,7 @@ export default function InboxPage(){
                 <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
                   <div className="text-xs font-semibold text-gray-700">AI工作台</div>
                   {!showTrans ? (
-                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{selected.text}</div>
+                    <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{selected.text.slice(0,400)}</div>
                   ) : (
                     <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-2 border">{translated || '翻译中...'}</div>
                   )}
@@ -386,6 +386,33 @@ export default function InboxPage(){
                     <div>🔥 成交意愿：高</div>
                   </div>
                   <div className="text-xs bg-white rounded-lg p-2 border">AI建议：建议立即报价，并询问预算和交期（3天未回自动跟进）</div>
+                </div>
+                {/* 邮件往来 - Gmail式 从上至下 最新在最下方 支持表格/颜色/链接 */}
+                <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                  <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
+                    <span>邮件往来</span><span className="text-[10px] text-gray-400">时间从上至下 · 最新在最下方 · 共 {thread.length} 封</span>
+                    <span className="ml-auto text-[10px] text-gray-400">支持表格/颜色/链接</span>
+                  </div>
+                  <div className="divide-y divide-gray-100 max-h-[520px] overflow-y-auto">
+                    {thread.map((m, idx)=>(
+                      <div key={m.id} className={`p-3 ${m.id===selected.id?'bg-blue-50/30':''}`}>
+                        <div className="flex items-center gap-2 text-xs mb-1">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发件':'收件'}</span>
+                          <span className="font-medium text-gray-800 truncate">{m.from.split('<')[0].trim()||m.from}</span>
+                          <span className="text-gray-400 truncate">{m.from.match(/<(.+?)>/)?.[1]||''}</span>
+                          <span className="ml-auto text-[11px] text-gray-400">{new Date(m.date).toLocaleString()}</span>
+                        </div>
+                        <div className="text-xs font-medium text-gray-700 mb-1">{m.subject}</div>
+                        {m.html ? (
+                          <div className="email-html text-sm leading-relaxed max-w-none overflow-x-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: m.html}} />
+                        ) : (
+                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-2 bg-white">{m.text}</div>
+                        )}
+                        {idx===thread.length-1 && <div className="text-[10px] text-blue-400 mt-1">— 最新</div>}
+                      </div>
+                    ))}
+                    {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无往来</div>}
+                  </div>
                 </div>
                 <div className="flex gap-1">
                   <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>

@@ -72,6 +72,13 @@ body {
 #root {
   min-height: 100vh;
 }
+/* 邮件HTML还原（Gmail式表格/颜色/链接） */
+.email-html table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.email-html th, .email-html td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 12px; }
+.email-html th { background: #2563eb; color: #fff; font-weight: 600; }
+.email-html a { color: #2563eb; text-decoration: underline; }
+.email-html img { max-width: 100%; height: auto; }
+.email-html ul { list-style: disc; padding-left: 18px; }
 
 /* Scrollbar */
 ::-webkit-scrollbar {
