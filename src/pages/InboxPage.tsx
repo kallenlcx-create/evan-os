@@ -277,7 +277,7 @@ export default function InboxPage(){
   },[emails, q])
 
   return (
-    <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6">
+    <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6 max-w-none">
       {askModal}
       {/* 顶部配置条 */}
       <div className="px-4 py-2 border-b border-gray-100 bg-white flex items-center gap-2 flex-wrap">
@@ -355,7 +355,7 @@ export default function InboxPage(){
       )}
 
       {/* 三栏主体 */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_1.8fr_340px] gap-2 p-2 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_320px] gap-2 p-2 overflow-hidden">
 
         {/* ====== 左栏：邮件列表 + 搜索 ====== */}
         <div className="bg-white rounded-2xl border flex flex-col overflow-hidden">
