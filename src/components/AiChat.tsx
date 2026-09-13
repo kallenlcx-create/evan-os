@@ -8,7 +8,7 @@ import {
   getChatSessions, createChatSession, appendMessage, deleteChatSession,
   AI_PROVIDERS, type AiSettings, type ChatSession, type ChatMessage,
 } from '../config/aiProviders'
-import { streamChat } from '../services/aiChat'
+import { streamChat, testProxy } from '../services/aiChat'
 
 export default function AiChat() {
   const [sessions, setSessions] = useState<ChatSession[]>(() => getChatSessions())
@@ -23,6 +23,12 @@ export default function AiChat() {
   // 设置状态
   const [settings, setSettings] = useState<AiSettings>(() => getAiSettings())
   const [providerId, setProviderId] = useState(settings.providerId)
+  const [proxyTest, setProxyTest] = useState('')
+  const handleTestProxy = async () => {
+    setProxyTest('测试中…')
+    try { setProxyTest(await testProxy()) }
+    catch (e: any) { setProxyTest(`❌ ${e.message}`) }
+  }
 
   const activeSession = sessions.find(s => s.id === activeId)
   const messages = activeSession?.messages ?? []
@@ -262,6 +268,11 @@ export default function AiChat() {
                 <input type="text" value={settings.proxyUrl ?? ''} onChange={e => setSettings(s => ({ ...s, proxyUrl: e.target.value }))}
                   placeholder="https://iven.tail73fe40.ts.net"
                   className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                <div className="flex items-center gap-2 mt-1">
+                  <button onClick={handleTestProxy} className="px-2 py-1 text-[11px] border border-gray-200 rounded-lg text-gray-500 hover:border-blue-300 hover:text-blue-600">测试代理连通</button>
+                  {proxyTest && <span className="text-[11px] text-gray-500">{proxyTest}</span>}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">代理地址须是本设备可达的地址（如 Tailscale funnel 需本设备先加入 tailnet，否则会超时；可留空直连模型 API）</p>
               </div>
               {/* 系统提示词 */}
               <div className="sm:col-span-2">

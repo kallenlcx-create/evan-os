@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -309,15 +309,61 @@ export default function InboxPage(){
     }).sort((a,b)=> new Date(a.date).getTime()-new Date(b.date).getTime())
   },[emails, selected])
 
-  // ====== 搜索模式：全文检索展示 ======
-  const handleSearch = useCallback(()=>{
+  // ====== 搜索模式：优先服务端邮件库全文检索 ======
+  const [searching, setSearching] = useState(false)
+  const handleSearch = useCallback(async()=>{
     if(!q.trim()){ setSearchMode(false); setSearchResults([]); return }
+    setSearching(true)
+    try{
+      const accs = accounts.length ? accounts : await listAccounts()
+      if(accs.length){
+        const results = await searchDbMails(accs[0].id, q.trim(), 50)
+        setSearchResults(results)
+        setSearchMode(true)
+        return
+      }
+    }catch{ /* 回退本地过滤 */ }
+    finally{ setSearching(false) }
     const results = emails.filter(e =>
       `${e.subject} ${e.from} ${e.text} ${e.intent}`.toLowerCase().includes(q.toLowerCase())
     ).slice(0, 50)
     setSearchResults(results)
     setSearchMode(true)
-  },[emails, q])
+  },[emails, q, accounts])
+
+  // ====== 服务端邮件库：一次全量入库 + 增量状态 ======
+  const [dbFolders, setDbFolders] = useState<DbMailFolderStatus[]>([])
+  const [ingestJob, setIngestJob] = useState<any>(null)
+  const refreshDbStatus = useCallback(async()=>{
+    try{
+      const accs = accounts.length ? accounts : await listAccounts()
+      if(!accs.length) return
+      setDbFolders(await dbMailStatus(accs[0].id))
+      setIngestJob(await mailIngestStatus(accs[0].id))
+    }catch{}
+  },[accounts])
+  useEffect(()=>{ void refreshDbStatus() },[refreshDbStatus])
+  useEffect(()=>{
+    if(!ingestJob?.running) return
+    const t = setInterval(async()=>{
+      try{
+        const accs = await listAccounts()
+        if(!accs.length) return
+        const job = await mailIngestStatus(accs[0].id)
+        setIngestJob(job)
+        if(!job?.running) setDbFolders(await dbMailStatus(accs[0].id))
+      }catch{}
+    }, 5000)
+    return ()=> clearInterval(t)
+  },[ingestJob?.running])
+  const handleIngest = useCallback(async(mode: 'full'|'incremental')=>{
+    try{
+      const accs = accounts.length ? accounts : await listAccounts()
+      if(!accs.length){ alert('请先绑定邮箱账号'); return }
+      const job = await startMailIngest(accs[0].id, mode)
+      setIngestJob(job)
+    }catch(e:any){ alert(String(e.message||e).slice(0,200)) }
+  },[accounts])
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6 max-w-none">
@@ -339,6 +385,14 @@ export default function InboxPage(){
             自动
           </label>
           <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+          <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
+            {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
+          </button>
+          {dbFolders.length>0 && dbFolders[0] && (
+            <span className="text-[10px] text-gray-400 hidden lg:inline" title="服务端邮件库 / IMAP总数 / 待入库估算">
+              库 {dbFolders[0].dbCount}/{dbFolders[0].imapTotal}{dbFolders[0].pending>0 ? ` · +${dbFolders[0].pending}` : ' · 已齐'}
+            </span>
+          )}
           <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
           <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
         </div>
@@ -418,7 +472,7 @@ export default function InboxPage(){
             </div>
           </div>
           <div className="px-2 py-1 border-b text-xs text-gray-400">
-            {searchMode ? `搜索结果 ${searchResults.length} 封` : `${filtered.length} 封`}
+            {searching ? '服务端检索中…' : searchMode ? `搜索结果 ${searchResults.length} 封` : `${filtered.length} 封`}
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}

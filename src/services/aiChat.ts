@@ -36,6 +36,36 @@ function buildProxyInit(
   }
 }
 
+/** 带超时的 fetch：连接 hanging 时给出明确错误而非无限等待 */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 25000): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new DOMException('连接超时', 'TimeoutError')), ms)
+  const userSignal = init.signal
+  if (userSignal) {
+    if (userSignal.aborted) { clearTimeout(timer); throw userSignal.reason ?? new DOMException('已取消', 'AbortError') }
+    userSignal.addEventListener('abort', () => ctrl.abort(userSignal.reason), { once: true })
+  }
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal })
+  } catch (e: any) {
+    if (e?.name === 'TimeoutError') throw new Error('代理连接超时（25s）：请确认本设备已加入 Tailscale 且能打开代理地址；或清空代理地址改直连')
+    if (e?.name === 'AbortError') throw e
+    throw new Error(`网络不可达：${e?.message || e}（检查代理地址 / Tailscale / 直连网络）`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 测试代理连通性：GET {proxyUrl}/ai-proxy-health */
+export async function testProxy(): Promise<string> {
+  const settings = getAiSettings()
+  if (!settings.proxyUrl) return '未配置代理，将直连模型 API'
+  const url = `${settings.proxyUrl.replace(/\/$/, '')}/ai-proxy-health`
+  const res = await fetchWithTimeout(url, { method: 'GET' }, 12000)
+  if (!res.ok) throw new Error(`代理返回 ${res.status}`)
+  return '代理连通正常 ✅'
+}
+
 /** SSE 流解析（共享逻辑） */
 async function* parseSSEStream(
   res: Response,
@@ -122,7 +152,7 @@ export async function* streamChat(request: ChatRequest): AsyncGenerator<ChatChun
     signal: request.signal,
   }
 
-  const res = await fetch(fetchUrl, fetchInit)
+  const res = await fetchWithTimeout(fetchUrl, fetchInit, 25000)
 
   yield* parseSSEStream(res, (data) => {
     const parsed = JSON.parse(data)
@@ -164,7 +194,7 @@ async function* streamClaude(request: ChatRequest): AsyncGenerator<ChatChunk> {
     signal: request.signal,
   }
 
-  const res = await fetch(fetchUrl, fetchInit)
+  const res = await fetchWithTimeout(fetchUrl, fetchInit, 25000)
 
   yield* parseSSEStream(res, (data) => {
     const parsed = JSON.parse(data)

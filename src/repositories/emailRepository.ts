@@ -168,6 +168,59 @@ export async function fetchFullEmailBatch(accountId: string, uids: string[]): Pr
   }catch{ return {} }
 }
 
+// ====== 服务端邮件库（MySQL）：一次全量入库 + 增量 + 库内搜索 ======
+export interface DbMailFolderStatus {
+  folder: string; dbCount: number; imapTotal: number; lastUid: number
+  uidnext: number; uidvalidity: number; fullSyncDone: boolean
+  lastSyncAt: string | null; pending: number; job: any
+}
+export async function dbMailStatus(accountId: string): Promise<DbMailFolderStatus[]> {
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/db-status/${accountId}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `查询失败 ${r.status}`)
+  return j.folders || []
+}
+export async function startMailIngest(accountId: string, mode: 'full' | 'incremental' = 'full'): Promise<any> {
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/ingest/${accountId}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ mode }),
+  })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `启动失败 ${r.status}`)
+  return j.job
+}
+export async function mailIngestStatus(accountId: string): Promise<any> {
+  const h = await serverHeaders()
+  if (!h) return null
+  const r = await fetch(`${h.url}/email/ingest-status/${accountId}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  return j.job || null
+}
+export async function searchDbMails(accountId: string, q: string, limit = 50): Promise<EmailMessage[]> {
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/db-search/${accountId}?q=${encodeURIComponent(q)}&limit=${limit}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `搜索失败 ${r.status}`)
+  const rows: any[] = j.emails || []
+  return Promise.all(rows.map(async (e) => ({
+    id: `${accountId}-${e.uid}`,
+    accountId, folder: 'inbox' as const,
+    from: e.from_name ? `${e.from_name} <${e.from_addr}>` : (e.from_addr || ''),
+    to: e.to_addr || '', subject: e.subject || '(无主题)',
+    text: e.body_text || e.snippet || '', html: '',
+    date: e.msg_date ? new Date(e.msg_date).toISOString() : new Date().toISOString(),
+    isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+    product: 'Coin' as any,
+    intent: await classifyIntent(`${e.subject || ''} ${(e.body_text || '').slice(0, 500)}`) as EmailIntent,
+    priority: '中' as const, status: e.is_read ? '已处理' : '待处理',
+  })))
+}
+
 // Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {
   const acc = await db.emailAccounts.get(accountId)
