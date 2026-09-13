@@ -61,7 +61,12 @@ export default function InboxPage(){
     const accs = await listAccounts()
     setAccounts(accs)
     const list = await listEmails()
-    for(const m of list){ if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m)} }
+    // 意图补齐只处理前 300 封缺失的，避免上万封一次性阻塞/爆内存；其余打开或搜索时再补
+    let fixed = 0
+    for(const m of list){
+      if(fixed >= 300) break
+      if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m); fixed++ }
+    }
     setEmails(list)
     fetchServerCounts(accs)
   },[fetchServerCounts])
@@ -170,8 +175,9 @@ export default function InboxPage(){
     }finally{ setSyncing(false) }
   }
   const handleAiAnalyzeAll = async()=>{
-    const pending = emails.filter(e=> !e.intent || e.intent==='其他')
+    const pending = emails.filter(e=> !e.intent || e.intent==='其他').slice(0, 200)
     if(pending.length===0) return alert('全部已分析')
+    if(emails.filter(e=> !e.intent || e.intent==='其他').length>200 && !confirm(`待分析较多，仅分析前 200 封（防浏览器崩溃），其余打开邮件时自动补，继续？`)) return
     setAnalyzing(true)
     try{
       for(const m of pending){
@@ -487,8 +493,8 @@ export default function InboxPage(){
                 <div className="text-[10px] text-gray-400">{new Date(m.date).toLocaleDateString()}</div>
               </button>
             )) : (
-              /* 正常模式：按文件夹显示邮件列表 */
-              filtered.map(m=>{
+              /* 正常模式：按文件夹显示邮件列表（只渲染前200封防崩溃，其余走服务端搜索） */
+              filtered.slice(0, 200).map(m=>{
                 const isSel = selected?.id===m.id
                 return (
                   <button key={m.id} onClick={async()=>{ setSelected(m); await markRead(m.id,true); setEmails(prev=> prev.map(x=> x.id===m.id? {...x,isRead:true}:x)) }} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
@@ -509,6 +515,9 @@ export default function InboxPage(){
             )}
             {((!searchMode && filtered.length===0) || (searchMode && searchResults.length===0)) && (
               <div className="p-8 text-center text-xs text-gray-300">{searchMode?'无搜索结果':'暂无邮件'}</div>
+            )}
+            {!searchMode && filtered.length>200 && (
+              <div className="p-3 text-center text-[11px] text-gray-400 border-t">仅显示前 200 封（共 {filtered.length} 封），更多请用上方搜索（走服务端全库检索）</div>
             )}
           </div>
         </div>
