@@ -570,7 +570,7 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
   }
 }))
 
-// 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX
+// 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX&search=UNSEEN
 app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
   let limit = Number(req.query.limit||20)
@@ -578,6 +578,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   limit=Math.min(1000000, Math.max(1, limit))
   const offset = Math.max(0, Number(req.query.offset||0))
   const folder=String(req.query.folder||'[Gmail]/All Mail')
+  const searchQuery=String(req.query.search||'').trim() // 新增：IMAP SEARCH 查询，如 UNSEEN
   let acc=null
   if(dbReady){
     const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
@@ -595,22 +596,47 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   try{
     const total=client.mailbox.exists
     const batchSize=500
-    const fetchLimit = Math.min(limit, batchSize)
-    const start=Math.max(1, total - offset - fetchLimit +1)
-    const end=Math.max(1, total - offset)
-    if(start> end) return res.json({ emails: [], total, hasMore:false })
-    const out=[]
-    // headersOnly=true 时跳过 simpleParser，用 envelope 代替（速度快 10 倍）
     const headersOnly = req.query.headersOnly === 'true'
-    for(let s=start; s<=end; s+=batchSize){
-      const e=Math.min(s+batchSize-1, end)
-      const fields = headersOnly
-        ? { envelope:true, flags:true, uid:true }
-        : { envelope:true, source:true, flags:true, uid:true }
-      for await (const msg of client.fetch(`${s}:${e}`, fields)){
+    const fields = headersOnly
+      ? { envelope:true, flags:true, uid:true }
+      : { envelope:true, source:true, flags:true, uid:true }
+
+    let uids = []
+    if(searchQuery){
+      // IMAP SEARCH 模式：按条件搜索（如 UNSEEN）
+      try{
+        const searchResult = await client.search(searchQuery, { uid:true })
+        uids = (searchResult || []).map(r => r.uid).filter(Boolean)
+        // 按 UID 倒序（最新优先）
+        uids.sort((a,b) => b - a)
+        // 分页
+        uids = uids.slice(offset, offset + limit)
+      }catch(searchErr){
+        console.log(`[email-sync] SEARCH "${searchQuery}" 失败，回退到顺序模式:`, searchErr.message)
+        // 回退到顺序模式
+        searchQuery.length = 0
+      }
+    }
+    if(!searchQuery || uids.length === 0 && !searchQuery){
+      // 顺序模式：从末尾往回拉
+      const fetchLimit = Math.min(limit, batchSize)
+      const start=Math.max(1, total - offset - fetchLimit +1)
+      const end=Math.max(1, total - offset)
+      if(start> end) return res.json({ emails: [], total, hasMore:false })
+      for(let s=start; s<=end; s+=batchSize){
+        const e=Math.min(s+batchSize-1, end)
+        for(let uid=s; uid<=e; uid++) uids.push(uid)
+      }
+    }
+
+    const out=[]
+    // 分批 fetch（每批500个UID）
+    for(let i=0; i<uids.length; i+=batchSize){
+      const batch = uids.slice(i, i+batchSize)
+      const seqRange = batch.join(',')
+      for await (const msg of client.fetch(seqRange, fields)){
         try{
           if(headersOnly){
-            // 快速模式：只用 envelope（不解析原始邮件）
             const toAddrs = msg.envelope.to || []
             const toText = toAddrs.map(a => a.address ? `${a.name||''} <${a.address}>` : '').filter(Boolean).join(', ') || acc.email
             out.push({
@@ -648,7 +674,9 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
       }
     }
     out.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
-    const hasMore = (offset + out.length) < total
+    const hasMore = searchQuery
+      ? uids.length >= limit  // SEARCH 模式：如果返回了 limit 条，可能还有更多
+      : (offset + out.length) < total
     res.json({ emails: out, total, hasMore, nextOffset: offset + out.length })
   }finally{ lock.release(); await client.logout().catch(()=>{}) }
 }))

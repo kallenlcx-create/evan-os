@@ -77,12 +77,13 @@ export async function createAccountOnServer(opts:{ provider:string, email:string
   return j
 }
 
-export async function syncReal(accountId:string, limit:number|'all'=20, offset=0, headersOnly=false): Promise<{added:number, total:number, hasMore:boolean}>{
+export async function syncReal(accountId:string, limit:number|'all'=20, offset=0, headersOnly=false, search=''): Promise<{added:number, total:number, hasMore:boolean}>{
   const lim = limit==='all' ? 1000000 : limit
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const ho = headersOnly ? '&headersOnly=true' : ''
-  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}${ho}`,{ headers: bypassHeaders(h) })
+  const sq = search ? `&search=${encodeURIComponent(search)}` : ''
+  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}${ho}${sq}`,{ headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
   const emails: any[] = j.emails||[]

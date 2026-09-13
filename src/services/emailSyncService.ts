@@ -76,35 +76,61 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
       const accTotal = accountTotals[acc.id] || 0
-      let offset = 0
 
       try {
+        // ====== 第一步：优先拉未读邮件（UNSEEN）======
+        emitProgress({
+          status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取未读邮件...`,
+          done: totalAdded, total: grandTotal, errors: totalErrors,
+        })
+        let unreadOffset = 0
         while (true) {
-          emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉 ${offset}/${accTotal || '?'}`,
-            done: totalAdded, total: grandTotal, errors: totalErrors,
-          })
           let res: any
           try {
-            res = await syncReal(acc.id, 500, offset, true)
+            res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
           } catch (batchErr: any) {
             totalErrors++
             emitProgress({
-              status: `[${i + 1}/${accounts.length}] ${acc.email} 批次失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
+              status: `[${i + 1}/${accounts.length}] ${acc.email} 未读拉取失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
               done: totalAdded, total: grandTotal, errors: totalErrors,
             })
             break
           }
           const added = typeof res === 'object' ? res.added : Number(res) || 0
           const hasMore = typeof res === 'object' ? res.hasMore : false
-          const batchTotal = typeof res === 'object' ? res.total : 0
-          if (added > 0) { totalAdded += added; offset += added }
+          if (added > 0) { totalAdded += added; unreadOffset += added }
           emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${offset}/${batchTotal || accTotal || '?'}`,
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
             done: totalAdded, total: grandTotal, errors: totalErrors,
           })
           if (!hasMore || added === 0) break
-          if (offset >= lim) break
+          await new Promise(r => setTimeout(r, 30))
+        }
+
+        // ====== 第二步：拉最新邮件（补充已读邮件）======
+        emitProgress({
+          status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取最新邮件...`,
+          done: totalAdded, total: grandTotal, errors: totalErrors,
+        })
+        let recentOffset = 0
+        const recentLimit = Math.min(lim, 500) // 最多拉500封最新邮件
+        while (true) {
+          let res: any
+          try {
+            res = await syncReal(acc.id, 200, recentOffset, true)
+          } catch (batchErr: any) {
+            totalErrors++
+            break
+          }
+          const added = typeof res === 'object' ? res.added : Number(res) || 0
+          const hasMore = typeof res === 'object' ? res.hasMore : false
+          if (added > 0) { totalAdded += added; recentOffset += added }
+          emitProgress({
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${recentOffset}/${accTotal || '?'}`,
+            done: totalAdded, total: grandTotal, errors: totalErrors,
+          })
+          if (!hasMore || added === 0) break
+          if (recentOffset >= recentLimit) break
           await new Promise(r => setTimeout(r, 30))
         }
       } catch (accErr: any) {
