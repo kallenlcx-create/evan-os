@@ -981,11 +981,11 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
     rows = r
   }catch{}
   if(!rows.length && q.length >= 2){
-    // 全文无命中时回退 LIKE，保证“搜得到”
+    // 全文无命中时回退 LIKE，保证“搜得到”（SQL 里 ESCAPE 需要双反斜杠）
     const like = `%${q.replace(/[%_\\]/g, m=>'\\'+m)}%`
     const [r] = await pool.query(
       `SELECT ${cols}, body_text FROM mail_messages
-       WHERE account_id=? AND (subject LIKE ? ESCAPE '\\' OR from_addr LIKE ? ESCAPE '\\' OR to_addr LIKE ? ESCAPE '\\' OR body_text LIKE ? ESCAPE '\\')
+       WHERE account_id=? AND (subject LIKE ? ESCAPE '\\\\' OR from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
        ORDER BY msg_date DESC LIMIT ?`,[accountId, like, like, like, like, limit])
     rows = r
   }
