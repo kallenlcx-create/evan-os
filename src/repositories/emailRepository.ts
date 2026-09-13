@@ -77,13 +77,14 @@ export async function createAccountOnServer(opts:{ provider:string, email:string
   return j
 }
 
-export async function syncReal(accountId:string, limit:number|'all'=20, offset=0, headersOnly=false, search=''): Promise<{added:number, total:number, hasMore:boolean}>{
+export async function syncReal(accountId:string, limit:number|'all'=20, offset=0, headersOnly=false, search='', sinceUid=0): Promise<{added:number, total:number, hasMore:boolean, maxUid?:number}>{
   const lim = limit==='all' ? 1000000 : limit
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const ho = headersOnly ? '&headersOnly=true' : ''
   const sq = search ? `&search=${encodeURIComponent(search)}` : ''
-  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}${ho}${sq}`,{ headers: bypassHeaders(h) })
+  const su = sinceUid > 0 ? `&sinceUid=${sinceUid}` : ''
+  const r = await fetch(`${h.url}/email/sync/${accountId}?limit=${lim}&offset=${offset}${ho}${sq}${su}`,{ headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
   const emails: any[] = j.emails||[]
@@ -119,7 +120,19 @@ export async function syncReal(accountId:string, limit:number|'all'=20, offset=0
     added += chunk.length
   }
   await db.emailAccounts.update(accountId,{lastSyncAt: now()} as any).catch(()=>{})
-  return { added, total: (j as any).total||0, hasMore: !!(j as any).hasMore }
+  // 计算本次同步的最大UID，用于增量同步
+  let maxUid = 0
+  for(const e of emails){
+    const uid = Number(e.id?.split('-').pop()) || 0
+    if(uid > maxUid) maxUid = uid
+  }
+  if(maxUid > 0){
+    const acc = await db.emailAccounts.get(accountId)
+    if(!acc || !acc.lastSyncUid || maxUid > acc.lastSyncUid){
+      await db.emailAccounts.update(accountId, { lastSyncUid: maxUid } as any).catch(()=>{})
+    }
+  }
+  return { added, total: (j as any).total||0, hasMore: !!(j as any).hasMore, maxUid }
 }
 
 export async function listEmails(folder?: string): Promise<EmailMessage[]> {

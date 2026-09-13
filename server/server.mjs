@@ -570,7 +570,7 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
   }
 }))
 
-// 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX&search=UNSEEN
+// 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX&search=UNSEEN&sinceUid=12345
 app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const accountId=req.params.id
   let limit = Number(req.query.limit||20)
@@ -578,7 +578,8 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   limit=Math.min(1000000, Math.max(1, limit))
   const offset = Math.max(0, Number(req.query.offset||0))
   const folder=String(req.query.folder||'[Gmail]/All Mail')
-  const searchQuery=String(req.query.search||'').trim() // 新增：IMAP SEARCH 查询，如 UNSEEN
+  const searchQuery=String(req.query.search||'').trim()
+  const sinceUid = Number(req.query.sinceUid)||0 // 新增：增量同步，只拉UID > sinceUid的邮件
   let acc=null
   if(dbReady){
     const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
@@ -602,22 +603,30 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
       : { envelope:true, source:true, flags:true, uid:true }
 
     let uids = []
-    if(searchQuery){
+    if(sinceUid > 0){
+      // 增量同步模式：只拉UID > sinceUid的邮件
+      try{
+        const searchResult = await client.search([{uid:{since:sinceUid}}], { uid:true })
+        uids = (searchResult || []).map(r => r.uid).filter(uid => uid > sinceUid)
+        uids.sort((a,b) => b - a)
+        uids = uids.slice(offset, offset + limit)
+        console.log(`[email-sync] 增量同步 sinceUid=${sinceUid}，找到 ${uids.length} 封新邮件`)
+      }catch(e){
+        console.log(`[email-sync] 增量搜索失败:`, e.message)
+      }
+    } else if(searchQuery){
       // IMAP SEARCH 模式：按条件搜索（如 UNSEEN）
       try{
         const searchResult = await client.search(searchQuery, { uid:true })
         uids = (searchResult || []).map(r => r.uid).filter(Boolean)
-        // 按 UID 倒序（最新优先）
         uids.sort((a,b) => b - a)
-        // 分页
         uids = uids.slice(offset, offset + limit)
       }catch(searchErr){
         console.log(`[email-sync] SEARCH "${searchQuery}" 失败，回退到顺序模式:`, searchErr.message)
-        // 回退到顺序模式
         searchQuery.length = 0
       }
     }
-    if(!searchQuery || uids.length === 0 && !searchQuery){
+    if(!sinceUid && (!searchQuery || uids.length === 0 && !searchQuery)){
       // 顺序模式：从末尾往回拉
       const fetchLimit = Math.min(limit, batchSize)
       const start=Math.max(1, total - offset - fetchLimit +1)

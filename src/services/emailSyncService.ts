@@ -53,7 +53,7 @@ function emitDone(detail: any) {
   emitEvent(EVENTS.CUSTOMERS_UPDATED, detail)
 }
 
-// ====== 核心同步函数 ======
+// ====== 核心同步函数（增量同步策略）======
 export async function syncAllEmails(limit: number | 'all' = 30): Promise<number> {
   const lim = limit === 'all' ? 1000000 : Number(limit) || 30
   if (syncing) return 0
@@ -76,62 +76,91 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
       const accTotal = accountTotals[acc.id] || 0
+      const lastSyncUid = (acc as any).lastSyncUid || 0
 
       try {
-        // ====== 第一步：优先拉未读邮件（UNSEEN）======
-        emitProgress({
-          status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取未读邮件...`,
-          done: totalAdded, total: grandTotal, errors: totalErrors,
-        })
-        let unreadOffset = 0
-        while (true) {
-          let res: any
-          try {
-            res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
-          } catch (batchErr: any) {
-            totalErrors++
+        if (lastSyncUid > 0) {
+          // ====== 增量同步：只拉新邮件（UID > lastSyncUid）======
+          emitProgress({
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 增量同步（UID>${lastSyncUid}）...`,
+            done: totalAdded, total: grandTotal, errors: totalErrors,
+          })
+          let incOffset = 0
+          while (true) {
+            let res: any
+            try {
+              res = await syncReal(acc.id, 200, incOffset, true, '', lastSyncUid)
+            } catch (batchErr: any) {
+              totalErrors++
+              emitProgress({
+                status: `[${i + 1}/${accounts.length}] ${acc.email} 增量失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
+                done: totalAdded, total: grandTotal, errors: totalErrors,
+              })
+              break
+            }
+            const added = typeof res === 'object' ? res.added : Number(res) || 0
+            const hasMore = typeof res === 'object' ? res.hasMore : false
+            if (added > 0) { totalAdded += added; incOffset += added }
             emitProgress({
-              status: `[${i + 1}/${accounts.length}] ${acc.email} 未读拉取失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
+              status: `[${i + 1}/${accounts.length}] ${acc.email} 增量 +${added} 封`,
               done: totalAdded, total: grandTotal, errors: totalErrors,
             })
-            break
+            if (!hasMore || added === 0) break
+            await new Promise(r => setTimeout(r, 30))
           }
-          const added = typeof res === 'object' ? res.added : Number(res) || 0
-          const hasMore = typeof res === 'object' ? res.hasMore : false
-          if (added > 0) { totalAdded += added; unreadOffset += added }
+        } else {
+          // ====== 首次全量同步：先拉未读，再拉最新 ======
+          // 第一步：拉未读邮件
           emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 首次同步，拉取未读...`,
             done: totalAdded, total: grandTotal, errors: totalErrors,
           })
-          if (!hasMore || added === 0) break
-          await new Promise(r => setTimeout(r, 30))
-        }
+          let unreadOffset = 0
+          while (true) {
+            let res: any
+            try {
+              res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
+            } catch (batchErr: any) {
+              totalErrors++
+              break
+            }
+            const added = typeof res === 'object' ? res.added : Number(res) || 0
+            const hasMore = typeof res === 'object' ? res.hasMore : false
+            if (added > 0) { totalAdded += added; unreadOffset += added }
+            emitProgress({
+              status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
+              done: totalAdded, total: grandTotal, errors: totalErrors,
+            })
+            if (!hasMore || added === 0) break
+            await new Promise(r => setTimeout(r, 30))
+          }
 
-        // ====== 第二步：拉最新邮件（补充已读邮件）======
-        emitProgress({
-          status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取最新邮件...`,
-          done: totalAdded, total: grandTotal, errors: totalErrors,
-        })
-        let recentOffset = 0
-        const recentLimit = Math.min(lim, 500) // 最多拉500封最新邮件
-        while (true) {
-          let res: any
-          try {
-            res = await syncReal(acc.id, 200, recentOffset, true)
-          } catch (batchErr: any) {
-            totalErrors++
-            break
-          }
-          const added = typeof res === 'object' ? res.added : Number(res) || 0
-          const hasMore = typeof res === 'object' ? res.hasMore : false
-          if (added > 0) { totalAdded += added; recentOffset += added }
+          // 第二步：拉最新邮件（补充已读）
           emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${recentOffset}/${accTotal || '?'}`,
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取最新邮件...`,
             done: totalAdded, total: grandTotal, errors: totalErrors,
           })
-          if (!hasMore || added === 0) break
-          if (recentOffset >= recentLimit) break
-          await new Promise(r => setTimeout(r, 30))
+          let recentOffset = 0
+          const recentLimit = Math.min(lim, 500)
+          while (true) {
+            let res: any
+            try {
+              res = await syncReal(acc.id, 200, recentOffset, true)
+            } catch (batchErr: any) {
+              totalErrors++
+              break
+            }
+            const added = typeof res === 'object' ? res.added : Number(res) || 0
+            const hasMore = typeof res === 'object' ? res.hasMore : false
+            if (added > 0) { totalAdded += added; recentOffset += added }
+            emitProgress({
+              status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${recentOffset}/${accTotal || '?'}`,
+              done: totalAdded, total: grandTotal, errors: totalErrors,
+            })
+            if (!hasMore || added === 0) break
+            if (recentOffset >= recentLimit) break
+            await new Promise(r => setTimeout(r, 30))
+          }
         }
       } catch (accErr: any) {
         totalErrors++

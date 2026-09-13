@@ -1029,6 +1029,7 @@ export interface EmailAccount {
   authEnc?: string // 16位授权码/app密码加密后（前端仅存脱敏）
   createdAt: string
   lastSyncAt?: string
+  lastSyncUid?: number // 已同步的最大IMAP UID，用于增量同步
   status?: 'connected'|'error'|'unconfigured'
 }
 
