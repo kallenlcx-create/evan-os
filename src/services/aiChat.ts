@@ -36,7 +36,7 @@ function buildProxyInit(
   }
 }
 
-/** 带超时的 fetch：连接 hanging 时给出明确错误而非无限等待 */
+/** 带“首字节超时”的 fetch：只限制到响应头返回，不掐正常流式输出 */
 async function fetchWithTimeout(url: string, init: RequestInit, ms = 25000): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new DOMException('连接超时', 'TimeoutError')), ms)
@@ -46,13 +46,15 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 25000): Pro
     userSignal.addEventListener('abort', () => ctrl.abort(userSignal.reason), { once: true })
   }
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal })
+    // fetch resolve = 响应头已到：此时清掉计时器，后续 SSE 流多久都不掐
+    const res = await fetch(url, { ...init, signal: ctrl.signal })
+    clearTimeout(timer)
+    return res
   } catch (e: any) {
-    if (e?.name === 'TimeoutError') throw new Error('代理连接超时（25s）：请确认本设备已加入 Tailscale 且能打开代理地址；或清空代理地址改直连')
+    clearTimeout(timer)
+    if (e?.name === 'TimeoutError') throw new Error('代理连接超时（25s 无响应）：请确认本设备已加入 Tailscale 且能打开代理地址；或清空代理地址改直连')
     if (e?.name === 'AbortError') throw e
     throw new Error(`网络不可达：${e?.message || e}（检查代理地址 / Tailscale / 直连网络）`)
-  } finally {
-    clearTimeout(timer)
   }
 }
 

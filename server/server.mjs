@@ -394,14 +394,14 @@ app.post('/ai-proxy', wrap(async (req, res) => {
     return res.status(400).json({ error: 'targetUrl 格式无效' })
   }
 
-  // 转发请求（上游 90s 超时，避免长 hang 占住连接）
+  // 转发请求（上游 10 分钟总超时：只防 hang 死，不断正常长流）
   let upstream
   try {
     upstream = await fetch(targetUrl, {
       method,
       headers,
       body: typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody),
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(600000),
     })
   } catch (e) {
     return res.status(502).json({ error: '上游模型 API 不可达或超时：' + String(e.message || e).slice(0, 200) })
