@@ -1,9 +1,11 @@
-// 后台常驻邮件同步服务 - 不随切页暂停，全局单例
-import { listAccounts, syncReal, getEmailCount, serverHeaders } from '../repositories/emailRepository'
+// ====== 邮件同步服务（简化可靠版）======
+// 策略：轮询为主，页面可见/聚焦时立即补同步
+import { listAccounts, syncReal, getEmailCount } from '../repositories/emailRepository'
+import { EVENTS, emitEvent } from '../utils/emailHelpers'
 
 export type EmailSyncConfig = {
   enabled: boolean
-  intervalMinutes: number // 1,5,10,30,60,1440
+  intervalMinutes: number
   limit: number | 'all'
   lastSyncAt?: string
   nextSyncAt?: string
@@ -11,215 +13,202 @@ export type EmailSyncConfig = {
 
 const LS_KEY = 'evan:emailSyncConfig'
 const EVT_PROGRESS = 'evan-email-sync-progress'
-const EVT_DONE = 'evan-email-synced'
 
-let timer: number | null = null
-let countdownTimer: number | null = null
+let timer: ReturnType<typeof setInterval> | null = null
 let syncing = false
-let progress = { done:0, total:0, status:'' as string, errors: 0 }
+let progress = { done: 0, total: 0, status: '' as string, errors: 0 }
 
-function loadConfig(): EmailSyncConfig{
-  try{
+function loadConfig(): EmailSyncConfig {
+  try {
     const raw = localStorage.getItem(LS_KEY)
-    if(raw) return JSON.parse(raw)
-  }catch{}
-  return { enabled:true, intervalMinutes:2, limit:30 }
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return { enabled: true, intervalMinutes: 2, limit: 30 }
 }
-function saveConfig(c: EmailSyncConfig){
+
+function saveConfig(c: EmailSyncConfig) {
   localStorage.setItem(LS_KEY, JSON.stringify(c))
-  window.dispatchEvent(new CustomEvent('evan-email-config-changed'))
+  emitEvent('evan-email-config-changed')
 }
-export function getEmailSyncConfig(){ return loadConfig() }
-export function setEmailSyncConfig(patch: Partial<EmailSyncConfig>){
+
+export function getEmailSyncConfig() { return loadConfig() }
+
+export function setEmailSyncConfig(patch: Partial<EmailSyncConfig>) {
   const cur = loadConfig()
   const next = { ...cur, ...patch }
   saveConfig(next)
-  if(next.enabled) startAutoSync()
+  if (next.enabled) startAutoSync()
   else stopAutoSync()
   return next
 }
 
-function emitProgress(p: Partial<typeof progress>){
+function emitProgress(p: Partial<typeof progress>) {
   progress = { ...progress, ...p }
-  window.dispatchEvent(new CustomEvent(EVT_PROGRESS, {detail: {...progress}}))
-}
-function emitDone(detail:any){
-  window.dispatchEvent(new CustomEvent(EVT_DONE, {detail}))
-  // 同时触发全局数据更新事件，供全景/拓扑/客户等监听
-  window.dispatchEvent(new CustomEvent('evan-emails-updated', {detail}))
-  window.dispatchEvent(new CustomEvent('evan-customers-updated', {detail}))
+  window.dispatchEvent(new CustomEvent(EVT_PROGRESS, { detail: { ...progress } }))
 }
 
-export async function syncAllEmails(limit: number|'all' = 30): Promise<number>{
-  const lim = limit==='all' ? 1000000 : Number(limit)||30
-  if(syncing) return 0
-  syncing=true
+function emitDone(detail: any) {
+  emitEvent(EVENTS.EMAIL_SYNCED, detail)
+  emitEvent(EVENTS.EMAILS_UPDATED, detail)
+  emitEvent(EVENTS.CUSTOMERS_UPDATED, detail)
+}
+
+// ====== 核心同步函数 ======
+export async function syncAllEmails(limit: number | 'all' = 30): Promise<number> {
+  const lim = limit === 'all' ? 1000000 : Number(limit) || 30
+  if (syncing) return 0
+  syncing = true
   let totalErrors = 0
-  try{
+  try {
     const accounts = await listAccounts()
-    if(accounts.length===0) throw new Error('未绑定邮箱')
+    if (accounts.length === 0) throw new Error('未绑定邮箱')
 
-    // 第一步：预读每个账号的总邮件数
+    // 预读总邮件数
     const accountTotals: Record<string, number> = {}
-    emitProgress({ status:'正在读取邮箱邮件数...', done:0, total:0, errors:0 })
-    for(const acc of accounts){
-      try{
-        const cnt = await getEmailCount(acc.id)
-        accountTotals[acc.id] = cnt
-      }catch{
-        accountTotals[acc.id] = 0
-      }
+    emitProgress({ status: '正在读取邮箱...', done: 0, total: 0, errors: 0 })
+    for (const acc of accounts) {
+      try { accountTotals[acc.id] = await getEmailCount(acc.id) } catch { accountTotals[acc.id] = 0 }
     }
-    const grandTotal = Object.values(accountTotals).reduce((s,n)=> s+n, 0)
-    emitProgress({ status:`共 ${accounts.length} 个账号，${grandTotal} 封邮件，开始同步...`, done:0, total: grandTotal, errors:0 })
+    const grandTotal = Object.values(accountTotals).reduce((s, n) => s + n, 0)
+    emitProgress({ status: `共 ${accounts.length} 账号，${grandTotal} 封，开始同步...`, done: 0, total: grandTotal, errors: 0 })
 
-    let totalAdded=0
-    for(let i=0;i<accounts.length;i++){
+    let totalAdded = 0
+    for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
       const accTotal = accountTotals[acc.id] || 0
-      let offset=0
+      let offset = 0
 
-      // 每个账号独立 try/catch，一个失败不阻塞其余
-      try{
-        // 分批拉取，每批200，实时展示数量
-        while(true){
+      try {
+        while (true) {
           emitProgress({
-            status:`[${i+1}/${accounts.length}] ${acc.email} 已拉 ${offset}/${accTotal||'?'}`,
-            done: totalAdded,
-            total: grandTotal,
-            errors: totalErrors,
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉 ${offset}/${accTotal || '?'}`,
+            done: totalAdded, total: grandTotal, errors: totalErrors,
           })
-          let res:any
-          try{
+          let res: any
+          try {
             res = await syncReal(acc.id, 500, offset, true)
-          }catch(batchErr:any){
-            // 单批失败：记录错误，跳过该账号剩余部分
+          } catch (batchErr: any) {
             totalErrors++
             emitProgress({
-              status:`[${i+1}/${accounts.length}] ${acc.email} 第${offset/200+1}批失败: ${String(batchErr.message||batchErr).slice(0,40)}，跳过剩余`,
-              done: totalAdded,
-              total: grandTotal,
-              errors: totalErrors,
+              status: `[${i + 1}/${accounts.length}] ${acc.email} 批次失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
+              done: totalAdded, total: grandTotal, errors: totalErrors,
             })
             break
           }
-          const added = typeof res==='object' ? res.added : Number(res)||0
-          const hasMore = typeof res==='object' ? res.hasMore : false
-          const batchTotal = typeof res==='object' ? res.total : 0
-          if(added>0){ totalAdded+=added; offset+=added }
+          const added = typeof res === 'object' ? res.added : Number(res) || 0
+          const hasMore = typeof res === 'object' ? res.hasMore : false
+          const batchTotal = typeof res === 'object' ? res.total : 0
+          if (added > 0) { totalAdded += added; offset += added }
           emitProgress({
-            status:`[${i+1}/${accounts.length}] ${acc.email} 已同步 ${offset}/${batchTotal||accTotal||'?'}`,
-            done: totalAdded,
-            total: grandTotal,
-            errors: totalErrors,
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${offset}/${batchTotal || accTotal || '?'}`,
+            done: totalAdded, total: grandTotal, errors: totalErrors,
           })
-          // 达到本次限额或无更多则停
-          if(!hasMore || added===0) break
-          if(offset>=lim) break
-          // 让出主线程，避免阻塞UI
-          await new Promise(r=> setTimeout(r, 30))
+          if (!hasMore || added === 0) break
+          if (offset >= lim) break
+          await new Promise(r => setTimeout(r, 30))
         }
-      }catch(accErr:any){
-        // 账号级错误（连接失败等）：记录并继续下一个账号
+      } catch (accErr: any) {
         totalErrors++
         emitProgress({
-          status:`[${i+1}/${accounts.length}] ${acc.email} 连接失败: ${String(accErr.message||accErr).slice(0,40)}`,
-          done: totalAdded,
-          total: grandTotal,
-          errors: totalErrors,
+          status: `[${i + 1}/${accounts.length}] ${acc.email} 失败: ${String(accErr.message || accErr).slice(0, 40)}`,
+          done: totalAdded, total: grandTotal, errors: totalErrors,
         })
       }
     }
 
-    // 无论成功/失败/部分成功，都触发 emitDone
     emitDone({ total: totalAdded, limit: lim, errors: totalErrors })
-    // 更新配置时间
-    const cfg=loadConfig(); cfg.lastSyncAt=new Date().toISOString();
-    cfg.nextSyncAt=new Date(Date.now()+ cfg.intervalMinutes*60000).toISOString();
+    const cfg = loadConfig()
+    cfg.lastSyncAt = new Date().toISOString()
+    cfg.nextSyncAt = new Date(Date.now() + cfg.intervalMinutes * 60000).toISOString()
     saveConfig(cfg)
     return totalAdded
   } finally {
-    syncing=false
-    emitProgress({ status:'空闲', done:0, total:0, errors:0 })
+    syncing = false
+    emitProgress({ status: '空闲', done: 0, total: 0, errors: 0 })
   }
 }
 
-export function isEmailSyncing(){ return syncing }
-export function getEmailSyncProgress(){ return {...progress} }
+export function isEmailSyncing() { return syncing }
+export function getEmailSyncProgress() { return { ...progress } }
 
-export function startAutoSync(){
+// ====== 自动同步 ======
+export function startAutoSync() {
   stopAutoSync()
-  const cfg=loadConfig()
-  if(!cfg.enabled) return
-  const tick = async()=>{
-    if(document.visibilityState!=='visible') return
-    if(syncing) return
-    try{ await syncAllEmails(cfg.limit) }catch{}
-  }
-  // 立即算下次时间
-  const cfg2=loadConfig()
-  cfg2.nextSyncAt=new Date(Date.now()+ cfg2.intervalMinutes*60000).toISOString()
+  const cfg = loadConfig()
+  if (!cfg.enabled) return
+
+  // 立即同步一次
+  setTimeout(() => {
+    if (!syncing) syncAllEmails(cfg.limit).catch(() => {})
+  }, 2000)
+
+  // 定时同步
+  timer = setInterval(() => {
+    if (syncing) return
+    syncAllEmails(cfg.limit).catch(() => {})
+  }, cfg.intervalMinutes * 60000)
+
+  // 更新下次时间
+  const cfg2 = loadConfig()
+  cfg2.nextSyncAt = new Date(Date.now() + cfg2.intervalMinutes * 60000).toISOString()
   saveConfig(cfg2)
-  timer = window.setInterval(tick, cfg.intervalMinutes*60000)
-  // 定时展示倒计时（修复内存泄漏：先清除旧的）
-  if(countdownTimer) clearInterval(countdownTimer)
-  countdownTimer = window.setInterval(()=>{
-    const c=loadConfig()
-    if(c.nextSyncAt) emitProgress({ status:`下次 ${new Date(c.nextSyncAt).toLocaleTimeString()}` })
-  }, 30000)
 }
 
-export function stopAutoSync(){
-  if(timer){ clearInterval(timer); timer=null }
-  if(countdownTimer){ clearInterval(countdownTimer); countdownTimer=null }
+export function stopAutoSync() {
+  if (timer) { clearInterval(timer); timer = null }
 }
 
-// 供 Layout/App 启动时调用
-export function initEmailSync(){
-  const cfg=loadConfig()
-  if(cfg.enabled) startAutoSync()
-  // 启动 IDLE 实时推送
-  startIdleListeners()
-}
+// ====== 页面可见性/聚焦监听 ======
+let lastSyncByVisibility = 0
 
-// ====== IMAP IDLE 实时推送 ======
-let idleEventSources: Record<string, EventSource> = {}
-
-async function startIdleListeners(){
-  // 先关闭旧连接
-  for(const k of Object.keys(idleEventSources)){
-    idleEventSources[k].close()
-    delete idleEventSources[k]
-  }
-  const h = await serverHeaders()
-  if(!h) return
-  const accounts = await listAccounts()
-  for(const acc of accounts){
-    try{
-      const url = `${h.url}/email/idle/${acc.id}`
-      const es = new EventSource(url)
-      es.onmessage = (ev)=>{
-        try{
-          const data = JSON.parse(ev.data)
-          if(data.type === 'new_emails' && data.emails?.length > 0){
-            // 有新邮件，触发同步
-            console.log(`[IDLE] ${acc.email} 收到 ${data.emails.length} 封新邮件`)
-            syncAllEmails(loadConfig().limit).catch(()=>{})
-          }
-        }catch{}
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    const now = Date.now()
+    // 距离上次同步超过30秒才触发，避免频繁同步
+    if (now - lastSyncByVisibility > 30000 && !syncing) {
+      lastSyncByVisibility = now
+      const cfg = loadConfig()
+      if (cfg.enabled) {
+        syncAllEmails(cfg.limit).catch(() => {})
       }
-      es.onerror = ()=>{
-        // 连接断开，30秒后重连
-        setTimeout(()=>{ startIdleListeners() }, 30000)
-      }
-      idleEventSources[acc.id] = es
-    }catch{}
+    }
   }
 }
 
-export function stopIdleListeners(){
-  for(const k of Object.keys(idleEventSources)){
-    idleEventSources[k].close()
-    delete idleEventSources[k]
+function handleFocus() {
+  const now = Date.now()
+  if (now - lastSyncByVisibility > 30000 && !syncing) {
+    lastSyncByVisibility = now
+    const cfg = loadConfig()
+    if (cfg.enabled) {
+      syncAllEmails(cfg.limit).catch(() => {})
+    }
   }
+}
+
+let listenersAttached = false
+
+function attachListeners() {
+  if (listenersAttached) return
+  listenersAttached = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('focus', handleFocus)
+}
+
+function detachListeners() {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener('focus', handleFocus)
+  listenersAttached = false
+}
+
+// ====== 初始化（供 App 启动时调用）======
+export function initEmailSync() {
+  const cfg = loadConfig()
+  attachListeners()
+  if (cfg.enabled) startAutoSync()
+}
+
+export function destroyEmailSync() {
+  stopAutoSync()
+  detachListeners()
 }
