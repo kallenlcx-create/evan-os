@@ -152,7 +152,7 @@ async function init() {
   console.log('[sync-server] storage ready')
   }catch(e){
     dbReady=false
-    console.warn('[sync-server] MySQL 不可用，已降级为内存模式（云同步不可用，但邮件IMAP仍可用）:', e.message)
+    console.log('[sync-server] MySQL 未连接，使用内存+文件模式（邮件IMAP正常）')
   }
 }
 
@@ -832,6 +832,9 @@ app.use((err, req, res, next) => {
 })
 
 init().then(() => {
-  app.listen(PORT, () =>
-    console.log(`[sync-server] listening on :${PORT}${process.env.SECRET ? '' : ' (WARNING: SECRET 未设置，已用随机值，重启后所有令牌失效)'}`))
+  app.listen(PORT, () => {
+    const dbMode = dbReady ? 'MySQL' : '内存+文件'
+    const secretMode = process.env.SECRET ? '环境变量' : 'secret.key'
+    console.log(`[sync-server] listening on :${PORT} | 数据库: ${dbMode} | 密钥: ${secretMode}`)
+  })
 })
