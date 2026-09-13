@@ -71,10 +71,12 @@ export default function AiChat() {
     try {
       abortRef.current = new AbortController()
       let fullContent = ''
+      let chunkCount = 0
       for await (const chunk of streamChat({ messages: history, signal: abortRef.current.signal })) {
         if (chunk.done) break
         fullContent += chunk.content
         assistantMsg.content = fullContent
+        chunkCount++
         // 实时更新 UI
         setSessions(prev => prev.map(s => {
           if (s.id !== activeId) return s
@@ -87,6 +89,10 @@ export default function AiChat() {
           }
           return { ...s, messages: msgs, updatedAt: Date.now() }
         }))
+        // 每5个chunk持久化一次，防止导航丢失
+        if (chunkCount % 5 === 0) {
+          appendMessage(activeId, { ...assistantMsg, content: fullContent })
+        }
       }
       // 最终保存
       appendMessage(activeId, { ...assistantMsg, content: fullContent })

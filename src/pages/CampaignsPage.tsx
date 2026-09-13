@@ -48,8 +48,11 @@ export default function CampaignsPage() {
   useEffect(() => {
     ;(async () => {
       setCustomers(await db.customers.toArray() as Customer[])
-      const hist = localStorage.getItem('evan:campaignHistory')
-      if (hist) setCampaignHistory(JSON.parse(hist))
+      // 从 IndexedDB 加载 Campaign 历史
+      try {
+        const saved = await db.appState.get('evan:campaignHistory')
+        if (saved?.data) setCampaignHistory(saved.data)
+      } catch {}
     })()
   }, [])
 
@@ -133,8 +136,22 @@ export default function CampaignsPage() {
             status: 'sent',
             messageId: result.messageId,
           })
-          // 更新客户最后联系时间
-          await db.customers.update(c.id, { updatedAt: new Date().toISOString() } as any)
+          // 自动创建跟进记录，3天后跟进
+          const dueAt = new Date(Date.now() + 3 * 86400000).toISOString()
+          await db.followUps.put({
+            id: `fu-camp-${Date.now()}-${i}`,
+            customerId: c.id,
+            dueAt,
+            channel: ['campaign'],
+            note: `批量营销: ${selectedTemplate.name}`,
+            status: 'sent',
+            createdAt: new Date().toISOString(),
+          } as any)
+          await db.customers.update(c.id, {
+            updatedAt: new Date().toISOString(),
+            lastContactAt: new Date().toISOString(),
+            followUpAt: dueAt.slice(0, 10),
+          } as any)
         }
       } catch (e) {
         setSendProgress(prev => ({ ...prev, errors: prev.errors + 1 }))
@@ -143,10 +160,10 @@ export default function CampaignsPage() {
       await new Promise(r => setTimeout(r, 1000))
     }
 
-    // 保存发送记录
+    // 保存发送记录到 IndexedDB
     const allHistory = [...campaignHistory, ...newHistory]
     setCampaignHistory(allHistory)
-    localStorage.setItem('evan:campaignHistory', JSON.stringify(allHistory))
+    await db.appState.put({ key: 'evan:campaignHistory', data: allHistory })
 
     setSendProgress({ done: selectedCustomers.length, total: selectedCustomers.length, errors: 0 })
     setSending(false)

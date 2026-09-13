@@ -124,7 +124,11 @@ export default function FollowUpsPage() {
         // 更新客户阶段
         const { advanceStage } = await import('../services/customerFactory')
         const newStage = advanceStage(sendTarget.stage || 'lead', '报价回复')
-        await db.customers.update(sendTarget.id, { stage: newStage, updatedAt: new Date().toISOString() } as any)
+        await db.customers.update(sendTarget.id, {
+          stage: newStage,
+          updatedAt: new Date().toISOString(),
+          lastContactAt: new Date().toISOString(),
+        } as any)
         emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: sendTarget.id, action: 'followed_up' })
         alert('邮件已发送！')
         setShowSendModal(false)

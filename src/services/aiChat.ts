@@ -83,7 +83,10 @@ async function* parseSSEStream(
 /** 流式调用 AI Chat Completions */
 export async function* streamChat(request: ChatRequest): AsyncGenerator<ChatChunk> {
   const settings = getAiSettings()
-  if (!settings.apiKey) throw new Error('请先在 AI 设置中配置 API Key')
+  if (!settings.apiKey) {
+    yield { content: '⚠️ 请先点击右上角齿轮图标配置 API Key 和 BaseUrl。\n\n支持 OpenAI / DeepSeek / 通义千问 / 豆包 / Kimi / 智谱 / Claude 等。', done: true }
+    return
+  }
 
   const isClaude = settings.providerId === 'claude'
 
