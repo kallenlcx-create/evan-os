@@ -606,8 +606,9 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     if(sinceUid > 0){
       // 增量同步模式：只拉UID > sinceUid的邮件
       try{
-        const searchResult = await client.search([{uid:{since:sinceUid}}], { uid:true })
-        uids = (searchResult || []).map(r => r.uid).filter(uid => uid > sinceUid)
+        const searchResult = await client.search({uid:{since:sinceUid}}, { uid:true })
+        // imapflow search+{uid:true} 返回数字UID数组 [123,456,...]，不是对象
+        uids = (Array.isArray(searchResult) ? searchResult : []).filter(uid => uid > sinceUid)
         uids.sort((a,b) => b - a)
         uids = uids.slice(offset, offset + limit)
         console.log(`[email-sync] 增量同步 sinceUid=${sinceUid}，找到 ${uids.length} 封新邮件`)
@@ -616,11 +617,15 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
       }
     } else if(searchQuery){
       // IMAP SEARCH 模式：按条件搜索（如 UNSEEN）
+      // imapflow 不支持字符串格式，必须转为对象格式
       try{
-        const searchResult = await client.search(searchQuery, { uid:true })
-        uids = (searchResult || []).map(r => r.uid).filter(Boolean)
+        const searchCriteria = searchQuery.toUpperCase() === 'UNSEEN' ? {unseen: true} : searchQuery
+        const searchResult = await client.search(searchCriteria, { uid:true })
+        // imapflow search+{uid:true} 返回数字UID数组
+        uids = Array.isArray(searchResult) ? [...searchResult] : []
         uids.sort((a,b) => b - a)
         uids = uids.slice(offset, offset + limit)
+        console.log(`[email-sync] SEARCH "${searchQuery}" → ${uids.length} 封`)
       }catch(searchErr){
         console.log(`[email-sync] SEARCH "${searchQuery}" 失败，回退到顺序模式:`, searchErr.message)
         searchQuery.length = 0
@@ -643,7 +648,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     for(let i=0; i<uids.length; i+=batchSize){
       const batch = uids.slice(i, i+batchSize)
       const seqRange = batch.join(',')
-      for await (const msg of client.fetch(seqRange, fields)){
+      for await (const msg of client.fetch(seqRange, fields, {uid:true})){
         try{
           if(headersOnly){
             const toAddrs = msg.envelope.to || []
