@@ -53,7 +53,7 @@ function emitDone(detail: any) {
   emitEvent(EVENTS.CUSTOMERS_UPDATED, detail)
 }
 
-// ====== 核心同步函数（增量同步策略）======
+// ====== 核心同步函数（增量同步 + 每次刷新未读）======
 export async function syncAllEmails(limit: number | 'all' = 30): Promise<number> {
   const lim = limit === 'all' ? 1000000 : Number(limit) || 30
   if (syncing) return 0
@@ -79,8 +79,33 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
       const lastSyncUid = (acc as any).lastSyncUid || 0
 
       try {
+        // ====== 每次同步都搜索未读邮件（未读状态会变化）======
+        emitProgress({
+          status: `[${i + 1}/${accounts.length}] ${acc.email} 搜索未读邮件...`,
+          done: totalAdded, total: grandTotal, errors: totalErrors,
+        })
+        let unreadOffset = 0
+        while (true) {
+          let res: any
+          try {
+            res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
+          } catch (batchErr: any) {
+            totalErrors++
+            break
+          }
+          const added = typeof res === 'object' ? res.added : Number(res) || 0
+          const hasMore = typeof res === 'object' ? res.hasMore : false
+          if (added > 0) { totalAdded += added; unreadOffset += added }
+          emitProgress({
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
+            done: totalAdded, total: grandTotal, errors: totalErrors,
+          })
+          if (!hasMore || added === 0) break
+          await new Promise(r => setTimeout(r, 30))
+        }
+
+        // ====== 增量同步：只拉新邮件（UID > lastSyncUid）======
         if (lastSyncUid > 0) {
-          // ====== 增量同步：只拉新邮件（UID > lastSyncUid）======
           emitProgress({
             status: `[${i + 1}/${accounts.length}] ${acc.email} 增量同步（UID>${lastSyncUid}）...`,
             done: totalAdded, total: grandTotal, errors: totalErrors,
@@ -92,10 +117,6 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
               res = await syncReal(acc.id, 200, incOffset, true, '', lastSyncUid)
             } catch (batchErr: any) {
               totalErrors++
-              emitProgress({
-                status: `[${i + 1}/${accounts.length}] ${acc.email} 增量失败: ${String(batchErr.message || batchErr).slice(0, 40)}`,
-                done: totalAdded, total: grandTotal, errors: totalErrors,
-              })
               break
             }
             const added = typeof res === 'object' ? res.added : Number(res) || 0
@@ -109,33 +130,7 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
             await new Promise(r => setTimeout(r, 30))
           }
         } else {
-          // ====== 首次全量同步：先拉未读，再拉最新 ======
-          // 第一步：拉未读邮件
-          emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 首次同步，拉取未读...`,
-            done: totalAdded, total: grandTotal, errors: totalErrors,
-          })
-          let unreadOffset = 0
-          while (true) {
-            let res: any
-            try {
-              res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
-            } catch (batchErr: any) {
-              totalErrors++
-              break
-            }
-            const added = typeof res === 'object' ? res.added : Number(res) || 0
-            const hasMore = typeof res === 'object' ? res.hasMore : false
-            if (added > 0) { totalAdded += added; unreadOffset += added }
-            emitProgress({
-              status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
-              done: totalAdded, total: grandTotal, errors: totalErrors,
-            })
-            if (!hasMore || added === 0) break
-            await new Promise(r => setTimeout(r, 30))
-          }
-
-          // 第二步：拉最新邮件（补充已读）
+          // 首次同步：拉最新邮件（补充已读）
           emitProgress({
             status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取最新邮件...`,
             done: totalAdded, total: grandTotal, errors: totalErrors,
