@@ -237,6 +237,41 @@ async function init() {
       INDEX idx_status (username, status, next_try_at),
       UNIQUE INDEX idx_idem (idempotency_key)
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS followup_sequences (
+      customer_id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      account_id VARCHAR(80) NOT NULL,
+      email VARCHAR(256) DEFAULT '',
+      mode VARCHAR(16) DEFAULT 'auto',
+      current_step INT DEFAULT 1,
+      next_due_at DATETIME NULL,
+      steps_json MEDIUMTEXT,
+      intervals_json VARCHAR(256),
+      replied TINYINT DEFAULT 0,
+      replied_at DATETIME NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP(3) NOT NULL,
+      INDEX idx_due (username, mode, next_due_at),
+      INDEX idx_user (username)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS followup_templates (
+      id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      name VARCHAR(128) DEFAULT '',
+      kind VARCHAR(16) DEFAULT 'auto',
+      subject VARCHAR(1024) DEFAULT '',
+      body MEDIUMTEXT,
+      updated_at TIMESTAMP(3) NOT NULL,
+      INDEX idx_user (username, kind)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS followup_config (
+      username VARCHAR(64) PRIMARY KEY,
+      intervals_json VARCHAR(256),
+      updated_at TIMESTAMP(3) NOT NULL
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
   console.log('[sync-server] storage ready')
   }catch(e){
     dbReady=false
@@ -990,6 +1025,13 @@ async function runMailIngest(accountId, username, opts = {}){
                       const att = atts.length ? 1 : 0
                       await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
                         [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
+                      // 回复检测：收件方向+实质内容 → 序列转手动+🔔
+                      try{
+                        const fromAddr = String(msg.envelope?.from?.[0]?.address || parsed?.from?.value?.[0]?.address || '').toLowerCase()
+                        if(fromAddr && !fromAddr.includes(acc.email.toLowerCase())){
+                          await seqReplyCheck(accountId, username, msg.uid, msg.envelope, parsed, msg.internalDate || msg.envelope?.date)
+                        }
+                      }catch{}
                       // 附件元数据+落盘
                       for(const a of atts){
                         try{
@@ -1656,6 +1698,256 @@ async function outboxTick(){
   }catch(e){ console.log('[outbox] tick skip:', String(e.message||e).slice(0,120)) }
 }
 setInterval(outboxTick, 30000)
+
+// ====== 自动跟进序列引擎 ======
+const DEFAULT_INTERVALS = [1, 2, 3, 4, 5, 6, 7] // 跟进1报价后1天，之后每步+2/+3…天（可改）
+const DEFAULT_STEP_COPY = [
+  { n: 1, opener: 'Following up on the quotation I sent yesterday. Do you have any questions on price or specs?' },
+  { n: 2, opener: 'Just floating this to the top of your inbox in case it got buried. Happy to adjust quantity or specs to fit your budget.' },
+  { n: 3, opener: 'Many of our clients finalize decisions around this stage. Shall I reserve production slots for you?' },
+  { n: 4, opener: 'I wanted to share that raw material prices are trending up. Locking in this week could save you some cost.' },
+  { n: 5, opener: 'Checking in once more — is there anything holding this back on your side? Timeline, design, or payment terms?' },
+  { n: 6, opener: 'This will be one of my last check-ins so I don\u2019t clutter your inbox. If the timing is off, just tell me when to come back.' },
+  { n: 7, opener: 'Closing the loop on my side for now. If anything changes, reply to this email and I\u2019ll pick it right up.' },
+]
+async function getIntervals(username){
+  try{
+    const [rows] = await pool.query('SELECT intervals_json FROM followup_config WHERE username=?',[username])
+    if(rows.length && rows[0].intervals_json){
+      const arr = JSON.parse(rows[0].intervals_json)
+      if(Array.isArray(arr) && arr.length === 7 && arr.every(n=> Number(n) > 0)) return arr.map(Number)
+    }
+  }catch{}
+  return [...DEFAULT_INTERVALS]
+}
+async function seedDefaultTemplates(username){
+  try{
+    const [rows] = await pool.query('SELECT COUNT(*) AS c FROM followup_templates WHERE username=? AND kind=?',[username, 'auto'])
+    if(Number(rows[0]?.c)) return
+    const now = sqlNow()
+    for(const s of DEFAULT_STEP_COPY){
+      await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)`,
+        [`auto-${username}-${s.n}`, username, `自动跟进${s.n}`, 'auto',
+         'Following up: {{product}} quotation',
+         `Hi {{first_name}},\n\n${s.opener}\n\nOur {{product}} can be ready in about 12-15 days after design confirmation.\n\nBest regards,\nEvan`, now])
+    }
+  }catch(e){ console.log('[seq] seed skip:', String(e.message||e).slice(0,80)) }
+}
+
+// 序列配置：GET/PUT /email/seq-config {intervals:[1,2,3,4,5,6,7]}
+app.get('/email/seq-config', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  res.json({ intervals: await getIntervals(req.user) })
+}))
+app.put('/email/seq-config', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const arr = req.body?.intervals
+  if(!Array.isArray(arr) || arr.length !== 7 || !arr.every(n=> Number(n) > 0)) return res.status(400).json({ error:'需要7个正数' })
+  await pool.query(`INSERT INTO followup_config (username, intervals_json, updated_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE intervals_json=VALUES(intervals_json), updated_at=VALUES(updated_at)`,
+    [req.user, JSON.stringify(arr.map(Number)), sqlNow()])
+  res.json({ ok:true, intervals: arr.map(Number) })
+}))
+
+// 模板：GET /email/seq-templates?kind=auto ｜ PUT /email/seq-templates ｜ DELETE /email/seq-templates/:id
+app.get('/email/seq-templates', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  await seedDefaultTemplates(req.user)
+  const kind = String(req.query.kind || 'auto')
+  const [rows] = await pool.query('SELECT * FROM followup_templates WHERE username=? AND kind=? ORDER BY id',[req.user, kind])
+  res.json({ templates: rows })
+}))
+app.put('/email/seq-templates', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { id, name, kind, subject, body } = req.body || {}
+  const tid = id || `tpl-${Date.now()}-${Math.floor(Math.random()*1e4)}`
+  await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE name=VALUES(name), kind=VALUES(kind), subject=VALUES(subject), body=VALUES(body), updated_at=VALUES(updated_at)`,
+    [tid, req.user, name || '未命名', kind === 'marketing' ? 'marketing' : 'auto', subject || '', body || '', sqlNow()])
+  res.json({ ok:true, id: tid })
+}))
+app.delete('/email/seq-templates/:id', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  await pool.query('DELETE FROM followup_templates WHERE id=? AND username=?',[req.params.id, req.user])
+  res.json({ ok:true })
+}))
+
+// 序列列表：GET /email/sequences?mode=（带客户名/等级）
+app.get('/email/sequences', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const mode = String(req.query.mode || '')
+  const [rows] = await pool.query(
+    mode ? 'SELECT * FROM followup_sequences WHERE username=? AND mode=? ORDER BY next_due_at' : 'SELECT * FROM followup_sequences WHERE username=? ORDER BY next_due_at',
+    mode ? [req.user, mode] : [req.user])
+  // 关联客户名（读云同步 data 表）
+  let nameMap = new Map()
+  try{
+    const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
+    for(const r of crows){
+      try{ const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; nameMap.set(r.row_id, { title: d.title || d.contactName, level: d.level, isKey: !!d.isKey, email: d.email }) }catch{}
+    }
+  }catch{}
+  res.json({ sequences: rows.map(s=>{
+    let steps = []
+    try{ steps = JSON.parse(s.steps_json || '[]') }catch{}
+    return { ...s, steps, customer: nameMap.get(s.customer_id) || null }
+  }) })
+}))
+
+// 启动序列：POST /email/sequences {customerId, email, accountId, intervals?, steps?[{subject,body,images[]}]}
+app.post('/email/sequences', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { customerId, email, accountId, intervals, steps } = req.body || {}
+  if(!customerId || !email || !accountId) return res.status(400).json({ error:'需要 customerId, email, accountId' })
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const iv = (Array.isArray(intervals) && intervals.length === 7) ? intervals.map(Number) : await getIntervals(req.user)
+  let stepDefs = Array.isArray(steps) && steps.length ? steps.slice(0, 7) : []
+  if(!stepDefs.length){
+    await seedDefaultTemplates(req.user)
+    const [trows] = await pool.query(`SELECT * FROM followup_templates WHERE username=? AND kind='auto' ORDER BY id LIMIT 7`,[req.user])
+    stepDefs = trows.map((t, i)=>({ subject: t.subject, body: t.body, images: [] }))
+  }
+  while(stepDefs.length < 7) stepDefs.push({ ...(stepDefs[stepDefs.length-1] || { subject:'Following up', body:'Hi, just checking in.', images:[] }) })
+  const now = Date.now()
+  const full = stepDefs.slice(0, 7).map((s, i)=>({ n:i+1, offsetDays: iv[i], subject: s.subject || '', body: s.body || '', images: s.images || [], status:'pending', sentAt: null }))
+  // 渲染变量在创建时一次展开（{{first_name}} 等用客户邮箱前缀兜底）
+  const firstName = String(email.split('@')[0]).split(/[._-]/)[0] || 'there'
+  for(const s of full){
+    s.subject = String(s.subject).replace(/\{\{first_name\}\}/gi, firstName)
+    s.body = String(s.body).replace(/\{\{first_name\}\}/gi, firstName)
+  }
+  const nextDue = new Date(now + iv[0]*86400000)
+  await pool.query(
+    `INSERT INTO followup_sequences (customer_id, username, account_id, email, mode, current_step, next_due_at, steps_json, intervals_json, replied, updated_at)
+     VALUES (?,?,?,?, 'auto', 1, ?, ?, ?, 0, ?) ON DUPLICATE KEY UPDATE account_id=VALUES(account_id), email=VALUES(email), mode='auto', current_step=1, next_due_at=VALUES(next_due_at), steps_json=VALUES(steps_json), intervals_json=VALUES(intervals_json), replied=0, replied_at=NULL, updated_at=VALUES(updated_at)`,
+    [customerId, req.user, accountId, email, sqlDate(nextDue), JSON.stringify(full), JSON.stringify(iv), sqlNow()])
+  res.json({ ok:true, nextDueAt: nextDue.toISOString() })
+}))
+
+// 切换模式/续跑：PATCH /email/sequences/:customerId {mode:'auto'|'manual'|'dormant', fromStep?}
+app.patch('/email/sequences/:customerId', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { mode, fromStep } = req.body || {}
+  if(!['auto','manual','dormant','done'].includes(mode)) return res.status(400).json({ error:'mode 非法' })
+  const [rows] = await pool.query('SELECT * FROM followup_sequences WHERE customer_id=? AND username=?',[req.params.customerId, req.user])
+  if(!rows.length) return res.status(404).json({ error:'序列不存在' })
+  const s = rows[0]
+  let steps = []
+  try{ steps = JSON.parse(s.steps_json || '[]') }catch{}
+  let iv = []
+  try{ iv = JSON.parse(s.intervals_json || '[]') }catch{}
+  if(mode === 'auto'){
+    const from = Math.min(7, Math.max(1, Number(fromStep) || Number(s.current_step) || 1))
+    // 重置 from 起后面步骤为 pending
+    steps = steps.map(t => t.n >= from ? { ...t, status:'pending', sentAt:null } : t)
+    const nextDue = new Date(Date.now() + (iv[from-1] || 1)*86400000)
+    await pool.query(`UPDATE followup_sequences SET mode='auto', current_step=?, next_due_at=?, steps_json=?, replied=0, replied_at=NULL, updated_at=? WHERE customer_id=? AND username=?`,
+      [from, sqlDate(nextDue), JSON.stringify(steps), sqlNow(), req.params.customerId, req.user])
+    return res.json({ ok:true, mode:'auto', currentStep: from, nextDueAt: nextDue.toISOString() })
+  }
+  await pool.query(`UPDATE followup_sequences SET mode=?, updated_at=? WHERE customer_id=? AND username=?`,
+    [mode, sqlNow(), req.params.customerId, req.user])
+  res.json({ ok:true, mode })
+}))
+
+// 序列调度 worker：每 30 分钟扫到期步骤 → 进发件队列；7 步走完无回复 → 沉睡池
+async function seqTick(){
+  if(!dbReady) return
+  try{
+    const [rows] = await pool.query(
+      `SELECT * FROM followup_sequences WHERE mode='auto' AND next_due_at IS NOT NULL AND next_due_at<=NOW() AND current_step BETWEEN 1 AND 8 LIMIT 50`)
+    for(const s of rows){
+      try{
+        let steps = []
+        try{ steps = JSON.parse(s.steps_json || '[]') }catch{}
+        let iv = []
+        try{ iv = JSON.parse(s.intervals_json || '[]') }catch{}
+        if(Number(s.current_step) > 7){
+          // 7 步走完仍无回复 → 沉睡池
+          await pool.query(`UPDATE followup_sequences SET mode='dormant', updated_at=? WHERE customer_id=?`,[sqlNow(), s.customer_id])
+          console.log(`[seq] dormant ${s.customer_id}`)
+          continue
+        }
+        const step = steps.find(t=> Number(t.n) === Number(s.current_step))
+        if(!step || step.status === 'sent'){ // 数据不一致则推进
+          await pool.query(`UPDATE followup_sequences SET current_step=current_step+1, next_due_at=DATE_ADD(NOW(), INTERVAL 1 DAY), updated_at=? WHERE customer_id=?`,[sqlNow(), s.customer_id])
+          continue
+        }
+        // 图片占位 {{image:1}} → CID 内嵌（文件在 D:\mail-data 或 uploads）
+        let html = String(step.body || '').replace(/\n/g, '<br>')
+        const attachments = []
+        const imgs = Array.isArray(step.images) ? step.images.slice(0,5) : []
+        for(let i=0;i<imgs.length;i++){
+          const token = `{{image:${i+1}}}`
+          if(!html.includes(token)) continue
+          let buf = null, mime = 'image/png', fname = `img${i+1}.png`
+          try{
+            const [frows] = await pool.query('SELECT stored_name, original_name, mime_type, path FROM files WHERE id=? AND username=?',[imgs[i], s.username])
+            if(frows.length){ buf = fs.readFileSync(frows[0].path); mime = frows[0].mime_type || mime; fname = frows[0].original_name || fname }
+          }catch{}
+          if(buf){ attachments.push({ filename: fname, content: buf, cid: `seqimg${i}` }); html = html.split(token).join(`<img src="cid:seqimg${i}" style="max-width:100%">`) }
+          else html = html.split(token).join('')
+        }
+        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[s.account_id, s.username])
+        if(!arows.length) throw new Error('账号不存在')
+        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: s.email, subject: step.subject, text: step.body, html, inReplyTo: undefined, references: undefined })
+        // 发件成功：记步、推进
+        step.status = 'sent'; step.sentAt = new Date().toISOString(); step.messageId = info.messageId || ''
+        const next = Number(s.current_step) + 1
+        const gap = iv[next-1] || iv[iv.length-1] || 1
+        const nextDue = next > 7 ? new Date(Date.now() + 7*86400000) : new Date(Date.now() + gap*86400000)
+        await pool.query(`UPDATE followup_sequences SET steps_json=?, current_step=?, next_due_at=?, updated_at=? WHERE customer_id=?`,
+          [JSON.stringify(steps), next, sqlDate(nextDue), sqlNow(), s.customer_id])
+        console.log(`[seq] sent step${s.current_step} -> ${s.email}`)
+      }catch(e){ console.log('[seq] step skip:', s.customer_id, String(e.message||e).slice(0,100)) }
+    }
+  }catch(e){ console.log('[seq] tick skip:', String(e.message||e).slice(0,100)) }
+}
+setInterval(seqTick, 30*60*1000)
+
+// 实质回复判定：排除自动回复/退信/系统通知
+function isSubstantiveReply(env, parsed){
+  const subj = String(env?.subject || parsed?.subject || '')
+  const from = String(env?.from?.[0]?.address || parsed?.from?.value?.[0]?.address || '').toLowerCase()
+  const text = String(parsed?.text || '').slice(0, 2000)
+  if(/mailer-daemon|postmaster|no-?reply|donotreply|bounce/i.test(from)) return false
+  if(/^(auto|automatic reply|out of office|ooo|away|vacation|undeliverable|delivery status|mail delivery failed|failure notice|delayed mail)/i.test(subj.trim())) return false
+  if(/自动回复|不在办公室|休假|投递失败|退信|发送失败/i.test(subj)) return false
+  try{
+    const h = parsed?.headers
+    const auto = h ? String(h.get('auto-submitted') || h.get('x-auto-response-suppress') || '') : ''
+    if(auto && auto.toLowerCase() !== 'no') return false
+  }catch{}
+  const body = text.replace(/^\s*(hi|hello|dear|你好|您好)[^]*?\n/i, '').trim()
+  if(/out of office|automatic reply|自动回复/i.test(text)) return false
+  if(body.replace(/\W/g, '').length < 5 && !/yes|ok|确认|可以|好的|谢谢|thanks/i.test(body)) return false
+  return true
+}
+// 回复检测：在正文入库时触发（只看14天内的新邮件，老邮件回填不触发）
+async function seqReplyCheck(accountId, username, uid, env, parsed, msgDate){
+  try{
+    if(msgDate && (Date.now() - new Date(msgDate).getTime()) > 14*86400000) return
+    const from = String(env?.from?.[0]?.address || parsed?.from?.value?.[0]?.address || '').toLowerCase().trim()
+    if(!from || !from.includes('@')) return
+    if(!isSubstantiveReply(env, parsed)) return
+    // 找该发件人的客户（读云同步 data 表）
+    const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[username])
+    let customerId = null
+    for(const r of crows){
+      try{
+        const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data
+        const mails = [(d.email||'').toLowerCase(), ...((d.extraEmails||[]).map(e=>String(e).toLowerCase()))]
+        if(mails.includes(from)){ customerId = r.row_id; break }
+      }catch{}
+    }
+    if(!customerId) return
+    const [srows] = await pool.query(`SELECT mode FROM followup_sequences WHERE customer_id=? AND username=?`,[customerId, username])
+    if(srows.length && srows[0].mode === 'auto'){
+      await pool.query(`UPDATE followup_sequences SET mode='manual', replied=1, replied_at=?, updated_at=? WHERE customer_id=?`,[sqlDate(new Date()), sqlNow(), customerId])
+      console.log(`[seq] replied -> manual ${customerId} (${from})`)
+    }
+  }catch{}
+}
 
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
