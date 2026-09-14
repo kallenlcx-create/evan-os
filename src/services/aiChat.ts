@@ -144,17 +144,30 @@ export async function* streamChat(request: ChatRequest): AsyncGenerator<ChatChun
     'Authorization': `Bearer ${settings.apiKey}`,
   }
 
-  // 代理模式 or 直连
+  // 代理模式 or 直连；代理瞬间失败则自动直连重试一次
   const proxy = buildProxyInit(settings, targetUrl, 'POST', headers, JSON.stringify(body), request.signal)
-  const fetchUrl = proxy?.url ?? targetUrl
-  const fetchInit: RequestInit = proxy?.init ?? {
+  const directInit: RequestInit = {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
     signal: request.signal,
   }
-
-  const res = await fetchWithTimeout(fetchUrl, fetchInit, 25000)
+  let res: Response
+  if(proxy){
+    try{
+      res = await fetchWithTimeout(proxy.url, proxy.init, 25000)
+    }catch(proxyErr: any){
+      if(proxyErr?.name === 'AbortError') throw proxyErr
+      // 代理不通（配错地址/混合内容/扩展拦截）→ 直连重试一次
+      try{
+        res = await fetchWithTimeout(targetUrl, directInit, 25000)
+      }catch{
+        throw new Error(`代理和直连都失败。代理错误：${proxyErr.message}；直连同样不通。请检查：1)代理地址是否 exactly 为 funnel 地址；2)是否为 https；3)BaseUrl/模型名是否正确`)
+      }
+    }
+  } else {
+    res = await fetchWithTimeout(targetUrl, directInit, 25000)
+  }
 
   yield* parseSSEStream(res, (data) => {
     const parsed = JSON.parse(data)
@@ -188,15 +201,27 @@ async function* streamClaude(request: ChatRequest): AsyncGenerator<ChatChunk> {
   }
 
   const proxy = buildProxyInit(settings, targetUrl, 'POST', headers, JSON.stringify(body), request.signal)
-  const fetchUrl = proxy?.url ?? targetUrl
-  const fetchInit: RequestInit = proxy?.init ?? {
+  const directInit: RequestInit = {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
     signal: request.signal,
   }
-
-  const res = await fetchWithTimeout(fetchUrl, fetchInit, 25000)
+  let res: Response
+  if(proxy){
+    try{
+      res = await fetchWithTimeout(proxy.url, proxy.init, 25000)
+    }catch(proxyErr: any){
+      if(proxyErr?.name === 'AbortError') throw proxyErr
+      try{
+        res = await fetchWithTimeout(targetUrl, directInit, 25000)
+      }catch{
+        throw new Error(`代理和直连都失败。代理错误：${proxyErr.message}；直连同样不通。请检查代理地址/BaseUrl/模型名`)
+      }
+    }
+  } else {
+    res = await fetchWithTimeout(targetUrl, directInit, 25000)
+  }
 
   yield* parseSSEStream(res, (data) => {
     const parsed = JSON.parse(data)
