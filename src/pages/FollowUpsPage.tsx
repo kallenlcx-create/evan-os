@@ -6,7 +6,6 @@ import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, S
 import { useNavigate } from 'react-router-dom'
 import { listAccounts, sendEmail } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
-import { chatOnce } from '../services/aiChat'
 
 // ====== 跟进模板库 ======
 const TEMPLATES = [
@@ -101,27 +100,7 @@ export default function FollowUpsPage() {
     setShowSendModal(true)
   }, [])
 
-  // ====== AI 一键生成跟进草稿 ======
-  const [aiDrafting, setAiDrafting] = useState(false)
-  const handleAiDraft = useCallback(async () => {
-    if (!sendTarget || aiDrafting) return
-    setAiDrafting(true)
-    try {
-      const c = sendTarget
-      const product = c.portrait?.products?.[0] || 'Challenge Coin'
-      const prompt = `你是Maxemblem的外贸业务员Evan，给客户写一封英文跟进邮件。只返回邮件正文，不要解释。\n客户：${c.contactName || c.title}（${c.email}，${c.company || '公司未知'}）\n等级：${c.level || 'C'}${c.isKey ? '（重点客户）' : ''}，阶段：${c.stage || 'lead'}，评分：${c.score ?? '未知'}\n产品：${product}\n客户画像：${c.aiSummary || '无'}\n要求：简短亲切，提一下产品，结尾问一句是否需要报价或样品，落款Evan。`
-      const draft = await chatOnce(prompt)
-      if (draft && !draft.startsWith('⚠️')) {
-        setSendBody(draft.trim())
-        const subj = await chatOnce(`给下面这封跟进邮件起一个英文主题行，只返回主题本身：\n${draft.slice(0, 500)}`)
-        if (subj && !subj.startsWith('⚠️')) setSendSubject(subj.trim().replace(/^["']|["']$/g, ''))
-      } else {
-        alert(draft || 'AI 生成失败，请检查 AI 设置')
-      }
-    } catch (e: any) {
-      alert('AI 生成失败：' + String(e.message || e).slice(0, 150))
-    } finally { setAiDrafting(false) }
-  }, [sendTarget, aiDrafting])
+  // ====== 真实发送 ======
   const handleSend = useCallback(async () => {
     if (!sendTarget || !sendBody.trim()) return
     setSending(true)
@@ -269,9 +248,6 @@ export default function FollowUpsPage() {
               <div><label className="text-xs text-gray-400">收件人</label><input value={sendTarget.email || ''} readOnly className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-50" /></div>
               <div><label className="text-xs text-gray-400">主题</label><input value={sendSubject} onChange={e => setSendSubject(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
               <div><label className="text-xs text-gray-400">正文</label><textarea value={sendBody} onChange={e => setSendBody(e.target.value)} className="w-full h-48 px-3 py-2 border rounded-lg text-sm resize-none" /></div>
-              <button onClick={handleAiDraft} disabled={aiDrafting} className="w-full py-2 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs hover:bg-purple-100 disabled:opacity-50">
-                ✨ {aiDrafting ? 'AI 生成中...' : 'AI 一键生成跟进草稿'}
-              </button>
             </div>
             <div className="px-5 py-3 border-t flex items-center gap-2">
               <button onClick={() => setShowSendModal(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>

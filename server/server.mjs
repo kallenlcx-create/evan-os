@@ -184,8 +184,6 @@ async function init() {
       INDEX idx_date (account_id, folder, msg_date),
       FULLTEXT INDEX ft_mail (subject, from_addr, to_addr, body_text) WITH PARSER ngram
     ) CHARACTER SET utf8mb4`).catch(()=>{})
-  // Gmail 标签列（后加，兼容已建表）
-  await pool.query(`ALTER TABLE mail_messages ADD COLUMN labels VARCHAR(1024) DEFAULT ''`).catch(()=>{})
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mail_threads (
       account_id VARCHAR(80) NOT NULL,
@@ -867,7 +865,7 @@ const ingestJobs = new Map() // accountId -> {running, mode, folder, done, total
 
 async function runMailIngest(accountId, username, opts = {}){
   const folders = Array.isArray(opts.folders) && opts.folders.length ? opts.folders : ['[Gmail]/All Mail']
-  const mode = opts.mode === 'incremental' ? 'incremental' : (opts.mode === 'labels' ? 'labels' : 'full')
+  const mode = opts.mode === 'incremental' ? 'incremental' : 'full'
   const st = { running:true, mode, folder:'', done:0, total:0, added:0, updated:0, startedAt:new Date().toISOString(), error:'' }
   ingestJobs.set(accountId, st)
   try{
@@ -892,32 +890,6 @@ async function runMailIngest(accountId, username, opts = {}){
             state = null
           }
           const lastUid = state ? Number(state.last_uid)||0 : 0
-          // labels 模式：只补 Gmail 标签（无正文，极快），供标签客户导入用
-          if(mode === 'labels'){
-            st.phase = 'labels'
-            while(true){
-              if(st.cancelled) throw new Error('cancelled')
-              const [todoRows] = await pool.query(`SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND (labels IS NULL OR labels='') ORDER BY uid LIMIT 500`,[accountId, folder]).catch(()=> [[]])
-              const todo = (todoRows||[]).map(r=>Number(r.uid)).filter(Boolean)
-              if(!todo.length) break
-              st.total += todo.length
-              for(let i=0;i<todo.length;i+=200){
-                if(st.cancelled) throw new Error('cancelled')
-                const batch = todo.slice(i,i+200)
-                try{
-                  await withTimeout((async()=>{
-                    for await (const msg of client.fetch(batch.join(','), { gmailLabels:true, uid:true }, { uid:true })){
-                      const gl = Array.isArray(msg.gmailLabels) ? msg.gmailLabels.map(String).slice(0,20).join(',') : ''
-                      await pool.query('UPDATE mail_messages SET labels=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',[gl, sqlNow(), accountId, folder, msg.uid]).catch(()=>{})
-                      st.done++
-                    }
-                  })(), 2*60*1000, 'labels-batch')
-                }catch(e){ console.log('[ingest] labels batch skip:', String(e.message||e).slice(0,60)) }
-                await new Promise(r=>setImmediate(r))
-              }
-            }
-            continue // labels 模式不跑正文/状态刷新
-          }
           // 服务端全部 UID
           let allUids = await client.search({ all:true }, { uid:true })
           if(!Array.isArray(allUids)) allUids = []
@@ -932,14 +904,14 @@ async function runMailIngest(accountId, username, opts = {}){
           }
           st.total += missing.length
           const UPSERT_SQL =
-            `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-             ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), has_attachment=VALUES(has_attachment), labels=VALUES(labels),
+            `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), has_attachment=VALUES(has_attachment),
                body_text=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_text), body_text),
                body_cached=IF(VALUES(body_cached)=1,1,body_cached), updated_at=VALUES(updated_at)`;
           const saveRow = async (row) => {
             const r = await pool.query(UPSERT_SQL,
-              [accountId, folder, row.uid, row.message_id, row.gmail_msgid, row.gmail_threadid, row.subject, row.from_addr, row.from_name, row.to_addr, row.msg_date, row.is_read, row.has_attachment, row.body_text, row.body_cached, row.labels, sqlNow()]);
+              [accountId, folder, row.uid, row.message_id, row.gmail_msgid, row.gmail_threadid, row.subject, row.from_addr, row.from_name, row.to_addr, row.msg_date, row.is_read, row.has_attachment, row.body_text, row.body_cached, sqlNow()]);
             if(r[0].affectedRows === 1) st.added++; else st.updated++;
             st.done++;
           };
@@ -951,11 +923,10 @@ async function runMailIngest(accountId, username, opts = {}){
             const batch = missing.slice(i, i+500)
             try{
               await withTimeout((async()=>{
-              for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, internalDate:true, gmailMessageId:true, gmailThreadId:true, gmailLabels:true }, { uid:true })){
+              for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, internalDate:true, gmailMessageId:true, gmailThreadId:true }, { uid:true })){
                 try{
                   const env = msg.envelope || {}
                   const flags = msg.flags || new Set()
-                  const glabels = Array.isArray(msg.gmailLabels) ? msg.gmailLabels.map(String).slice(0,20).join(',') : ''
                   await saveRow({
                     uid: msg.uid,
                     message_id: String(env.messageId || '').slice(0,512),
@@ -970,7 +941,6 @@ async function runMailIngest(accountId, username, opts = {}){
                     has_attachment: 0,
                     body_text: '',
                     body_cached: 0,
-                    labels: glabels,
                   })
                 }catch{}
               }
@@ -989,7 +959,7 @@ async function runMailIngest(accountId, username, opts = {}){
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的；3 连接并行加速）
           st.phase = 'body'
           const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
-          const BODY_CONCURRENCY = 5 // Turbo 入库并发连接数
+          const BODY_CONCURRENCY = 3
           const processBodyBatch = async (wc, batch) => {
             // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
             let sizes = new Map()
@@ -1143,8 +1113,7 @@ app.post('/email/ingest/:accountId', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const cur = ingestJobs.get(accountId)
   if(cur && cur.running) return res.status(409).json({ error:'入库任务进行中', job:cur })
-  const m = req.body?.mode
-  const mode = m === 'incremental' ? 'incremental' : (m === 'labels' ? 'labels' : 'full')
+  const mode = req.body?.mode === 'incremental' ? 'incremental' : 'full'
   const folders = Array.isArray(req.body?.folders) && req.body.folders.length ? req.body.folders.map(String) : undefined
   runMailIngest(accountId, req.user, { mode, folders }).catch(()=>{})
   res.json({ ok:true, mode, job: ingestJobs.get(accountId) })
@@ -1162,22 +1131,6 @@ app.post('/email/ingest-stop/:accountId', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// Turbo 入库模式：POST /email/turbo {on:true|false}
-// 开：停掉所有 watcher（把 IMAP 连接全部让给入库任务）；关：恢复监听
-app.post('/email/turbo', auth, wrap(async (req,res)=>{
-  const on = !!req.body?.on
-  if(on){
-    for(const id of [...mailWatchers.keys()]) stopMailWatcher(id)
-    res.json({ ok:true, turbo:true, watchers: 0 })
-  } else {
-    await startAllMailWatchers()
-    res.json({ ok:true, turbo:false, watchers: mailWatchers.size })
-  }
-}))
-app.get('/email/turbo', auth, wrap(async (req,res)=>{
-  res.json({ turbo: mailWatchers.size === 0, watchers: mailWatchers.size })
-}))
-
 // 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步；light=1 跳过 IMAP 探测，零连接）
 app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
@@ -1190,7 +1143,7 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
   const pass = decAuth(acc.auth_enc)
   for(const folder of folders){
     const [srows] = await pool.query('SELECT * FROM mail_sync_state WHERE account_id=? AND folder=?',[accountId, folder])
-    const [crows] = await pool.query("SELECT COUNT(*) AS c, MAX(uid) AS maxUid, SUM(body_cached) AS bodies, SUM(labels<>'' ) AS labeled FROM mail_messages WHERE account_id=? AND folder=?",[accountId, folder])
+    const [crows] = await pool.query('SELECT COUNT(*) AS c, MAX(uid) AS maxUid, SUM(body_cached) AS bodies FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder])
     const dbCount = Number(crows[0]?.c)||0
     const bodyCount = Number(crows[0]?.bodies)||0
     const cachedUidnext = Number(srows[0]?.uidnext)||0
@@ -1306,102 +1259,6 @@ app.get('/email/db-envelopes/:accountId', auth, wrap(async (req,res)=>{
      FROM mail_messages WHERE account_id=? AND uid>? ORDER BY uid LIMIT ?`,[accountId, sinceUid, limit])
   const [mx] = await pool.query(`SELECT MAX(uid) AS m, COUNT(*) AS c FROM mail_messages WHERE account_id=?`,[accountId])
   res.json({ envelopes: rows, maxUid: Number(mx[0]?.m)||0, total: Number(mx[0]?.c)||0, hasMore: rows.length>=limit })
-}))
-
-// Gmail 标签客户批量导入：POST /email/import-labeled-customers/:accountId {mapping?}
-// 发件人+Gmail标签 → 映射等级/阶段/重点 → 写入云同步 data 表
-// 客户/跟进/营销/拓扑/全景读的是同一份 customers/followUps 数据，写一次全端同步
-app.post('/email/import-labeled-customers/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
-  const { accountId } = req.params
-  const acc = await loadMailAccount(accountId, req.user)
-  if(!acc) return res.status(404).json({ error:'账号不存在' })
-  const mapping = req.body?.mapping || {
-    'A': { level:'A', isKey:true, stage:'contacted' },
-    'B': { level:'B', stage:'lead' },
-    '重点客户': { isKey:true },
-    '已下单': { stage:'won', isKey:true },
-  }
-  const ownEmail = String(acc.email||'').toLowerCase()
-  const [rows] = await pool.query(
-    `SELECT from_addr, from_name, labels, MAX(msg_date) AS lastd, COUNT(*) AS c
-     FROM mail_messages WHERE account_id=? AND from_addr<>'' GROUP BY from_addr, from_name, labels`,
-    [accountId])
-  // 按发件人聚合标签
-  const senders = new Map()
-  for(const r of rows){
-    const email = String(r.from_addr||'').trim().toLowerCase()
-    if(!email || !email.includes('@') || email === ownEmail) continue
-    let s = senders.get(email)
-    if(!s){ s = { email, name:String(r.from_name||'').slice(0,64), labels:new Set(), count:0, lastd:null }; senders.set(email, s) }
-    String(r.labels||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(l=>s.labels.add(l))
-    s.count += Number(r.c)||0
-    if(r.lastd && (!s.lastd || new Date(r.lastd) > new Date(s.lastd))) s.lastd = r.lastd
-    if(!s.name && r.from_name) s.name = String(r.from_name).slice(0,64)
-  }
-  const LEVEL_ORDER = ['D','C','B','A','A+']
-  const matchRule = (labels) => {
-    let rule = null
-    const has = (k) => [...labels].some(l => l === k || l.includes(k))
-    if(has('B')) rule = { ...(rule||{}), ...mapping['B'] }
-    if(has('重点客户')) rule = { ...(rule||{}), ...mapping['重点客户'] }
-    if([...labels].some(l => l.trim() === 'A')) rule = { ...(rule||{}), ...mapping['A'] }
-    if(has('已下单')) rule = { ...(rule||{}), ...mapping['已下单'] }
-    return rule
-  }
-  // 现有客户/待办跟进（防覆盖、防重复建）
-  const [exCust] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
-  const custByEmail = new Map()
-  for(const r of exCust){
-    try{ const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; if(d?.email) custByEmail.set(String(d.email).toLowerCase(), { rowId:r.row_id, data:d }) }catch{}
-  }
-  const [exFu] = await pool.query(`SELECT data FROM data WHERE username=? AND table_name='followUps' AND deleted=0`,[req.user])
-  const pendingCustIds = new Set()
-  for(const r of exFu){
-    try{ const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; if(d?.customerId && d?.status === 'pending') pendingCustIds.add(d.customerId) }catch{}
-  }
-  const now = sqlNow().replace(' ','T') + 'Z'
-  const due = new Date(Date.now()+3*86400000).toISOString().slice(0,10)
-  let nCust = 0, nFu = 0
-  for(const s of senders.values()){
-    const rule = matchRule(s.labels)
-    if(!rule) continue
-    const id = 'gmail-' + crypto.createHash('md5').update(s.email).digest('hex').slice(0,16)
-    const labelStr = [...s.labels].join(',')
-    const ex = custByEmail.get(s.email)
-    if(ex){
-      // 只升级不降级
-      const d = ex.data
-      const lvOld = LEVEL_ORDER.indexOf(d.level||'C'), lvNew = LEVEL_ORDER.indexOf(rule.level||d.level||'C')
-      d.level = LEVEL_ORDER[Math.max(lvOld < 0 ? 2 : lvOld, lvNew < 0 ? 2 : lvNew)]
-      d.isKey = !!(d.isKey || rule.isKey)
-      if(rule.stage === 'won') d.stage = 'won'
-      else if(!d.stage) d.stage = rule.stage || 'lead'
-      d.notes = [d.notes, `Gmail标签:${labelStr}`].filter(Boolean).join(' | ').slice(0,500)
-      d.updatedAt = now
-      await pool.query(`UPDATE data SET data=?, updated_at=? WHERE username=? AND table_name='customers' AND row_id=?`,
-        [JSON.stringify(d), now.slice(0,23), req.user, ex.rowId])
-    } else {
-      const d = { id, type:'customer', title: s.name || s.email.split('@')[0], contactName: s.name || s.email.split('@')[0],
-        email: s.email, company:'', stage: rule.stage || 'lead', isKey: !!rule.isKey, level: rule.level || 'C',
-        customerType:'Company', tags:['邮件','Gmail标签'], notes:`Gmail标签:${labelStr} · 往来${s.count}封`, value:0,
-        createdAt: now, updatedAt: now, followUpAt: due, score: 0 }
-      await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at, deleted) VALUES (?,?,?,?,?,0)
-        ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
-        [req.user, 'customers', id, JSON.stringify(d), now.slice(0,23)])
-      nCust++
-    }
-    if(!pendingCustIds.has(id)){
-      const fuId = `fu-${id}`
-      const fu = { id: fuId, customerId: id, dueAt: due, channel:['gmail-label'], note:`Gmail标签跟进(${labelStr})`, status:'pending', createdAt: now, updatedAt: now }
-      await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at, deleted) VALUES (?,?,?,?,?,0)
-        ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at)`,
-        [req.user, 'followUps', fuId, JSON.stringify(fu), now.slice(0,23)])
-      pendingCustIds.add(id)
-      nFu++
-    }
-  }
-  res.json({ ok:true, senders: senders.size, customers: nCust, followUps: nFu })
 }))
 
 // 库内单封全文：GET /email/db-mail/:accountId/:uid（优先走库，不碰 IMAP）
