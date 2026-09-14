@@ -1115,6 +1115,39 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
   res.json({ emails: rows, total: rows.length, mode:'db' })
 }))
 
+// 客户往来线程：GET /email/customer-mails/:accountId?email=xxx&page=0
+// 先查 mail_threads 预聚合命中该邮箱的线程，再取各线程邮件（单客户页秒开）
+app.get('/email/customer-mails/:accountId', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const email = String(req.query.email || '').trim().toLowerCase()
+  if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email 参数' })
+  const page = Math.max(0, Number(req.query.page) || 0)
+  const perThread = Math.min(100, Math.max(1, Number(req.query.perThread) || 30))
+  const like = `%${email}%`
+  // 涉及该邮箱的线程（按最后往来倒序）
+  const [threads] = await pool.query(
+    `SELECT t.thread_id, t.subject_norm, t.count, t.last_date
+     FROM mail_threads t
+     WHERE t.account_id=? AND EXISTS (
+       SELECT 1 FROM mail_messages m WHERE m.account_id=t.account_id
+         AND m.gmail_threadid=t.thread_id AND (m.from_addr LIKE ? OR m.to_addr LIKE ?))
+     ORDER BY t.last_date DESC LIMIT 50 OFFSET ?`,[accountId, like, like, page*50])
+  const out = []
+  for(const th of threads){
+    const [mails] = await pool.query(
+      `SELECT folder, uid, message_id, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 2000) AS snippet
+       FROM mail_messages WHERE account_id=? AND gmail_threadid=? ORDER BY msg_date DESC LIMIT ?`,
+      [accountId, th.thread_id, perThread])
+    out.push({ threadId: th.thread_id, subject: th.subject_norm, count: th.count, lastDate: th.last_date, mails })
+  }
+  const [cc] = await pool.query(
+    `SELECT COUNT(*) AS c FROM mail_messages WHERE account_id=? AND (from_addr LIKE ? OR to_addr LIKE ?)`,[accountId, like, like])
+  res.json({ threads: out, totalMails: Number(cc[0]?.c)||0 })
+}))
+
 // 库内单封全文：GET /email/db-mail/:accountId/:uid（优先走库，不碰 IMAP）
 app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
@@ -1342,7 +1375,7 @@ app.post('/email/full-batch', auth, wrap(async (req,res)=>{
   res.json({results})
 }))
 
-// 发送邮件：POST /email/send  {accountId, to, subject, text, html, inReplyTo, references}
+// 发送邮件：POST /email/send  {accountId, to, subject, text, html, inReplyTo, references}（单封急件直发保留）
 app.post('/email/send', auth, wrap(async (req,res)=>{
   const { accountId, to, subject, text, html, inReplyTo, references } = req.body||{}
   if(!accountId || !to || !subject) return res.status(400).json({error:'需要accountId, to, subject'})
@@ -1379,6 +1412,121 @@ app.post('/email/send', auth, wrap(async (req,res)=>{
   const info = await transporter.sendMail(mailOpts)
   res.json({ ok:true, messageId: info.messageId })
 }))
+
+// ====== 草稿箱 + 发件队列 ======
+async function sendMailViaSmtp(acc, pass, { to, subject, text, html, inReplyTo, references }){
+  const nodemailer = await import('nodemailer')
+  const transporter = nodemailer.default.createTransport({
+    host: acc.smtp_host || 'smtp.gmail.com',
+    port: acc.smtp_port || 465,
+    secure: (acc.smtp_port || 465) === 465,
+    auth: { user: acc.email, pass },
+    connectionTimeout: 15000,
+    socketTimeout: 60000,
+  })
+  const mailOpts = { from: acc.email, to, subject, text: text || '', html: html || text || '' }
+  if(inReplyTo) mailOpts.inReplyTo = inReplyTo
+  if(references) mailOpts.references = references
+  return transporter.sendMail(mailOpts)
+}
+function classifySmtpError(e){
+  const msg = String(e?.response || e?.message || e)
+  if(/5\.4\.5|daily.*limit|quota|exceeded/i.test(msg)) return { retry:true, afterHours:24, note:'发信配额超限，顺延24小时' }
+  if(/55[0-3]|invalid|recipient|mailbox unavailable|user unknown/i.test(msg)) return { retry:false, note:'收件地址无效' }
+  if(/auth|credential|password|username/i.test(msg)) return { retry:false, note:'SMTP 认证失败，检查授权码' }
+  return { retry:true, afterMinutes:5, note:'' }
+}
+
+// 草稿：GET /email/drafts
+app.get('/email/drafts', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const [rows] = await pool.query('SELECT * FROM mail_drafts WHERE username=? ORDER BY updated_at DESC LIMIT 100',[req.user])
+  res.json({ drafts: rows })
+}))
+// 草稿保存：PUT /email/drafts {id?, accountId, to, cc, subject, body_html, body_text, template_id}
+app.put('/email/drafts', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { id, accountId, to, cc, subject, body_html, body_text, template_id } = req.body || {}
+  const did = id || crypto.randomUUID()
+  await pool.query(
+    `INSERT INTO mail_drafts (id, username, account_id, to_addr, cc_addr, subject, body_html, body_text, template_id, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE to_addr=VALUES(to_addr), cc_addr=VALUES(cc_addr), subject=VALUES(subject), body_html=VALUES(body_html), body_text=VALUES(body_text), template_id=VALUES(template_id), updated_at=VALUES(updated_at)`,
+    [did, req.user, accountId || '', to || '', cc || '', subject || '', body_html || '', body_text || '', template_id || '', sqlNow()])
+  res.json({ ok:true, id: did })
+}))
+// 草稿删除：DELETE /email/drafts/:id
+app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  await pool.query('DELETE FROM mail_drafts WHERE id=? AND username=?',[req.params.id, req.user])
+  res.json({ ok:true })
+}))
+
+// 入队发送：POST /email/outbox {accountId, to, subject, text, html, draftId?, idempotencyKey?}（秒返回，后台发出）
+app.post('/email/outbox', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, to, subject, text, html, draftId, idempotencyKey } = req.body || {}
+  if(!accountId || !to || !subject) return res.status(400).json({ error:'需要 accountId, to, subject' })
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const id = crypto.randomUUID()
+  const idem = idempotencyKey || id
+  try{
+    await pool.query(
+      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key)
+       VALUES (?,?,?,?,?,?,?,'queued',0,?)`,
+      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem])
+  }catch(e){
+    if(e && e.code === 'ER_DUP_ENTRY'){
+      const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=?',[idem])
+      return res.json({ ok:true, id: ex[0]?.id, status: ex[0]?.status, deduped:true })
+    }
+    throw e
+  }
+  res.json({ ok:true, id, status:'queued' })
+}))
+// 发件箱：GET /email/outbox?status=
+app.get('/email/outbox', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const st = String(req.query.status || '')
+  const [rows] = st
+    ? await pool.query('SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at FROM mail_outbox WHERE username=? AND status=? ORDER BY created_at DESC LIMIT 100',[req.user, st])
+    : await pool.query('SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100',[req.user])
+  res.json({ outbox: rows })
+}))
+// 重发：POST /email/outbox/:id/retry
+app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=?, error='' WHERE id=? AND username=? AND status='failed'`,[sqlNow(), req.params.id, req.user])
+  res.json({ ok:true })
+}))
+
+// 发件 worker：每 30 秒扫一次到期任务
+async function outboxTick(){
+  if(!dbReady) return
+  try{
+    const [rows] = await pool.query(
+      `SELECT * FROM mail_outbox WHERE status IN ('queued','failed') AND try_count<3 AND (next_try_at IS NULL OR next_try_at<=NOW()) ORDER BY created_at LIMIT 10`)
+    for(const job of rows){
+      try{
+        await pool.query(`UPDATE mail_outbox SET status='sending', try_count=try_count+1 WHERE id=?`,[job.id])
+        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[job.account_id, job.username])
+        if(!arows.length) throw new Error('账号不存在')
+        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: job.to_list, subject: job.subject, text: job.body_text, html: job.body_html })
+        await pool.query(`UPDATE mail_outbox SET status='sent', error='' WHERE id=?`,[job.id])
+        console.log(`[outbox] sent ${job.id} -> ${job.to_list} ${info.messageId || ''}`)
+      }catch(e){
+        const c = classifySmtpError(e)
+        if(c.retry){
+          const after = c.afterHours ? `DATE_ADD(NOW(), INTERVAL ${c.afterHours} HOUR)` : `DATE_ADD(NOW(), INTERVAL ${(c.afterMinutes || 5) * (job.try_count + 1)} MINUTE)`
+          await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=${after}, error=? WHERE id=?`,[`${c.note} ${String(e.message||e).slice(0,200)}`, job.id])
+        } else {
+          await pool.query(`UPDATE mail_outbox SET status='failed', error=? WHERE id=?`,[`${c.note}: ${String(e.message||e).slice(0,300)}`, job.id])
+        }
+      }
+    }
+  }catch(e){ console.log('[outbox] tick skip:', String(e.message||e).slice(0,120)) }
+}
+setInterval(outboxTick, 30000)
 
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars

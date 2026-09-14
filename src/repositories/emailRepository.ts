@@ -165,6 +165,20 @@ export async function fetchDbMail(accountId: string, uid: string): Promise<{text
   }catch{ return null }
 }
 
+export interface CustomerMailThread {
+  threadId: string; subject: string; count: number; lastDate: string
+  mails: Array<{ folder: string; uid: number; message_id: string; subject: string; from_addr: string; from_name: string; to_addr: string; msg_date: string; is_read: number; has_attachment: number; body_cached: number; body_len: number; snippet: string }>
+}
+export async function fetchCustomerThreads(accountId: string, email: string, page = 0): Promise<{ threads: CustomerMailThread[]; totalMails: number } | null>{
+  const h = await serverHeaders()
+  if(!h) return null
+  try{
+    const r = await fetch(`${h.url}/email/customer-mails/${accountId}?email=${encodeURIComponent(email)}&page=${page}`,{ headers: bypassHeaders(h) })
+    if(!r.ok) return null
+    return await r.json()
+  }catch{ return null }
+}
+
 export async function fetchFullEmail(accountId: string, uid: string): Promise<{text:string;html:string;from:string;to:string;subject:string}|null>{
   const h = await serverHeaders()
   if(!h) return null
@@ -237,6 +251,58 @@ export async function searchDbMails(accountId: string, q: string, limit = 50): P
     intent: await classifyIntent(`${e.subject || ''} ${(e.body_text || '').slice(0, 500)}`) as EmailIntent,
     priority: '中' as const, status: e.is_read ? '已处理' : '待处理',
   })))
+}
+
+// ====== 草稿箱 + 发件队列 ======
+export interface MailDraft { id: string; account_id: string; to_addr: string; subject: string; body_text: string }
+export async function saveDraft(d: Partial<MailDraft> & { id?: string }): Promise<string>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/drafts`, { method:'PUT', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ id: d.id, accountId: d.account_id, to: d.to_addr, subject: d.subject, body_text: d.body_text, body_html: d.body_text }) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`保存失败 ${r.status}`)
+  return j.id
+}
+export async function getDrafts(): Promise<any[]>{
+  const h = await serverHeaders()
+  if(!h) return []
+  try{
+    const r = await fetch(`${h.url}/email/drafts`, { headers: bypassHeaders(h) })
+    const j = await r.json().catch(()=>({}))
+    return j.drafts || []
+  }catch{ return [] }
+}
+export async function deleteDraft(id: string){
+  const h = await serverHeaders()
+  if(!h) return
+  try{ await fetch(`${h.url}/email/drafts/${id}`, { method:'DELETE', headers: bypassHeaders(h) }) }catch{}
+}
+export async function enqueueMail(accountId: string, to: string, subject: string, text: string, idempotencyKey?: string): Promise<{id:string;status:string}>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/outbox`, { method:'POST', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ accountId, to, subject, text, idempotencyKey }) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`入队失败 ${r.status}`)
+  return j
+}
+export async function getOutbox(status = ''): Promise<any[]>{
+  const h = await serverHeaders()
+  if(!h) return []
+  try{
+    const r = await fetch(`${h.url}/email/outbox${status?`?status=${status}`:''}`, { headers: bypassHeaders(h) })
+    const j = await r.json().catch(()=>({}))
+    return j.outbox || []
+  }catch{ return [] }
+}
+export async function retryOutbox(id: string){
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/outbox/${id}/retry`, { method:'POST', headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`重试失败 ${r.status}`)
+  return j
 }
 
 // Mock 同步：生成假邮件（878封缩略版）仅演示用

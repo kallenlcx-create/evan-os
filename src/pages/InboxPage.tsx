@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
 import { useAskText } from '../components/PromptModal'
+import MailHtml from '../components/MailHtml'
 
 const INTENT_COLOR: Record<string,string> = {
   '新询价':'bg-red-50 text-red-600','报价回复':'bg-blue-50 text-blue-600','询问价格':'bg-orange-50 text-orange-600',
@@ -26,6 +27,7 @@ export default function InboxPage(){
   const [q, setQ] = useState('')
   const [translated, setTranslated] = useState('')
   const [showTrans, setShowTrans] = useState(false)
+  const [allowRemoteImg, setAllowRemoteImg] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
   const [showAccountPop, setShowAccountPop] = useState(false)
   const [customer, setCustomer] = useState<Customer|null>(null)
@@ -40,6 +42,10 @@ export default function InboxPage(){
   const [replySubject, setReplySubject] = useState('')
   const [replyBody, setReplyBody] = useState('')
   const [sending, setSending] = useState(false)
+  const [replyDraftId, setReplyDraftId] = useState('')
+  const [draftNote, setDraftNote] = useState('')
+  const [showOutbox, setShowOutbox] = useState(false)
+  const [outboxList, setOutboxList] = useState<any[]>([])
 
   // 配置表单
   const [provider, setProvider] = useState<EmailAccount['provider']>('qq')
@@ -214,11 +220,56 @@ export default function InboxPage(){
   const handleOpenReply = ()=>{
     if(!selected) return
     const fromAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim()
+    const subj = selected.subject.startsWith('Re:') ? selected.subject : `Re: ${selected.subject}`
     setReplyTo(fromAddr)
-    setReplySubject(selected.subject.startsWith('Re:') ? selected.subject : `Re: ${selected.subject}`)
+    setReplySubject(subj)
     setReplyBody('')
+    setReplyDraftId('')
+    setDraftNote('')
     setShowReply(true)
+    // 恢复同收件人+主题的草稿
+    getDrafts().then(ds=>{
+      const hit = ds.find((d:any)=> (d.to_addr||'').includes(fromAddr) && (d.subject||'')===subj)
+      if(hit){
+        setReplyBody(hit.body_text||'')
+        setReplyDraftId(hit.id)
+        setDraftNote(`已恢复草稿（${new Date(hit.updated_at).toLocaleString()}）`)
+      }
+    }).catch(()=>{})
   }
+
+  // 草稿 10 秒自动保存（刷新不丢）
+  useEffect(()=>{
+    if(!showReply || !replyBody.trim()) return
+    const t = setInterval(async()=>{
+      try{
+        const acc = accounts.find(a=> a.id === selected?.accountId) || accounts[0]
+        const id = await saveDraft({ id: replyDraftId || undefined, account_id: acc?.id || '', to_addr: replyTo, subject: replySubject, body_text: replyBody })
+        setReplyDraftId(id)
+        setDraftNote(`草稿已自动保存 ${new Date().toLocaleTimeString()}`)
+      }catch{}
+    }, 10000)
+    return ()=> clearInterval(t)
+  },[showReply, replyBody, replyTo, replySubject, replyDraftId, accounts, selected?.accountId])
+
+  const handleQueueSend = async()=>{
+    if(!selected || !replyTo || !replyBody.trim()) return
+    const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
+    if(!acc){ alert('无可用邮箱账号'); return }
+    setSending(true)
+    try{
+      const r = await enqueueMail(acc.id, replyTo, replySubject, replyBody, replyDraftId ? `draft-${replyDraftId}` : undefined)
+      if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
+      setReplyDraftId(''); setShowReply(false)
+      alert(r.status==='sent' ? '已发送' : `已入队，后台自动发出（${r.id.slice(0,8)}）`)
+      await refreshOutbox()
+    }catch(e:any){ alert('入队失败：' + String(e.message||e).slice(0,200)) }
+    finally{ setSending(false) }
+  }
+
+  const refreshOutbox = useCallback(async()=>{
+    try{ setOutboxList(await getOutbox()) }catch{}
+  },[])
 
   const handleSendReply = async()=>{
     if(!selected || !replyTo || !replyBody.trim()) return
@@ -229,6 +280,8 @@ export default function InboxPage(){
       if(!acc){ alert('无可用邮箱账号'); return }
       const result = await sendEmail(acc.id, replyTo, replySubject, replyBody)
       if(result.ok){
+        if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
+        setReplyDraftId('')
         // 保存到已发送
         const { uid: uidFn } = await import('../repositories/result')
         await db.emails.put({
@@ -405,6 +458,9 @@ export default function InboxPage(){
             自动
           </label>
           <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
+          <button onClick={async()=>{ await refreshOutbox(); setShowOutbox(true) }} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs hover:bg-gray-50" title="排队中/失败的发件">
+            📤 发件箱{outboxList.filter(o=> o.status==='failed').length>0 ? ` · ${outboxList.filter(o=> o.status==='failed').length}失败` : ''}
+          </button>
           <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
             {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
           </button>
@@ -552,6 +608,7 @@ export default function InboxPage(){
                   <div className="text-sm font-semibold text-gray-800 flex items-center gap-2 truncate">
                     {selected.subject}
                     <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-0.5 bg-white border rounded text-xs flex items-center gap-1 shrink-0"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
+                    <button onClick={()=> setAllowRemoteImg(v=>!v)} title="外部图片可能泄露已读回执" className="px-2 py-0.5 bg-white border rounded text-xs shrink-0">{allowRemoteImg?'🖼️':'🚫🖼️'}</button>
                   </div>
                   <div className="text-xs text-gray-400 truncate">发件：{selected.from} → {selected.to} · {new Date(selected.date).toLocaleString()}</div>
                 </div>
@@ -562,7 +619,7 @@ export default function InboxPage(){
                 {showTrans ? (
                   <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-3 border">{translated || '翻译中...'}</div>
                 ) : selected.html ? (
-                  <div className="email-html text-sm leading-relaxed max-w-none overflow-x-auto border rounded-lg p-3 bg-white" dangerouslySetInnerHTML={{__html: selected.html}} />
+                  <MailHtml html={selected.html} allowRemote={allowRemoteImg} height={420} />
                 ) : (
                   <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-3 bg-white">{(selected.text||'').slice(0,4000) || '(邮件全文加载中...)'}</div>
                 )}
@@ -584,7 +641,7 @@ export default function InboxPage(){
                         </div>
                         <div className="text-xs font-medium text-gray-700 mb-1">{m.subject}</div>
                         {m.html ? (
-                          <div className="email-html text-sm leading-relaxed max-w-none overflow-x-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: m.html}} />
+                          <MailHtml html={m.html} allowRemote={allowRemoteImg} height={220} />
                         ) : (
                           <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-2 bg-white">{(m.text||'').slice(0,2000) || '(内容加载中...)'}</div>
                         )}
@@ -772,10 +829,44 @@ export default function InboxPage(){
             </div>
             <div className="px-5 py-3 border-t flex items-center gap-2">
               <button onClick={()=> setShowReply(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
+              {draftNote && <span className="text-[10px] text-gray-400">{draftNote}</span>}
               <div className="flex-1"/>
+              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs hover:bg-green-100 disabled:opacity-50" title="网络不稳时用这个，后台队列发出">
+                ⏳ 排队发送
+              </button>
               <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">
                 <Send size={12}/> {sending ? '发送中...' : '发送'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 发件箱弹窗 */}
+      {showOutbox && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowOutbox(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">📤 发件箱 <span className="text-xs text-gray-400 font-normal">排队自动发出，失败可重试</span></div>
+              <button onClick={()=> setShowOutbox(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {outboxList.length===0 && <div className="text-center text-xs text-gray-300 py-8">暂无排队邮件</div>}
+              {outboxList.map(o=>(
+                <div key={o.id} className="p-3 border rounded-xl text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${o.status==='sent'?'bg-green-100 text-green-700':o.status==='failed'?'bg-red-100 text-red-600':'bg-yellow-100 text-yellow-700'}`}>
+                      {o.status==='sent'?'已发送':o.status==='failed'?'失败':o.status==='sending'?'发送中':'排队中'}
+                    </span>
+                    <span className="font-medium truncate">{o.subject}</span>
+                    <span className="ml-auto text-[10px] text-gray-400 shrink-0">{new Date(o.created_at).toLocaleString()}</span>
+                  </div>
+                  <div className="text-gray-400 mt-1 truncate">→ {o.to_list}</div>
+                  {o.error && <div className="text-red-400 mt-1 break-all">{o.error}</div>}
+                  {o.status==='failed' && (
+                    <button onClick={async()=>{ await retryOutbox(o.id); await refreshOutbox() }} className="mt-2 px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">重试发送</button>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

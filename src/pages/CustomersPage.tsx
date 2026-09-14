@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
-import { fetchFullEmailBatch, fetchDbMail } from '../repositories/emailRepository'
+import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
+import MailHtml from '../components/MailHtml'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -80,6 +81,8 @@ export default function CustomersPage(){
   const [fullContent, setFullContent] = useState<Record<string, {text:string;html:string}>>({})
   const [loadingContent, setLoadingContent] = useState<Record<string, boolean>>({})
   const [contentError, setContentError] = useState<Record<string, boolean>>({})
+  const [allowRemoteImg, setAllowRemoteImg] = useState(false)
+  const [threadMode, setThreadMode] = useState<'server'|'local'|''>('')
 
   const load = useCallback(async()=>{
     const customers = await db.customers.toArray() as any[]
@@ -115,23 +118,58 @@ export default function CustomersPage(){
 
   useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[load])
 
-  // 点击客户 → 加载该客户所有邮件 + 批量加载全文
+  // 点击客户 → 优先服务端线程接口（预聚合，秒开），回退本地库匹配
   const handleCustomerClick = useCallback(async(c: Customer)=>{
     setSelectedCustomer(c)
     setFullContent({})
     setLoadingContent({})
     setContentError({})
-    const allEmails = await db.emails.toArray() as EmailMessage[]
+    setThreadMode('')
     const addr = (c.email||'').toLowerCase()
-    const matched = allEmails.filter(e=>{
-      const from = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim().toLowerCase()
-      const to = (e.to||'').toLowerCase()
-      return from===addr || to.includes(addr)
-    }).sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
-    setCustomerEmails(matched)
+    let serverHit = false
+    let serverMapped: EmailMessage[] = []
+    // 1. 先试服务端线程
+    try{
+      const accs = await listAccounts()
+      if(accs.length && addr){
+        const res = await fetchCustomerThreads(accs[0].id, addr, 0)
+        if(res && res.threads.length){
+          for(const th of res.threads){
+            for(const m of th.mails){
+              serverMapped.push({
+                id: `${accs[0].id}-${m.uid}`, accountId: accs[0].id,
+                folder: String(m.folder||'').includes('sent') ? 'sent' : 'inbox',
+                from: m.from_name ? `${m.from_name} <${m.from_addr}>` : (m.from_addr||''),
+                to: m.to_addr||'', subject: m.subject||'(无主题)',
+                text: m.snippet||'', html: '',
+                date: m.msg_date ? new Date(m.msg_date).toISOString() : new Date().toISOString(),
+                isRead: !!m.is_read, hasAttachment: !!m.has_attachment,
+                intent: '其他' as any, priority: '中' as any, status: m.is_read?'已处理':'待处理',
+              } as EmailMessage)
+            }
+          }
+          serverMapped.sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
+          setCustomerEmails(serverMapped)
+          setThreadMode('server')
+          serverHit = true
+        }
+      }
+    }catch{}
+    // 2. 服务端无命中则回退本地库匹配
+    let current: EmailMessage[] = serverMapped
+    if(!serverHit){
+      const allEmails = await db.emails.toArray() as EmailMessage[]
+      current = allEmails.filter(e=>{
+        const from = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim().toLowerCase()
+        const to = (e.to||'').toLowerCase()
+        return from===addr || to.includes(addr)
+      }).sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
+      setCustomerEmails(current)
+      setThreadMode('local')
+    }
 
     // 批量加载所有 text/html 为空的邮件
-    const missing = matched.filter(e => !e.text && !e.html)
+    const missing = current.filter(e => !e.text && !e.html)
     if(missing.length === 0) return
     // 按 accountId 分组
     const byAccount = new Map<string, {email: EmailMessage; uid: string}[]>()
@@ -293,8 +331,13 @@ export default function CustomersPage(){
               <button onClick={()=> setSelectedCustomer(null)} className="p-1.5 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
             </div>
             {/* 统计 */}
-            <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-4 text-xs text-gray-500">
+            <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-4 text-xs text-gray-500 flex-wrap">
               <span>📧 邮件往来 <b className="text-gray-800">{customerEmails.length}</b> 封</span>
+              {threadMode==='server' && <span className="text-green-600">· 服务端线程秒开</span>}
+              {threadMode==='local' && <span className="text-orange-500">· 本地库（服务端无命中）</span>}
+              <button onClick={()=> setAllowRemoteImg(v=>!v)} className="ml-auto px-2 py-0.5 border rounded-full hover:border-blue-300 hover:text-blue-600" title="外部图片可能泄露已读回执">
+                {allowRemoteImg ? '🖼️ 已显示外部图片' : '🖼️ 外部图片已拦截'}
+              </button>
               {(() => { const s = emailStats[(selectedCustomer.email||'').toLowerCase()]; return s && s.totalAmount>0 ? <span>💰 累计金额 <b className="text-green-600">${s.totalAmount.toLocaleString()}</b></span> : null })()}
               <span>📅 下次跟进 {selectedCustomer.followUpAt||'未设置'}</span>
             </div>
@@ -321,7 +364,7 @@ export default function CustomersPage(){
                         <span className="animate-spin">⏳</span> 正在加载邮件全文...
                       </div>
                     ) : displayHtml ? (
-                      <div className="email-html text-[11px] leading-relaxed max-h-40 overflow-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: displayHtml}} />
+                      <MailHtml html={displayHtml} allowRemote={allowRemoteImg} height={320} />
                     ) : displayText ? (
                       <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-auto border rounded-lg p-2 bg-white">{displayText.slice(0,2000)}</div>
                     ) : failed ? (
