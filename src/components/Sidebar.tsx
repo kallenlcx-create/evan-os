@@ -44,11 +44,11 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 
 // ====== 分组定义 ======
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
-  { key: 'core', label: '概览', paths: ['/', '/inbox', '/goals', '/actions', '/life'] },
-  { key: 'work', label: '工作', paths: ['/work', '/projects', '/customers', '/followups', '/campaigns'] },
+  { key: 'core', label: '概览', paths: ['/', '/goals', '/actions', '/life'] },
+  { key: 'work', label: '工作', paths: ['/work', '/projects', '/inbox', '/customers', '/followups', '/campaigns', '/graph', '/panorama'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
-  { key: 'system', label: '系统', paths: ['/panorama', '/graph', '/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
+  { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
 ]
 
 const GROUP_LS_KEY = 'evan-os-nav-collapsed'
