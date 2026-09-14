@@ -4,7 +4,7 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 
@@ -29,6 +29,41 @@ export default function FollowUpsPage() {
   const [sendSubject, setSendSubject] = useState('')
   const [sendBody, setSendBody] = useState('')
   const [sending, setSending] = useState(false)
+
+  // ====== 自动跟进序列 ======
+  const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
+  const [sequences, setSequences] = useState<any[]>([])
+  const [seqTemplates, setSeqTemplates] = useState<any[]>([])
+  const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
+  const [showTplModal, setShowTplModal] = useState(false)
+  const [tplEdit, setTplEdit] = useState<any>(null)
+  const loadSequences = useCallback(async () => {
+    try{
+      const j = await getSequences()
+      setSequences(j.sequences || [])
+      const t = await getSeqTemplates()
+      setSeqTemplates(t.templates || [])
+      const c = await getSeqConfig()
+      if(c.intervals) setSeqIntervals(c.intervals)
+    }catch{}
+  }, [])
+  useEffect(()=>{ void loadSequences() },[loadSequences])
+  const handleStartSeq = useCallback(async (c: Customer) => {
+    try{
+      const accs = await listAccounts()
+      if(!accs.length) return alert('请先绑定邮箱账号')
+      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？`)) return
+      await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      alert('自动跟进已启动')
+      await loadSequences()
+    }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
+  }, [loadSequences])
+  const handleSeqMode = useCallback(async (customerId: string, mode: string, fromStep?: number) => {
+    try{
+      await patchSequence(customerId, { mode, fromStep })
+      await loadSequences()
+    }catch(e:any){ alert('操作失败：' + String(e.message||e).slice(0,150)) }
+  }, [loadSequences])
 
   const load = useCallback(async () => {
     setCustomers(await db.customers.toArray() as Customer[])
@@ -235,6 +270,9 @@ export default function FollowUpsPage() {
                 <button onClick={() => handleQuickFollow(c)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1 hover:bg-blue-700">
                   <Send size={11} /> 跟进
                 </button>
+                <button onClick={() => handleStartSeq(c)} title="启动7步自动跟进序列" className="px-2 py-1.5 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs hover:bg-purple-100">
+                  🔁序列
+                </button>
                 {list.some(f => f.customerId === c.id && f.status === 'pending') && (
                   <button onClick={() => { const fu = list.find(f => f.customerId === c.id && f.status === 'pending'); if (fu) handleComplete(fu) }} className="px-2 py-1.5 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs">✓ 完成</button>
                 )}
@@ -257,6 +295,85 @@ export default function FollowUpsPage() {
           </div>
         </div>
       </div>
+
+      {/* ====== 自动跟进序列（7步 / 回复转手动 / 沉睡池）====== */}
+      <div className="bg-white rounded-2xl border p-4 mt-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-sm font-semibold">🔁 自动跟进序列</span>
+          <div className="flex gap-1">
+            {([['active','进行中'],['replied','🔔有回复'],['dormant','沉睡池']] as const).map(([k, l]) => (
+              <button key={k} onClick={()=> setSeqTab(k)} className={`px-2 py-1 rounded-full text-xs ${seqTab===k?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{l}</button>
+            ))}
+          </div>
+          <button onClick={()=> setShowTplModal(true)} className="ml-auto px-2 py-1 text-xs border rounded-lg hover:border-blue-300">📝 模板+间隔</button>
+        </div>
+        {(() => {
+          const rows = seqTab === 'active' ? sequences.filter(s=> s.mode==='auto')
+            : seqTab === 'replied' ? sequences.filter(s=> s.replied)
+            : sequences.filter(s=> s.mode==='dormant')
+          if(!rows.length) return <div className="text-center text-xs text-gray-300 py-4">{seqTab==='replied' ? '暂无客户回复（有回复会自动标🔔并转手动）' : seqTab==='dormant' ? '沉睡池为空（7步无回复自动进入）' : '暂无进行中的序列，可在上方雷达点「跟进」旁启动'}</div>
+          return rows.map(s=>(
+            <div key={s.customer_id} className="flex items-center gap-2 py-2 border-b last:border-0 text-xs">
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{s.customer?.title || s.email} {s.replied ? <span className="text-red-500">🔔有回复</span> : null}</div>
+                <div className="text-gray-400 truncate">{s.email} · 第 {Math.min(s.current_step,7)}/7 步{s.mode==='auto' ? ` · 下次 ${String(s.next_due_at||'').slice(0,10)}` : ''}</div>
+                <div className="flex gap-0.5 mt-1">
+                  {[1,2,3,4,5,6,7].map(n=>{
+                    const st = (s.steps||[]).find((t:any)=> Number(t.n)===n)
+                    return <span key={n} title={`跟进${n}${st?.status==='sent' ? '（已发）' : ''}`} className={`w-4 h-1.5 rounded-full ${st?.status==='sent'?'bg-green-500':(s.mode==='auto'&&n===s.current_step?'bg-blue-500 animate-pulse':'bg-gray-200')}`} />
+                  })}
+                </div>
+              </div>
+              <div className="flex gap-1 shrink-0">
+                {s.mode==='auto' && <button onClick={()=> handleSeqMode(s.customer_id,'manual')} className="px-2 py-1 border rounded-lg text-gray-500">转手动</button>}
+                {s.mode!=='auto' && s.mode!=='dormant' && <button onClick={()=> handleSeqMode(s.customer_id,'auto')} className="px-2 py-1 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg">调回自动</button>}
+                {s.mode==='dormant' && <button onClick={()=> handleSeqMode(s.customer_id,'auto',1)} className="px-2 py-1 bg-green-50 text-green-600 border border-green-200 rounded-lg">重新激活</button>}
+              </div>
+            </div>
+          ))
+        })()}
+        {/* 雷达快捷启动 */}
+        {seqTab==='active' && (
+          <div className="mt-2 text-[11px] text-gray-400">在上方雷达客户行点「跟进」发单封；要进7步自动序列，点下面：</div>
+        )}
+      </div>
+
+      {/* 模板+间隔编辑弹窗 */}
+      {showTplModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowTplModal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">📝 跟进模板与间隔</div>
+              <button onClick={()=> setShowTplModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">每步间隔天数（跟进1报价后X天，之后每步+…天，可改）</div>
+                <div className="flex gap-1 flex-wrap">
+                  {seqIntervals.map((v,i)=>(
+                    <label key={i} className="text-[11px] text-gray-500">第{i+1}步
+                      <input type="number" min={1} value={v} onChange={e=>{
+                        const n = [...seqIntervals]; n[i] = Math.max(1, Number(e.target.value)||1); setSeqIntervals(n)
+                      }} className="w-12 ml-1 px-1 py-0.5 border rounded text-xs" />
+                    </label>
+                  ))}
+                  <button onClick={async()=>{ try{ await saveSeqConfig(seqIntervals); alert('间隔已保存，新启动序列生效') }catch(e:any){ alert(String(e.message||e)) } }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs">保存间隔</button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {seqTemplates.map(t=>(
+                  <div key={t.id} className="border rounded-xl p-2">
+                    <div className="text-xs font-semibold mb-1">{t.name}</div>
+                    <input value={tplEdit?.id===t.id ? tplEdit.subject : t.subject} onChange={e=> setTplEdit({ id:t.id, subject:e.target.value, body: tplEdit?.id===t.id ? tplEdit.body : t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                    <textarea value={tplEdit?.id===t.id ? tplEdit.body : t.body} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={3} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                    <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences() }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 发送弹窗 */}
       {showSendModal && sendTarget && (

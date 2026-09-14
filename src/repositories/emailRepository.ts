@@ -394,6 +394,25 @@ export async function retryOutbox(id: string){
   return j
 }
 
+// ====== 自动跟进序列 ======
+async function seqApi(path: string, method = 'GET', body?: any){
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}${path}`, { method,
+    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+    body: body ? JSON.stringify(body) : undefined })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`请求失败 ${r.status}`)
+  return j
+}
+export const getSequences = (mode = '') => seqApi(`/email/sequences${mode?`?mode=${mode}`:''}`)
+export const startSequence = (p: any) => seqApi('/email/sequences', 'POST', p)
+export const patchSequence = (customerId: string, p: any) => seqApi(`/email/sequences/${customerId}`, 'PATCH', p)
+export const getSeqTemplates = () => seqApi('/email/seq-templates?kind=auto')
+export const saveSeqTemplate = (p: any) => seqApi('/email/seq-templates', 'PUT', p)
+export const getSeqConfig = () => seqApi('/email/seq-config')
+export const saveSeqConfig = (intervals: number[]) => seqApi('/email/seq-config', 'PUT', { intervals })
+
 // Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {
   const acc = await db.emailAccounts.get(accountId)
