@@ -33,6 +33,12 @@ export default function CampaignsPage() {
   const [filterLevel, setFilterLevel] = useState<string>('all')
   const [filterStage, setFilterStage] = useState<string>('all')
   const [filterType, setFilterType] = useState<string>('all')
+  const [filterTag, setFilterTag] = useState<string>('all')
+  const allTags = useMemo(()=>{
+    const m = new Map<string, number>()
+    for(const c of customers) for(const t of (c.tags || [])) m.set(t, (m.get(t) || 0) + 1)
+    return [...m.entries()].sort((a,b)=> b[1]-a[1])
+  },[customers])
   const [minRepurchase, setMinRepurchase] = useState(0)
   const [days, setDays] = useState(7)
   const [preview, setPreview] = useState('')
@@ -76,6 +82,7 @@ export default function CampaignsPage() {
     if (filterLevel !== 'all' && c.level !== filterLevel) return false
     if (filterStage !== 'all' && c.stage !== filterStage) return false
     if (filterType !== 'all' && c.customerType !== filterType) return false
+    if (filterTag !== 'all' && !(c.tags || []).includes(filterTag)) return false
     if ((c.repurchaseCount || 0) < minRepurchase) return false
     const last = new Date(c.updatedAt).getTime()
     const cutoff = Date.now() - days * 86400000
@@ -365,6 +372,10 @@ export default function CampaignsPage() {
           </select>
           <select value={filterType} onChange={e => setFilterType(e.target.value)} className="px-2 py-1 border rounded text-xs">
             <option value="all">全部类型</option><option value="Company">企业</option><option value="Government">政府</option><option value="School">学校</option><option value="End Customer">个人</option><option value="Distributor">经销商</option>
+          </select>
+          <select value={filterTag} onChange={e => setFilterTag(e.target.value)} className="px-2 py-1 border rounded text-xs">
+            <option value="all">全部标签</option>
+            {allTags.map(([t,n])=> <option key={t} value={t}>{t} ({n})</option>)}
           </select>
           <label className="text-xs text-gray-500">复购≥<input type="number" min={0} value={minRepurchase} onChange={e=> setMinRepurchase(Number(e.target.value)||0)} className="w-12 px-1 py-0.5 border rounded text-xs" /></label>
           <select value={days} onChange={e => setDays(Number(e.target.value))} className="px-2 py-1 border rounded text-xs">

@@ -50,6 +50,12 @@ export default function EmailGraphPage(){
   const [onlyKey,setOnlyKey]=useState(true)
   const [levelFilter,setLevelFilter]=useState<string>('all')
   const [typeFilter,setTypeFilter]=useState<string>('all')
+  const [tagFilter,setTagFilter]=useState<string>('all')
+  const allTags=useMemo(()=>{
+    const m=new Map<string,number>()
+    for(const c of customers) for(const t of ((c as any).tags||[])) m.set(t,(m.get(t)||0)+1)
+    return [...m.entries()].sort((a,b)=>b[1]-a[1])
+  },[customers])
   const [selected,setSelected]=useState<PosNode|null>(null)
   const [selectedCustomer,setSelectedCustomer]=useState<Customer|null>(null)
   const [selectedSummary,setSelectedSummary]=useState<{count:number;totalAmount:number;lastDate:string;topSubjects:string[];emailType:string}|null>(null)
@@ -89,6 +95,7 @@ export default function EmailGraphPage(){
       const cLevel=c.level||'C'
       if(levelFilter!=='all' && cLevel!==levelFilter) continue
       if(typeFilter!=='all' && emailType!==typeFilter) continue
+      if(tagFilter!=='all' && !((c as any).tags||[]).includes(tagFilter)) continue
       const count=s?.count||0
       const amount=s?.totalAmount||0
       ns.push({
@@ -111,7 +118,7 @@ export default function EmailGraphPage(){
       if(fromC&&toC){ for(const a of fromC) for(const b of toC){ if(a!==b) es.push({source:a,target:b}) } }
     }
     return {nodes:ns,edges:es,statsMap:smap}
-  },[customers,emails,onlyKey,levelFilter,typeFilter])
+  },[customers,emails,onlyKey,levelFilter,typeFilter,tagFilter])
 
   const positioned=useMemo(()=>forceLayout([...nodes],edges,780,480,nodes.length<20?40:70),[nodes,edges])
 
@@ -139,6 +146,10 @@ export default function EmailGraphPage(){
         <span className="text-gray-300 self-center mx-1">|</span>
         <span className="text-gray-400 self-center mr-1">类型:</span>
         {(['all','政府','军队','教育','非盈利','个人','企业'] as const).map(t=> <button key={t} onClick={()=>setTypeFilter(t)} className={`px-2 py-0.5 rounded-full border ${typeFilter===t?'bg-blue-600 text-white':'bg-white text-gray-600'}`}>{t==='all'?'全部':t}</button>)}
+        <span className="text-gray-300 self-center mx-1">|</span>
+        <span className="text-gray-400 self-center mr-1">标签:</span>
+        <button onClick={()=>setTagFilter('all')} className={`px-2 py-0.5 rounded-full border ${tagFilter==='all'?'bg-teal-600 text-white':'bg-white text-gray-600'}`}>全部</button>
+        {allTags.slice(0,12).map(([t,n])=> <button key={t} onClick={()=>setTagFilter(tagFilter===t?'all':t)} className={`px-2 py-0.5 rounded-full border ${tagFilter===t?'bg-teal-600 text-white':'bg-white text-gray-600'}`}>{t} {n}</button>)}
       </div>
       <div className="grid lg:grid-cols-[1fr_300px] gap-3">
         {/* 图谱 */}
@@ -202,6 +213,7 @@ export default function EmailGraphPage(){
               <div className="flex flex-wrap gap-1">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${selectedCustomer.isKey?'bg-yellow-100 text-yellow-700':'bg-gray-100 text-gray-500'}`}>{selectedCustomer.level||'C'} {LEVEL_LABELS[selectedCustomer.level||'C']||''}</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{background:TYPE_COLORS[selectedSummary.emailType]+'20',color:TYPE_COLORS[selectedSummary.emailType]}}>{selectedSummary.emailType}</span>
+                {((selectedCustomer as any).tags||[]).map((t:string)=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-blue-50 rounded-lg p-2"><div className="text-blue-400 text-[10px]">邮件往来</div><div className="font-bold text-blue-700">{selectedSummary.count} 封</div></div>

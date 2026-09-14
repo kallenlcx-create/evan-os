@@ -21,6 +21,12 @@ export default function FollowUpsPage() {
   const [emails, setEmails] = useState<EmailMessage[]>([])
   const [list, setList] = useState<FollowUpRecord[]>([])
   const [catFilter, setCatFilter] = useState<string>('all')
+  const [tagFilter, setTagFilter] = useState<string>('all')
+  const allTags = useMemo(()=>{
+    const m = new Map<string, number>()
+    for(const c of customers) for(const t of (c.tags || [])) m.set(t, (m.get(t) || 0) + 1)
+    return [...m.entries()].sort((a,b)=> b[1]-a[1])
+  },[customers])
   const [page, setPage] = useState(1)
   const [perPage] = useState(4)
   const [showSendModal, setShowSendModal] = useState(false)
@@ -135,14 +141,17 @@ export default function FollowUpsPage() {
   }, [customers, emails])
 
   const catFiltered = useMemo(() => {
-    if (catFilter === 'high') return radar.aList
-    if (catFilter === 'today') return radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt === today))
-    if (catFilter === 'overdue') return radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt < today && f.status === 'pending'))
-    if (catFilter === 'pending') return radar.all
-    if (catFilter === 'repurchase') return radar.all.filter(x => (x.c.score || 0) > 70)
-    if (catFilter === 'marketing') return radar.all
-    return radar.all
-  }, [catFilter, radar, list, today])
+    let rows: typeof radar.all
+    if (catFilter === 'high') rows = radar.aList
+    else if (catFilter === 'today') rows = radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt === today))
+    else if (catFilter === 'overdue') rows = radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt < today && f.status === 'pending'))
+    else if (catFilter === 'pending') rows = radar.all
+    else if (catFilter === 'repurchase') rows = radar.all.filter(x => (x.c.score || 0) > 70)
+    else if (catFilter === 'marketing') rows = radar.all
+    else rows = radar.all
+    if (tagFilter !== 'all') rows = rows.filter(x => ((x.c.tags || []) as string[]).includes(tagFilter))
+    return rows
+  }, [catFilter, radar, list, today, tagFilter])
 
   const totalPages = Math.max(1, Math.ceil(catFiltered.length / perPage))
   const pageData = catFiltered.slice((page - 1) * perPage, page * perPage)
@@ -257,13 +266,17 @@ export default function FollowUpsPage() {
 
       {/* 雷达 */}
       <div className="bg-white rounded-2xl border p-4">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
           <div className="w-7 h-7 bg-red-100 rounded-lg flex items-center justify-center">🔥</div>
           <div>
             <div className="text-sm font-bold">客户跟进雷达</div>
             <div className="text-xs text-gray-400">A/B类客户沉寂预警 · 一键发送跟进邮件</div>
           </div>
-          <button onClick={() => load()} className="ml-auto text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
+          <select value={tagFilter} onChange={e=> { setTagFilter(e.target.value); setPage(1) }} className="ml-auto px-2 py-1 border rounded text-xs">
+            <option value="all">全部标签</option>
+            {allTags.map(([t,n])=> <option key={t} value={t}>{t} ({n})</option>)}
+          </select>
+          <button onClick={() => load()} className="text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
         </div>
 
         <div className="space-y-2">
@@ -277,7 +290,9 @@ export default function FollowUpsPage() {
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{STAGE_LABELS[stage] || stage}</span>
                   <span className="text-[10px] text-red-500">沉寂{days}天</span>
                 </div>
-                <div className="text-xs text-gray-400 truncate">{c.email} · {c.company || ''}</div>
+                <div className="text-xs text-gray-400 truncate">{c.email} · {c.company || ''}
+                  {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="ml-1 px-1 rounded bg-teal-50 text-teal-600 text-[10px]">{t}</span>)}
+                </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button onClick={() => handleQuickFollow(c)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1 hover:bg-blue-700">

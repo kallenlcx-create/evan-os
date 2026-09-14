@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
@@ -73,6 +73,31 @@ function autoClassifyCustomer(c: Customer, emailCount: number, totalAmount: numb
 export default function CustomersPage(){
   const [list, setList] = useState<Customer[]>([])
   const [filter, setFilter] = useState<'all'|'A+'|'A'|'B'|'C'|'D'|'key'|'gov'|'edu'|'org'|'mil'|'personal'|'enterprise'>( 'all')
+  const [tagFilter, setTagFilter] = useState<string>('all')
+  const [showTagMgr, setShowTagMgr] = useState(false)
+  const [tagInput, setTagInput] = useState('')
+  // 全部自定义标签（去重计数）
+  const allTags = useMemo(()=>{
+    const m = new Map<string, number>()
+    for(const c of list) for(const t of (c.tags || [])) m.set(t, (m.get(t) || 0) + 1)
+    return [...m.entries()].sort((a,b)=> b[1]-a[1])
+  },[list])
+  const saveTags = async (c: Customer, tags: string[]) => {
+    const clean = [...new Set(tags.map(t=>t.trim()).filter(Boolean))].slice(0, 20)
+    await db.customers.update(c.id, { tags: clean, updatedAt: new Date().toISOString() } as any)
+    setList(prev => prev.map(x=> x.id===c.id ? { ...x, tags: clean } as Customer : x))
+    if(selectedCustomer?.id === c.id) setSelectedCustomer({ ...selectedCustomer, tags: clean } as Customer)
+    window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  }
+  const deleteTagGlobal = async (tag: string) => {
+    if(!confirm(`删除标签「${tag}」？将从所有客户身上移除。`)) return
+    const hit = list.filter(c=> (c.tags||[]).includes(tag))
+    for(const c of hit) await db.customers.update(c.id, { tags: (c.tags||[]).filter(t=> t!==tag), updatedAt: new Date().toISOString() } as any)
+    if(tagFilter === tag) setTagFilter('all')
+    setShowTagMgr(false)
+    await load()
+    window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  }
   const [q,setQ]=useState('')
   const [selectedCustomer, setSelectedCustomer] = useState<Customer|null>(null)
   const [customerEmails, setCustomerEmails] = useState<EmailMessage[]>([])
@@ -92,27 +117,38 @@ export default function CustomersPage(){
 Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,企业,,USA,老客户,2026-09-20`
   const PRODUCT_MAP: Record<string,string> = { pin:'Pin', patch:'Patch', coin:'Coin', medal:'Medal', keychain:'Keychain', keychains:'Keychain' }
   const TYPE_MAP: Record<string, Customer['customerType']> = { '政府':'Government', '企业':'Company', '学校':'School', '非盈利':'Organization', '个人':'End Customer', '消防':'Government' }
-  const parseImport = (text: string) => {
-    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean)
-    if(lines.length < 2) return []
-    const rows: any[] = []
-    for(const line of lines.slice(1)){
-      // 简单CSV切分（支持引号包裹逗号）
+  // CSV 文本转行数组（支持引号包裹逗号）
+  const csvToRows = (text: string): string[][] => {
+    const out: string[][] = []
+    for(const line of text.split('\n')){
+      const t = line.trim()
+      if(!t) continue
       const cols: string[] = []
       let cur = '', inQ = false
-      for(const ch of line){
+      for(const ch of t){
         if(ch === '"'){ inQ = !inQ; continue }
-        if(ch === ',' && !inQ){ cols.push(cur.trim()); cur = ''; continue }
+        if((ch === ',' || ch === '\t') && !inQ){ cols.push(cur.trim()); cur = ''; continue }
         cur += ch
       }
       cols.push(cur.trim())
+      out.push(cols)
+    }
+    return out
+  }
+  const rowsToCustomers = (rows: string[][]) => {
+    if(!rows.length) return []
+    const hasHeader = /姓名|name/i.test(rows[0][0] || '')
+    const body = hasHeader ? rows.slice(1) : rows
+    const out: any[] = []
+    for(const cols0 of body){
+      const cols = [...cols0]
       while(cols.length < 13) cols.push('')
       const [name, emailsRaw, company, level, isKeyRaw, stageRaw, productsRaw, repRaw, typeRaw, phone, country, notes, followUpAt] = cols
       const emails = emailsRaw.split(';').map(e=>e.trim().toLowerCase()).filter(e=>e.includes('@'))
       if(!emails.length) continue
       const products = productsRaw.split('/').map(p=> PRODUCT_MAP[p.trim().toLowerCase()] || p.trim()).filter(Boolean)
       const stage = stageRaw === '已下单' ? 'won' : (['lead','contacted','qualified','proposal','negotiation','won','lost'].includes(stageRaw) ? stageRaw : 'lead')
-      rows.push({
+      out.push({
         name: name || emails[0].split('@')[0], emails, primary: emails[0],
         company, level: (['A+','A','B','C','D'].includes(level) ? level : 'C') as Customer['level'],
         isKey: isKeyRaw === '是' || level === 'A' || level === 'A+',
@@ -121,7 +157,23 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         phone, country, notes, followUpAt: /^\d{4}-\d{2}-\d{2}$/.test(followUpAt) ? followUpAt : new Date(Date.now()+3*86400000).toISOString().slice(0,10),
       })
     }
-    return rows
+    return out
+  }
+  const parseImport = (text: string) => rowsToCustomers(csvToRows(text))
+  const [importFileName, setImportFileName] = useState('')
+  const handleImportFile = async (f: File) => {
+    try{
+      const XLSX = await import('xlsx')
+      const buf = await f.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '', raw: false }) as string[][]
+      const clean = rows.filter(r => r.some(c => String(c||'').trim() !== '')).map(r => r.map(c => String(c||'').trim()))
+      // Excel 里多邮箱可能用换行分隔，统一成 ;
+      for(const r of clean) for(let i=0;i<r.length;i++) r[i] = r[i].replace(/\n+/g, ';')
+      setImportText(clean.map(r => r.map(c => /[,\"\n]/.test(c) ? `"${c.replace(/"/g,'""')}"` : c).join(',')).join('\n'))
+      setImportFileName(f.name)
+    }catch(e:any){ alert('文件解析失败：' + String(e.message||e).slice(0,150)) }
   }
   const importPreview = parseImport(importText)
   const handleImportConfirm = async () => {
@@ -359,6 +411,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   const filtered = list.filter(c=>{
     if(filter==='key' && !c.isKey) return false
     if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false
+    if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
     if(filter==='gov'||filter==='edu'||filter==='org'||filter==='mil'){
       const emailType = classifyEmailType(c.email)
       const filterMap: Record<string,string> = { gov:'政府', edu:'教育', org:'非盈利', mil:'军队' }
@@ -403,6 +456,29 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         ] as const).map(({k,l,c})=> <button key={k} onClick={()=> setFilter(filter===k?'all':k as any)} className={`px-2 py-1 rounded-full text-[10px] border ${filter===k?c+' ring-1 ring-current':'bg-white text-gray-500'}`}>{l} {emailTypeCounts[k.replace('personal','个人').replace('enterprise','企业')]||''}</button>)}
         <div className="ml-auto relative"><Search size={12} className="absolute left-2 top-2 text-gray-300"/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="pl-6 pr-2 py-1 border rounded-lg text-xs"/></div>
       </div>
+      {/* 自定义标签筛选 */}
+      <div className="flex gap-1 flex-wrap items-center">
+        <span className="text-[11px] text-gray-400">🏷️ 标签：</span>
+        <button onClick={()=> setTagFilter('all')} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter==='all'?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>全部</button>
+        {allTags.map(([t, n])=>(
+          <button key={t} onClick={()=> setTagFilter(tagFilter===t?'all':t)} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter===t?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>{t} {n}</button>
+        ))}
+        <div className="relative ml-auto">
+          <button onClick={()=> setShowTagMgr(v=>!v)} className="px-2 py-1 rounded-full text-[10px] border bg-white text-gray-500">管理标签</button>
+          {showTagMgr && (
+            <div className="absolute right-0 top-7 w-56 bg-white border rounded-xl shadow-lg p-2 z-20 max-h-64 overflow-y-auto">
+              <div className="text-[11px] text-gray-400 px-1 pb-1">删除标签会从所有客户身上移除</div>
+              {allTags.length===0 && <div className="text-[11px] text-gray-300 p-2">暂无标签（导入或编辑客户时添加）</div>}
+              {allTags.map(([t, n])=>(
+                <div key={t} className="flex items-center gap-1 px-1 py-1 text-xs">
+                  <span className="flex-1 truncate">{t} <span className="text-gray-300">×{n}</span></span>
+                  <button onClick={()=> void deleteTagGlobal(t)} className="text-red-400 hover:text-red-600 text-[11px]">删除</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map(c=>{
           const emailType = classifyEmailType(c.email)
@@ -416,8 +492,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 <span className="ml-auto text-xs px-1.5 py-0.5 bg-gray-100 rounded">{c.level||'C'}</span>
               </div>
               <div className="text-xs text-gray-500 truncate">{c.company || c.email}</div>
-              <div className="flex items-center gap-1.5 mt-1.5">
+              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${emailType.color}`}><EmailIcon size={9}/>{emailType.label}</span>
+                {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
                 {stats.count>0 && <span className="text-[10px] text-gray-400">📧{stats.count}封</span>}
                 {stats.totalAmount>0 && <span className="text-[10px] text-green-600">${stats.totalAmount.toLocaleString()}</span>}
               </div>
@@ -438,7 +515,15 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               <button onClick={()=> setShowImport(false)} className="ml-auto p-1.5 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
             </div>
             <div className="p-4 space-y-2 overflow-y-auto">
-              <textarea value={importText} onChange={e=> setImportText(e.target.value)} placeholder="粘贴CSV…" className="w-full h-40 px-3 py-2 border rounded-lg text-xs font-mono resize-y" />
+              <div className="flex items-center gap-2">
+                <label className="px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs cursor-pointer hover:bg-blue-100">
+                  📂 选择 Excel / CSV 文件
+                  <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e=>{ const f = e.target.files?.[0]; if(f) void handleImportFile(f); e.target.value = '' }} />
+                </label>
+                {importFileName && <span className="text-[11px] text-gray-500">已载入：{importFileName}</span>}
+                <span className="text-[11px] text-gray-400 ml-auto">或直接粘贴 CSV（第一行为表头）</span>
+              </div>
+              <textarea value={importText} onChange={e=> { setImportText(e.target.value); setImportFileName('') }} placeholder="粘贴CSV…" className="w-full h-40 px-3 py-2 border rounded-lg text-xs font-mono resize-y" />
               {importText.trim() && (
                 <div className="text-xs">
                   <div className="font-semibold text-gray-600 mb-1">预览（{importPreview.length} 行有效）</div>
@@ -486,6 +571,16 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               <div className="flex-1 min-w-0">
                 <div className="font-semibold text-sm">{selectedCustomer.contactName||selectedCustomer.title}</div>
                 <div className="text-xs text-gray-500">{selectedCustomer.email} · {selectedCustomer.company||'—'}</div>
+                <div className="flex items-center gap-1 mt-1 flex-wrap">
+                  {(selectedCustomer.tags || []).map(t=>(
+                    <span key={t} className="text-[10px] px-1.5 py-0.5 bg-teal-50 text-teal-600 rounded-full flex items-center gap-0.5">{t}
+                      <button onClick={()=> void saveTags(selectedCustomer, (selectedCustomer.tags||[]).filter(x=> x!==t))} className="hover:text-red-500">×</button>
+                    </span>
+                  ))}
+                  <span className="flex items-center gap-0.5">
+                    <input value={tagInput} onChange={e=> setTagInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && tagInput.trim()){ void saveTags(selectedCustomer, [...(selectedCustomer.tags||[]), tagInput.trim()]); setTagInput('') } }} placeholder="+标签" className="w-16 px-1.5 py-0.5 border rounded-full text-[10px]" />
+                  </span>
+                </div>
               </div>
               <div className="flex items-center gap-1.5">
                 {selectedCustomer.isKey && <span className="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full">⭐ 重点</span>}

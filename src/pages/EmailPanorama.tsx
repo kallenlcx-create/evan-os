@@ -25,7 +25,16 @@ function extractAmount(text: string): number {
 export default function EmailPanorama(){
   const [emails,setEmails]=useState<EmailMessage[]>([])
   const [accounts,setAccounts]=useState<any[]>([])
-  useEffect(()=>{ const load=async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray())}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); return ()=> window.removeEventListener('evan-emails-updated', h)},[])
+  const [customers,setCustomers]=useState<any[]>([])
+  useEffect(()=>{ const load=async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray()); setCustomers(await db.customers.toArray())}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[])
+
+  // === 客户标签分布 ===
+  const tagStats = useMemo(()=>{
+    const m=new Map<string,number>()
+    for(const c of customers) for(const t of (c.tags||[])) m.set(t,(m.get(t)||0)+1)
+    return [...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,10)
+  },[customers])
+  const maxTag = tagStats[0]?.[1]||1
 
   // === 基础统计 ===
   const stats = useMemo(()=>{
@@ -192,8 +201,8 @@ export default function EmailPanorama(){
         </div>
       </div>
 
-      {/* 域名分布 + 收件类型 */}
-      <div className="grid lg:grid-cols-2 gap-3">
+      {/* 域名分布 + 收件类型 + 标签分布 */}
+      <div className="grid lg:grid-cols-3 gap-3">
         <div className="bg-white rounded-2xl border p-4">
           <div className="text-xs font-semibold mb-3">🌐 域名分布 Top 12</div>
           <div className="space-y-1.5">
@@ -224,6 +233,24 @@ export default function EmailPanorama(){
                 </div>
               )
             })}
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl border p-4">
+          <div className="text-xs font-semibold mb-3">🏷️ 客户标签分布</div>
+          <div className="space-y-2">
+            {tagStats.map(([t,c])=>{
+              const pct=Math.round(c/Math.max(1,customers.length)*100)
+              return (
+                <div key={t} className="flex items-center gap-2 text-xs">
+                  <span className="w-20 truncate text-right font-medium text-teal-600">{t}</span>
+                  <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-3 rounded-full bg-teal-400" style={{width:`${Math.min(100,c/maxTag*100)}%`}}/>
+                  </div>
+                  <span className="w-16 text-right text-gray-500">{c}人 ({pct}%)</span>
+                </div>
+              )
+            })}
+            {tagStats.length===0 && <div className="text-xs text-gray-300 text-center py-4">暂无标签（客户页添加）</div>}
           </div>
         </div>
       </div>
