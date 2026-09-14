@@ -1100,12 +1100,13 @@ app.post('/email/ingest-stop/:accountId', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步）
+// 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步；light=1 跳过 IMAP 探测，零连接）
 app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const light = String(req.query.light||'') === '1'
   const folders = Array.isArray(req.query.folders) ? req.query.folders : (req.query.folder ? [String(req.query.folder)] : ['[Gmail]/All Mail'])
   const out = []
   const pass = decAuth(acc.auth_enc)
@@ -1117,9 +1118,16 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
     const cachedUidnext = Number(srows[0]?.uidnext)||0
     const cachedLastUid = Number(srows[0]?.last_uid ?? crows[0]?.maxUid ?? 0)||0
     let imapTotal = 0, uidnext = 0, uidvalidity = 0, live = true
-    const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:30000 })
-    try{
-      await imapConnect(client, 20000)
+    if(light){
+      // 轻量模式：不碰 IMAP，直接用库内游标
+      live = false
+      imapTotal = cachedUidnext || cachedLastUid || dbCount
+      uidnext = cachedUidnext
+      uidvalidity = Number(srows[0]?.uidvalidity)||0
+    } else {
+      const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:30000 })
+      try{
+        await imapConnect(client, 20000)
       const lock = await client.getMailboxLock(folder)
       try{
         imapTotal = Number(client.mailbox.exists || 0)
@@ -1127,6 +1135,7 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
         uidvalidity = Number(client.mailbox.uidValidity || 0)
       }finally{ lock.release() }
     }catch{ live = false }finally{ await client.logout().catch(()=>{}) }
+    } // end else (非 light 模式才探 IMAP)
     // 探测失败（限流/断网）时用库里游标兜底，不再显示 /0
     if(!live){ imapTotal = cachedUidnext || cachedLastUid || dbCount; uidnext = cachedUidnext; uidvalidity = Number(srows[0]?.uidvalidity)||0 }
     const lastUid = cachedLastUid
@@ -1203,6 +1212,22 @@ app.get('/email/customer-mails/:accountId', auth, wrap(async (req,res)=>{
   const [cc] = await pool.query(
     `SELECT COUNT(*) AS c FROM mail_messages WHERE account_id=? AND (from_addr LIKE ? OR to_addr LIKE ?)`,[accountId, like, like])
   res.json({ threads: out, totalMails: Number(cc[0]?.c)||0 })
+}))
+
+// 库内信封分页拉取：GET /email/db-envelopes/:accountId?sinceUid=0&limit=500
+// 给浏览器同步用：零 IMAP 连接，只读库
+app.get('/email/db-envelopes/:accountId', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const sinceUid = Number(req.query.sinceUid)||0
+  const limit = Math.min(2000, Math.max(1, Number(req.query.limit)||500))
+  const [rows] = await pool.query(
+    `SELECT folder, uid, message_id, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment
+     FROM mail_messages WHERE account_id=? AND uid>? ORDER BY uid LIMIT ?`,[accountId, sinceUid, limit])
+  const [mx] = await pool.query(`SELECT MAX(uid) AS m, COUNT(*) AS c FROM mail_messages WHERE account_id=?`,[accountId])
+  res.json({ envelopes: rows, maxUid: Number(mx[0]?.m)||0, total: Number(mx[0]?.c)||0, hasMore: rows.length>=limit })
 }))
 
 // 库内单封全文：GET /email/db-mail/:accountId/:uid（优先走库，不碰 IMAP）

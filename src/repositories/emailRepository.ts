@@ -150,8 +150,80 @@ export async function listEmails(folder?: string): Promise<EmailMessage[]> {
   } catch { return [] }
 }
 export async function getEmail(id:string){ try{ return await db.emails.get(id)}catch{ return undefined} }
+// ====== 浏览器同步改走服务端库：零 IMAP 连接，只读库内信封 ======
+export async function syncFromDb(accountId: string, onBatch?: (done: number, total: number) => void): Promise<{ added: number; total: number }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const acc = await db.emailAccounts.get(accountId)
+  let since = Number((acc as any)?.lastSyncUid) || 0
+  let added = 0
+  let total = 0
+  for(let n = 0; n < 200; n++){
+    const r = await fetch(`${h.url}/email/db-envelopes/${accountId}?sinceUid=${since}&limit=1000`,{ headers: bypassHeaders(h) })
+    const j = await r.json().catch(()=>({}))
+    if(!r.ok) throw new Error(j.error||`拉取失败 ${r.status}`)
+    const rows: any[] = j.envelopes || []
+    total = Number(j.total) || total
+    if(!rows.length) break
+    const mails: EmailMessage[] = []
+    for(const e of rows){
+      const subj = e.subject || '(无主题)'
+      mails.push({
+        id: `${accountId}-${e.uid}`, accountId, folder: String(e.folder||'').includes('sent') ? 'sent' : 'inbox',
+        from: e.from_name ? `${e.from_name} <${e.from_addr}>` : (e.from_addr || ''),
+        to: e.to_addr || '', subject: subj, text: '', html: '',
+        date: e.msg_date ? new Date(e.msg_date).toISOString() : new Date().toISOString(),
+        isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+        product: /coin/i.test(subj)?'Coin': /patch/i.test(subj)?'Patch': /pin/i.test(subj)?'Pin':'Coin',
+        intent: await classifyIntent(subj) as EmailIntent,
+        priority: '中', status: e.is_read?'已处理':'待处理',
+      })
+      const u = Number(e.uid) || 0
+      if(u > since) since = u
+    }
+    await db.emails.bulkPut(mails)
+    // 客户去重（整批一次查询+一次写入）
+    try{
+      const addrTitle = new Map<string,string>()
+      for(const m of mails){
+        const addr = (m.from.match(/<(.+?)>/)?.[1]||m.from).trim()
+        if(addr && addr.includes('@') && !addrTitle.has(addr.toLowerCase()))
+          addrTitle.set(addr.toLowerCase(), m.from.split('<')[0].trim()||addr.split('@')[0])
+      }
+      if(addrTitle.size){
+        const keys = [...addrTitle.keys()]
+        const existRows = await db.customers.where('email').anyOf(keys).toArray() as any[]
+        const existSet = new Set(existRows.map(c=> (c.email||'').toLowerCase()))
+        const fresh = keys.filter(k=> !existSet.has(k)).map(k=>({
+          id: uid(), type:'customer', title: addrTitle.get(k), description:'', emoji:'👤', tags:['邮件'],
+          createdAt:now(), updatedAt:now(), relations:[], company:'', email:k, stage:'lead',
+          isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10),
+        } as any))
+        if(fresh.length) await db.customers.bulkPut(fresh)
+      }
+    }catch{}
+    added += mails.length
+    await db.emailAccounts.update(accountId, { lastSyncUid: since, lastSyncAt: now() } as any).catch(()=>{})
+    onBatch?.(added, total)
+    if(!j.hasMore) break
+    await new Promise(rr=> setTimeout(rr, 30))
+  }
+  return { added, total }
+}
+
 export async function markRead(id:string, isRead:boolean){
   const m = await getEmail(id); if(m){ m.isRead=isRead; await db.emails.put(m)}
+  // 尽力回写服务端库 + Gmail（失败静默，限流时下轮自动对齐）
+  try{
+    const h = await serverHeaders()
+    if(h && m){
+      const parts = id.split('-')
+      const uid = parts[parts.length-1]
+      await fetch(`${h.url}/email/mark-read`, { method:'POST',
+        headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
+        body: JSON.stringify({ accountId: m.accountId, uid, read: isRead }) })
+    }
+  }catch{}
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 
@@ -206,10 +278,10 @@ export interface DbMailFolderStatus {
   uidnext: number; uidvalidity: number; fullSyncDone: boolean; live: boolean
   lastSyncAt: string | null; pending: number; job: any
 }
-export async function dbMailStatus(accountId: string): Promise<DbMailFolderStatus[]> {
+export async function dbMailStatus(accountId: string, light = true): Promise<DbMailFolderStatus[]> {
   const h = await serverHeaders()
   if (!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/db-status/${accountId}`, { headers: bypassHeaders(h) })
+  const r = await fetch(`${h.url}/email/db-status/${accountId}${light ? '?light=1' : ''}`, { headers: bypassHeaders(h) })
   const j = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(j.error || `查询失败 ${r.status}`)
   return j.folders || []

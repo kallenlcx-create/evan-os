@@ -1,6 +1,6 @@
 // ====== 邮件同步服务（简化可靠版）======
 // 策略：轮询为主，页面可见/聚焦时立即补同步
-import { listAccounts, syncReal, getEmailCount } from '../repositories/emailRepository'
+import { listAccounts, syncFromDb } from '../repositories/emailRepository'
 import { EVENTS, emitEvent } from '../utils/emailHelpers'
 
 export type EmailSyncConfig = {
@@ -53,9 +53,9 @@ function emitDone(detail: any) {
   emitEvent(EVENTS.CUSTOMERS_UPDATED, detail)
 }
 
-// ====== 核心同步函数（增量同步 + 每次刷新未读）======
-export async function syncAllEmails(limit: number | 'all' = 30): Promise<number> {
-  const lim = limit === 'all' ? 1000000 : Number(limit) || 30
+// ====== 核心同步函数：浏览器只从服务端库拉信封（零 IMAP 连接）======
+// IMAP 碰 Gmail 的事全部交给服务端 watcher/worker；这里只做库→本地镜像
+export async function syncAllEmails(_limit: number | 'all' = 30): Promise<number> {
   if (syncing) return 0
   syncing = true
   let totalErrors = 0
@@ -63,110 +63,33 @@ export async function syncAllEmails(limit: number | 'all' = 30): Promise<number>
     const accounts = await listAccounts()
     if (accounts.length === 0) throw new Error('未绑定邮箱')
 
-    // 预读总邮件数
-    const accountTotals: Record<string, number> = {}
-    emitProgress({ status: '正在读取邮箱...', done: 0, total: 0, errors: 0 })
-    for (const acc of accounts) {
-      try { accountTotals[acc.id] = await getEmailCount(acc.id) } catch { accountTotals[acc.id] = 0 }
-    }
-    const grandTotal = Object.values(accountTotals).reduce((s, n) => s + n, 0)
-    emitProgress({ status: `共 ${accounts.length} 账号，${grandTotal} 封，开始同步...`, done: 0, total: grandTotal, errors: 0 })
+    emitProgress({ status: '正在从服务端库同步...', done: 0, total: 0, errors: 0 })
 
     let totalAdded = 0
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
-      const accTotal = accountTotals[acc.id] || 0
-      const lastSyncUid = (acc as any).lastSyncUid || 0
-
       try {
-        // ====== 每次同步都搜索未读邮件（未读状态会变化）======
-        emitProgress({
-          status: `[${i + 1}/${accounts.length}] ${acc.email} 搜索未读邮件...`,
-          done: totalAdded, total: grandTotal, errors: totalErrors,
+        const res = await syncFromDb(acc.id, (done, total) => {
+          emitProgress({
+            status: `[${i + 1}/${accounts.length}] ${acc.email} 本地镜像 ${done}/${total || '?'}`,
+            done: totalAdded + done, total, errors: totalErrors,
+          })
         })
-        let unreadOffset = 0
-        while (true) {
-          let res: any
-          try {
-            res = await syncReal(acc.id, 200, unreadOffset, true, 'UNSEEN')
-          } catch (batchErr: any) {
-            totalErrors++
-            break
-          }
-          const added = typeof res === 'object' ? res.added : Number(res) || 0
-          const hasMore = typeof res === 'object' ? res.hasMore : false
-          if (added > 0) { totalAdded += added; unreadOffset += added }
-          emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 已拉未读 ${unreadOffset} 封`,
-            done: totalAdded, total: grandTotal, errors: totalErrors,
-          })
-          if (!hasMore || added === 0) break
-          await new Promise(r => setTimeout(r, 30))
-        }
-
-        // ====== 增量同步：只拉新邮件（UID > lastSyncUid）======
-        if (lastSyncUid > 0) {
-          emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 增量同步（UID>${lastSyncUid}）...`,
-            done: totalAdded, total: grandTotal, errors: totalErrors,
-          })
-          let incOffset = 0
-          while (true) {
-            let res: any
-            try {
-              res = await syncReal(acc.id, 200, incOffset, true, '', lastSyncUid)
-            } catch (batchErr: any) {
-              totalErrors++
-              break
-            }
-            const added = typeof res === 'object' ? res.added : Number(res) || 0
-            const hasMore = typeof res === 'object' ? res.hasMore : false
-            if (added > 0) { totalAdded += added; incOffset += added }
-            emitProgress({
-              status: `[${i + 1}/${accounts.length}] ${acc.email} 增量 +${added} 封`,
-              done: totalAdded, total: grandTotal, errors: totalErrors,
-            })
-            if (!hasMore || added === 0) break
-            await new Promise(r => setTimeout(r, 30))
-          }
-        } else {
-          // 首次同步：拉最新邮件（补充已读）
-          emitProgress({
-            status: `[${i + 1}/${accounts.length}] ${acc.email} 拉取最新邮件...`,
-            done: totalAdded, total: grandTotal, errors: totalErrors,
-          })
-          let recentOffset = 0
-          const recentLimit = Math.min(lim, 500)
-          while (true) {
-            let res: any
-            try {
-              res = await syncReal(acc.id, 200, recentOffset, true)
-            } catch (batchErr: any) {
-              totalErrors++
-              break
-            }
-            const added = typeof res === 'object' ? res.added : Number(res) || 0
-            const hasMore = typeof res === 'object' ? res.hasMore : false
-            if (added > 0) { totalAdded += added; recentOffset += added }
-            emitProgress({
-              status: `[${i + 1}/${accounts.length}] ${acc.email} 已同步 ${recentOffset}/${accTotal || '?'}`,
-              done: totalAdded, total: grandTotal, errors: totalErrors,
-            })
-            if (!hasMore || added === 0) break
-            if (recentOffset >= recentLimit) break
-            await new Promise(r => setTimeout(r, 30))
-          }
-        }
+        totalAdded += res.added
+        emitProgress({
+          status: `[${i + 1}/${accounts.length}] ${acc.email} 完成（新增 ${res.added} 封）`,
+          done: totalAdded, total: res.total, errors: totalErrors,
+        })
       } catch (accErr: any) {
         totalErrors++
         emitProgress({
           status: `[${i + 1}/${accounts.length}] ${acc.email} 失败: ${String(accErr.message || accErr).slice(0, 40)}`,
-          done: totalAdded, total: grandTotal, errors: totalErrors,
+          done: totalAdded, total: 0, errors: totalErrors,
         })
       }
     }
 
-    emitDone({ total: totalAdded, limit: lim, errors: totalErrors })
+    emitDone({ total: totalAdded, errors: totalErrors })
     const cfg = loadConfig()
     cfg.lastSyncAt = new Date().toISOString()
     cfg.nextSyncAt = new Date(Date.now() + cfg.intervalMinutes * 60000).toISOString()
