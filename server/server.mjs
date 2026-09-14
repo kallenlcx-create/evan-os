@@ -868,6 +868,14 @@ function makeImapClient({ host, port, user, pass, socketTimeout = 60000 }){
   client.on('error', ()=>{})
   return client
 }
+// 登出硬超时：socket 被黑洞时 LOGOUT 永远等不到 BYE，必须掐掉否则 worker 卡死在收尾
+async function logoutSafe(client, ms = 10000){
+  if(!client) return
+  try{
+    await Promise.race([client.logout().catch(()=>{}), new Promise(r=>setTimeout(r, ms))])
+  }catch{}
+  try{ if(typeof client.destroy === 'function') client.destroy() }catch{}
+}
 async function imapConnect(client, ms = 30000){
   let timer = null
   try{
@@ -1088,7 +1096,7 @@ async function runMailIngest(accountId, username, opts = {}){
                   await new Promise(r=>setImmediate(r))
                 }
               }finally{
-                await wc.logout().catch(()=>{}); await logoutSafe(wc)
+                await logoutSafe(wc)
               }
             })
             const results = await Promise.allSettled(workers)
