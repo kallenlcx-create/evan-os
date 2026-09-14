@@ -956,63 +956,94 @@ async function runMailIngest(accountId, username, opts = {}){
                 [accountId, folder, uidvalidity, doneMax, uidnext, sqlNow()])
             }catch{}
           }
-          // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的）
+          // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的；3 连接并行加速）
           st.phase = 'body'
           const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
+          const BODY_CONCURRENCY = 3
+          const processBodyBatch = async (wc, batch) => {
+            // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
+            let sizes = new Map()
+            try{
+              await withTimeout((async()=>{
+                for await (const msg of wc.fetch(batch.join(','), { size:true, uid:true }, { uid:true })){
+                  sizes.set(msg.uid, Number(msg.size)||0)
+                }
+              })(), 2*60*1000, 'size-batch')
+            }catch(e){ console.log('[ingest] size batch skip:', String(e.message||e).slice(0,60)) }
+            for(const u of batch.filter(u=> (sizes.get(u)||0) > BODY_MAX)){
+              await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
+                [sqlNow(), accountId, folder, u]).catch(()=>{})
+              st.done++
+            }
+            const small = batch.filter(u=> (sizes.get(u)||0) <= BODY_MAX)
+            if(!small.length) return
+            // B2: 取正文，整批4分钟硬超时（超时整批跳过，下轮重试）
+            try{
+              await Promise.race([
+                (async()=>{
+                  for await (const msg of wc.fetch(small.join(','), { envelope:true, flags:true, uid:true, source:true }, { uid:true })){
+                    try{
+                      const parsed = await simpleParser(msg.source).catch(()=>null)
+                      if(!parsed) continue
+                      const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
+                      const atts = parsed.attachments || []
+                      const att = atts.length ? 1 : 0
+                      await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
+                        [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
+                      // 附件元数据+落盘
+                      for(const a of atts){
+                        try{
+                          const sv = await saveAttachment(accountId, folder, msg.uid, a)
+                          if(sv.saved){
+                            await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
+                              [accountId, folder, msg.uid, safeFileName(a.filename), sv.size || a.size || 0, String(a.contentType||'').slice(0,128), sv.path || ''])
+                          }
+                        }catch{}
+                      }
+                      st.done++
+                    }catch{}
+                  }
+                })(),
+                new Promise((_, rej)=>setTimeout(()=>rej(new Error('body-batch-timeout')), 4*60*1000)),
+              ])
+            }catch(e){ console.log('[ingest] body batch skip:', String(e.message||e).slice(0,80)) }
+          }
           while(true){
             if(st.cancelled) throw new Error('cancelled')
-            const [todo] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid LIMIT 200',[accountId, folder]).catch(()=> [[]])
+            const [todoRows] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid LIMIT 600',[accountId, folder]).catch(()=> [[]])
+            const todo = (todoRows||[]).map(r=>Number(r.uid)).filter(Boolean)
             if(!todo.length) break
-            for(let i=0;i<todo.length;i+=25){
+            const wcFailed = []
+            // 切片分给 N 个 worker，各自独立连接并行拉取
+            const slices = Array.from({ length: BODY_CONCURRENCY }, ()=> [])
+            todo.forEach((u, idx)=> slices[idx % BODY_CONCURRENCY].push(u))
+            const workers = slices.filter(s=> s.length).map(async (slice)=>{
               if(st.cancelled) throw new Error('cancelled')
-              const batch = todo.slice(i,i+25).map(r=>Number(r.uid))
-              // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
-              let sizes = new Map()
+              const wc = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:180000 })
               try{
-                await withTimeout((async()=>{
-                  for await (const msg of client.fetch(batch.join(','), { size:true, uid:true }, { uid:true })){
-                    sizes.set(msg.uid, Number(msg.size)||0)
-                  }
-                })(), 2*60*1000, 'size-batch')
-              }catch(e){ console.log('[ingest] size batch skip:', String(e.message||e).slice(0,60)) }
-              for(const u of batch.filter(u=> (sizes.get(u)||0) > BODY_MAX)){
-                await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
-                  [sqlNow(), accountId, folder, u]).catch(()=>{})
-                st.done++
+                await imapConnect(wc, 30000)
+              }catch(e){
+                // 连不上：记一笔直接返回，避免空转忙循环打爆 Gmail
+                wcFailed.push(String(e.message||e).slice(0,60))
+                try{ await wc.logout().catch(()=>{}) }catch{}
+                return
               }
-              const small = batch.filter(u=> (sizes.get(u)||0) <= BODY_MAX)
-              if(!small.length) continue
-              // B2: 取正文，整批4分钟硬超时（超时整批跳过，下轮重试）
               try{
-                await Promise.race([
-                  (async()=>{
-                    for await (const msg of client.fetch(small.join(','), { envelope:true, flags:true, uid:true, source:true }, { uid:true })){
-                      try{
-                        const parsed = await simpleParser(msg.source).catch(()=>null)
-                        if(!parsed) continue
-                        const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
-                        const atts = parsed.attachments || []
-                        const att = atts.length ? 1 : 0
-                        await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
-                          [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
-                        // 附件元数据+落盘
-                        for(const a of atts){
-                          try{
-                            const sv = await saveAttachment(accountId, folder, msg.uid, a)
-                            if(sv.saved){
-                              await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
-                                [accountId, folder, msg.uid, safeFileName(a.filename), sv.size || a.size || 0, String(a.contentType||'').slice(0,128), sv.path || ''])
-                            }
-                          }catch{}
-                        }
-                        st.done++
-                      }catch{}
-                    }
-                  })(),
-                  new Promise((_, rej)=>setTimeout(()=>rej(new Error('body-batch-timeout')), 4*60*1000)),
-                ])
-              }catch(e){ console.log('[ingest] body batch skip:', String(e.message||e).slice(0,80)) }
-              await new Promise(r=>setImmediate(r))
+                for(let i=0;i<slice.length;i+=25){
+                  if(st.cancelled) throw new Error('cancelled')
+                  await processBodyBatch(wc, slice.slice(i,i+25))
+                  await new Promise(r=>setImmediate(r))
+                }
+              }finally{
+                await wc.logout().catch(()=>{})
+              }
+            })
+            const results = await Promise.allSettled(workers)
+            if(wcFailed.length && wcFailed.length >= slices.filter(s=> s.length).length){
+              throw new Error('imap-unavailable: ' + (wcFailed[0]||''))
+            }
+            for(const r of results){
+              if(r.status === 'rejected' && String(r.reason?.message||'') === 'cancelled') throw new Error('cancelled')
             }
           }
           // 已读状态刷新：UNSEEN 列表 + 最近 2000 封的 FLAGS（每步硬超时，hang 则跳过本轮）
