@@ -113,8 +113,8 @@ export default function CustomersPage(){
   const [showImport, setShowImport] = useState(false)
   const [importText, setImportText] = useState('')
   const [importing, setImporting] = useState(false)
-  const IMPORT_TEMPLATE = `姓名,邮箱(多个用;分隔),公司,等级(A+/A/B/C/D),重点(是/否),阶段(lead/contacted/qualified/proposal/negotiation/won/lost/已下单),产品(多个用/分隔),复购次数,类型(政府/企业/消防/学校/个人),电话,国家,备注,下次跟进(YYYY-MM-DD)
-Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,企业,,USA,老客户,2026-09-20`
+  const IMPORT_TEMPLATE = `姓名,邮箱(多个用;分隔),公司,等级(A+/A/B/C/D),重点(是/否),阶段(lead/contacted/qualified/proposal/negotiation/won/lost/已下单),产品(多个用/分隔pin/patch/coin/medal/keychains),复购次数,类型(政府/企业/消防/学校/个人),电话,国家,备注,下次跟进(YYYY-MM-DD),分类(多个用/分隔,自动同步为标签),金额(USD)
+Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,企业,,USA,老客户,2026-09-20,复购/重要,2500`
   const PRODUCT_MAP: Record<string,string> = { pin:'Pin', patch:'Patch', coin:'Coin', medal:'Medal', keychain:'Keychain', keychains:'Keychain' }
   const TYPE_MAP: Record<string, Customer['customerType']> = { '政府':'Government', '企业':'Company', '学校':'School', '非盈利':'Organization', '个人':'End Customer', '消防':'Government' }
   // CSV 文本转行数组（支持引号包裹逗号）
@@ -138,21 +138,52 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   const rowsToCustomers = (rows: string[][]) => {
     if(!rows.length) return []
     const hasHeader = /姓名|name/i.test(rows[0][0] || '')
+    // 表头识别：兼容13列老格式与15列新格式（末尾+分类,金额）
+    let colIndex: Record<string, number> = {}
+    if(hasHeader){
+      const heads = rows[0].map(h=> h.replace(/\(.*\)/g, '').trim())
+      const find = (...keys: string[]) => heads.findIndex(h=> keys.some(k=> h.includes(k)))
+      const fixed = ['姓名','邮箱','公司','等级','重点','阶段','产品','复购次数','类型','电话','国家','备注','下次跟进']
+      fixed.forEach((k, i)=> { colIndex[k] = i });
+      colIndex['分类'] = find('分类', '标签')
+      colIndex['金额'] = find('金额', '订单金额', 'amount')
+    }
+    const get = (cols: string[], key: string, fallbackIdx: number) => {
+      const i = colIndex[key]
+      if(i != null && i >= 0 && i < cols.length) return cols[i]
+      return cols[fallbackIdx] || ''
+    }
     const body = hasHeader ? rows.slice(1) : rows
     const out: any[] = []
     for(const cols0 of body){
       const cols = [...cols0]
-      while(cols.length < 13) cols.push('')
-      const [name, emailsRaw, company, level, isKeyRaw, stageRaw, productsRaw, repRaw, typeRaw, phone, country, notes, followUpAt] = cols
+      while(cols.length < 15) cols.push('')
+      const name = get(cols, '姓名', 0)
+      const emailsRaw = get(cols, '邮箱', 1)
+      const company = get(cols, '公司', 2)
+      const level = get(cols, '等级', 3)
+      const isKeyRaw = get(cols, '重点', 4)
+      const stageRaw = get(cols, '阶段', 5)
+      const productsRaw = get(cols, '产品', 6)
+      const repRaw = get(cols, '复购次数', 7)
+      const typeRaw = get(cols, '类型', 8)
+      const phone = get(cols, '电话', 9)
+      const country = get(cols, '国家', 10)
+      const notes = get(cols, '备注', 11)
+      const followUpAt = get(cols, '下次跟进', 12)
+      const catsRaw = get(cols, '分类', 13)
+      const amountRaw = get(cols, '金额', 14)
       const emails = emailsRaw.split(';').map(e=>e.trim().toLowerCase()).filter(e=>e.includes('@'))
       if(!emails.length) continue
       const products = productsRaw.split('/').map(p=> PRODUCT_MAP[p.trim().toLowerCase()] || p.trim()).filter(Boolean)
+      const categories = catsRaw.split('/').map(s=> s.trim()).filter(Boolean)
       const stage = stageRaw === '已下单' ? 'won' : (['lead','contacted','qualified','proposal','negotiation','won','lost'].includes(stageRaw) ? stageRaw : 'lead')
       out.push({
         name: name || emails[0].split('@')[0], emails, primary: emails[0],
         company, level: (['A+','A','B','C','D'].includes(level) ? level : 'C') as Customer['level'],
         isKey: isKeyRaw === '是' || level === 'A' || level === 'A+',
-        stage, products, repurchaseCount: Number(repRaw) || 0,
+        stage, products, categories, amount: parseFloat(String(amountRaw).replace(/[$,]/g, '')) || 0,
+        repurchaseCount: Number(repRaw) || 0,
         customerType: TYPE_MAP[typeRaw] || 'Company', typeRaw,
         phone, country, notes, followUpAt: /^\d{4}-\d{2}-\d{2}$/.test(followUpAt) ? followUpAt : new Date(Date.now()+3*86400000).toISOString().slice(0,10),
       })
@@ -196,11 +227,14 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           for(const e of r.emails){ const hit = byEmail.get(e); if(hit){ target = hit; break } }
         }
         if(target){
-          // 合并：只升级不降级
+          // 合并：只升级不降级；分类并入标签
           const patch: any = {}
           if(LEVEL_ORDER.indexOf(r.level) > LEVEL_ORDER.indexOf(target.level || 'C')) patch.level = r.level
           if(r.isKey && !target.isKey) patch.isKey = true
           if(r.stage === 'won' && target.stage !== 'won') patch.stage = 'won'
+          const mergedTags = [...new Set([...(target.tags || []), ...(r.categories || [])])]
+          if(mergedTags.join() !== (target.tags || []).join()) patch.tags = mergedTags
+          if((r.amount || 0) > 0 && !(target.value || 0)) { patch.value = r.amount; patch.currency = 'USD' }
           const mergedExtra = [...new Set([...(target.extraEmails || []), ...r.emails.filter((e:string)=> e !== target!.email!.toLowerCase())])]
           if(mergedExtra.join() !== (target.extraEmails || []).join()) patch.extraEmails = mergedExtra
           const mergedProd = [...new Set([...(target.portrait?.products || []), ...r.products])]
@@ -221,10 +255,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             id, type:'customer', title: r.name, contactName: r.name, company: r.company,
             email: r.primary, extraEmails: r.emails.slice(1),
             stage: r.stage, isKey: r.isKey, level: r.level, customerType: r.customerType,
-            tags: ['邮件','批量导入', ...(r.typeRaw === '消防' ? ['消防'] : [])],
+            tags: [...new Set(['邮件','批量导入', ...(r.categories || []), ...(r.typeRaw === '消防' ? ['消防'] : [])])],
             phone: r.phone, country: r.country,
             notes: [r.notes, r.typeRaw === '消防' ? '[消防部门]' : ''].filter(Boolean).join(' | '),
             repurchaseCount: r.repurchaseCount,
+            value: r.amount || 0, currency: r.amount ? 'USD' : undefined,
             portrait: r.products.length ? { products: r.products } : undefined,
             createdAt: ts, updatedAt: ts, relations: [],
             followUpAt: r.followUpAt, score: 0,
@@ -496,6 +531,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${emailType.color}`}><EmailIcon size={9}/>{emailType.label}</span>
                 {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
                 {stats.count>0 && <span className="text-[10px] text-gray-400">📧{stats.count}封</span>}
+                {(c.value||0)>0 && <span className="text-[10px] text-green-600">💰${Number(c.value).toLocaleString()}</span>}
                 {stats.totalAmount>0 && <span className="text-[10px] text-green-600">${stats.totalAmount.toLocaleString()}</span>}
               </div>
               {c.aiSummary && <div className="text-[10px] bg-purple-50 rounded p-1.5 mt-1.5 truncate">{c.aiSummary}</div>}
@@ -529,7 +565,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   <div className="font-semibold text-gray-600 mb-1">预览（{importPreview.length} 行有效）</div>
                   <div className="max-h-48 overflow-auto border rounded-lg">
                     <table className="w-full text-[11px]">
-                      <thead className="bg-gray-50 sticky top-0"><tr><th className="p-1 text-left">姓名</th><th className="p-1 text-left">邮箱</th><th className="p-1">等级</th><th className="p-1">重点</th><th className="p-1">阶段</th><th className="p-1 text-left">产品</th><th className="p-1">复购</th><th className="p-1">类型</th></tr></thead>
+                      <thead className="bg-gray-50 sticky top-0"><tr><th className="p-1 text-left">姓名</th><th className="p-1 text-left">邮箱</th><th className="p-1">等级</th><th className="p-1">重点</th><th className="p-1">阶段</th><th className="p-1 text-left">产品</th><th className="p-1">复购</th><th className="p-1">类型</th><th className="p-1 text-left">分类</th><th className="p-1">金额</th></tr></thead>
                       <tbody>
                         {importPreview.slice(0, 50).map((r, i)=>(
                           <tr key={i} className="border-t">
@@ -541,6 +577,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                             <td className="p-1">{r.products.join('/')}</td>
                             <td className="p-1 text-center">{r.repurchaseCount||''}</td>
                             <td className="p-1 text-center">{r.customerType}</td>
+                            <td className="p-1">{(r.categories||[]).join('/')}</td>
+                            <td className="p-1 text-center">{r.amount||''}</td>
                           </tr>
                         ))}
                       </tbody>
