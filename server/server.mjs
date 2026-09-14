@@ -272,6 +272,12 @@ async function init() {
       intervals_json VARCHAR(256),
       updated_at TIMESTAMP(3) NOT NULL
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS us_holidays (
+      date DATE PRIMARY KEY,
+      name VARCHAR(256) DEFAULT '',
+      fetched_at TIMESTAMP(3) NOT NULL
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
   console.log('[sync-server] storage ready')
   }catch(e){
     dbReady=false
@@ -1427,6 +1433,79 @@ app.post('/email/watch/:accountId', auth, wrap(async (req,res)=>{
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   res.json({ ok:true, watcher: (()=>{ const w = startMailWatcher(accountId, req.user); return { mode:w.mode } })() })
+}))
+
+// 美国节假日：GET /email/holidays?year=2026（Nager.Date 联网拉取，24h缓存，断网用内置兜底）
+const US_HOLIDAY_FALLBACK = [
+  ['01-01', 'New Year'], ['01-19', 'MLK Day'], ['02-16', "Presidents' Day"], ['05-25', 'Memorial Day'],
+  ['06-19', 'Juneteenth'], ['07-04', 'Independence Day'], ['09-07', 'Labor Day'], ['10-12', 'Columbus Day'],
+  ['11-11', 'Veterans Day'], ['11-26', 'Thanksgiving'], ['12-25', 'Christmas'],
+]
+app.get('/email/holidays', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const year = Math.min(2030, Math.max(2020, Number(req.query.year) || new Date().getFullYear()))
+  let rows = []
+  try{
+    const [r] = await pool.query('SELECT date, name FROM us_holidays WHERE YEAR(date)=? ORDER BY date',[year])
+    rows = r
+  }catch{}
+  const fresh = rows.length > 5
+  if(!fresh){
+    try{
+      const up = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/US`, { signal: AbortSignal.timeout(15000) })
+      if(up.ok){
+        const list = await up.json()
+        const now = sqlNow()
+        for(const h of list){
+          if(!h.date || !h.name) continue
+          await pool.query(`INSERT INTO us_holidays (date, name, fetched_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name), fetched_at=VALUES(fetched_at)`,
+            [h.date, String(h.localName || h.name).slice(0,256), now]).catch(()=>{})
+        }
+        const [r2] = await pool.query('SELECT date, name FROM us_holidays WHERE YEAR(date)=? ORDER BY date',[year])
+        rows = r2
+      }
+    }catch(e){ console.log('[holidays] fetch skip:', String(e.message||e).slice(0,80)) }
+  }
+  if(!rows.length){
+    rows = US_HOLIDAY_FALLBACK.map(([md, name])=>({ date: `${year}-${md}`, name: `${name}（内置）` }))
+  }
+  const fmt = (d) => { try{ return new Date(d).toISOString().slice(0,10) }catch{ return String(d).slice(0,10) } };
+  res.json({ year, holidays: rows.map(h=>({ date: fmt(h.date), name: h.name })), source: fresh ? 'cache' : 'live' })
+}))
+
+// 复购激活池：GET /email/repurchase-pool?silentDays=90
+// stage=won 且最后一次往来（含收发）超过 silentDays 天的客户，按静默天数倒序
+app.get('/email/repurchase-pool', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const silentDays = Math.min(3650, Math.max(1, Number(req.query.silentDays) || 90))
+  const cutoff = new Date(Date.now() - silentDays*86400000)
+  const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
+  const [mrows] = await pool.query(`SELECT from_addr, to_addr, MAX(msg_date) AS lastd, COUNT(*) AS c FROM mail_messages WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?) GROUP BY from_addr, to_addr`,[req.user]).catch(()=> [[]])
+  const lastByEmail = new Map()
+  for(const m of (mrows||[])){
+    for(const a of [String(m.from_addr||'').toLowerCase(), ...String(m.to_addr||'').split(',').map(s=>s.trim().toLowerCase())]){
+      if(!a || !a.includes('@')) continue
+      const t = new Date(m.lastd).getTime()
+      if(!lastByEmail.has(a) || t > lastByEmail.get(a).t) lastByEmail.set(a, { t, c: Number(m.c)||0 })
+    }
+  }
+  const out = []
+  for(const r of crows){
+    let d = null
+    try{ d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data }catch{ continue }
+    if(!d || d.stage !== 'won') continue
+    const mails = [(d.email||'').toLowerCase(), ...((d.extraEmails||[]).map(e=>String(e).toLowerCase()))].filter(Boolean)
+    let best = null
+    for(const a of mails){ const hit = lastByEmail.get(a); if(hit && (!best || hit.t > best.t)) best = hit }
+    const lastT = best ? best.t : null
+    if(lastT && lastT > cutoff.getTime()) continue // 最近还在联系，不算沉睡
+    out.push({ customerId: r.row_id, email: d.email, title: d.title || d.contactName, company: d.company || '',
+      level: d.level, isKey: !!d.isKey, repurchaseCount: d.repurchaseCount || 0,
+      products: d.portrait?.products || [], lastContact: lastT ? new Date(lastT).toISOString().slice(0,10) : null,
+      silentDays: lastT ? Math.floor((Date.now()-lastT)/86400000) : 9999, mailCount: best?.c || 0 })
+  }
+  out.sort((a,b)=> b.silentDays - a.silentDays)
+  res.json({ silentDays, total: out.length, pool: out.slice(0, 500) })
 }))
 
 // 标已读回写 Gmail：POST /email/mark-read {accountId, uid, read, folder?}

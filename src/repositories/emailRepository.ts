@@ -394,6 +394,24 @@ export async function retryOutbox(id: string){
   return j
 }
 
+// ====== 营销：节假日 + 复购池 ======
+export async function getHolidays(year?: number): Promise<{ year: number; holidays: Array<{date:string;name:string}>; source: string }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/holidays${year?`?year=${year}`:''}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
+  return j
+}
+export async function getRepurchasePool(silentDays = 90): Promise<{ silentDays: number; total: number; pool: any[] }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/repurchase-pool?silentDays=${silentDays}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
+  return j
+}
+
 // ====== 自动跟进序列 ======
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()
