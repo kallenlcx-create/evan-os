@@ -175,21 +175,25 @@ export function getChatSessions(): ChatSession[] {
     const raw = localStorage.getItem(LS_SESSIONS)
     if (raw) {
       const sessions = JSON.parse(raw) as ChatSession[]
-      // 一次性修复：合并历史残留的同 id 快照（流式输出旧 bug 产生），保留最后一条
+      // 一次性修复：合并历史残留的重复助手消息
+      // 1) 同 id 快照只保留最后一条；2) 连续的助手消息只保留最长一条（失败气泡+成功气泡的残留）
       let dirty = false
       for (const s of sessions) {
-        const seen = new Set<string>()
-        const kept: typeof s.messages = []
-        for (const m of s.messages) {
-          if (seen.has(m.id)) {
-            kept[kept.findIndex(k => k.id === m.id)] = m
+        const byId = new Map<string, ChatMessage>()
+        for (const m of s.messages) byId.set(m.id, m)
+        if (byId.size !== s.messages.length) dirty = true
+        const deduped: ChatMessage[] = [...byId.values()]
+        const merged: ChatMessage[] = []
+        for (const m of deduped) {
+          const last = merged[merged.length - 1]
+          if (last && last.role === 'assistant' && m.role === 'assistant') {
             dirty = true
+            if ((m.content||'').length >= (last.content||'').length) merged[merged.length - 1] = m
           } else {
-            seen.add(m.id)
-            kept.push(m)
+            merged.push(m)
           }
         }
-        s.messages = kept
+        s.messages = merged
       }
       if (dirty) saveChatSessions(sessions)
       return sessions

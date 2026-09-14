@@ -56,10 +56,12 @@ export default function AiChat() {
   }
 
   // 发送消息
+  const sendingRef = useRef(false)
   const handleSend = async () => {
     const text = input.trim()
-    if (!text || loading) return
-    if (!activeId) { handleNew(); return }
+    if (!text || loading || sendingRef.current) return
+    sendingRef.current = true
+    if (!activeId) { handleNew(); sendingRef.current = false; return }
 
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text, timestamp: Date.now() }
     appendMessage(activeId, userMsg)
@@ -110,6 +112,7 @@ export default function AiChat() {
       }
     } finally {
       setLoading(false)
+      sendingRef.current = false
       abortRef.current = null
     }
   }
@@ -361,7 +364,7 @@ export default function AiChat() {
                 <div className="w-3 h-3 bg-white rounded-sm" />
               </button>
             ) : (
-              <button onClick={handleSend} disabled={!input.trim()}
+              <button onClick={handleSend} disabled={!input.trim() || loading}
                 className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 disabled:opacity-40 transition-colors shrink-0">
                 <Send size={16} />
               </button>
