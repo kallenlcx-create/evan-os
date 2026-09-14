@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
-import { fetchFullEmailBatch } from '../repositories/emailRepository'
+import { fetchFullEmailBatch, fetchDbMail } from '../repositories/emailRepository'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -79,6 +79,7 @@ export default function CustomersPage(){
   const [autoClassified, setAutoClassified] = useState(false)
   const [fullContent, setFullContent] = useState<Record<string, {text:string;html:string}>>({})
   const [loadingContent, setLoadingContent] = useState<Record<string, boolean>>({})
+  const [contentError, setContentError] = useState<Record<string, boolean>>({})
 
   const load = useCallback(async()=>{
     const customers = await db.customers.toArray() as any[]
@@ -119,6 +120,7 @@ export default function CustomersPage(){
     setSelectedCustomer(c)
     setFullContent({})
     setLoadingContent({})
+    setContentError({})
     const allEmails = await db.emails.toArray() as EmailMessage[]
     const addr = (c.email||'').toLowerCase()
     const matched = allEmails.filter(e=>{
@@ -145,20 +147,61 @@ export default function CustomersPage(){
       for(const e of missing) next[e.id] = true
       return next
     })
-    // 并行请求所有账号
+    // 并行请求所有账号（先走 IMAP 实时，失败的再走服务端邮件库，最后仍失败则标错可重试）
     const promises = [...byAccount.entries()].map(async([accId, items])=>{
       const uids = items.map(i => i.uid)
-      const results = await fetchFullEmailBatch(accId, uids)
+      let results: Record<string,{text:string;html:string}> = {}
+      try{ results = await fetchFullEmailBatch(accId, uids) }catch{}
       for(const {email: e, uid} of items){
         const full = results[uid]
         if(full && (full.text || full.html)){
           setFullContent(prev=>({...prev,[e.id]:{text:full.text||'',html:full.html||''}}))
           await db.emails.update(e.id,{ text:full.text||e.text, html:full.html||e.html } as any)
+          setLoadingContent(prev=>({...prev,[e.id]:false}))
+          continue
         }
+        // 回退：服务端邮件库（D盘MySQL，不碰IMAP）
+        try{
+          const dbm = await fetchDbMail(accId, uid)
+          if(dbm && (dbm.text || dbm.html)){
+            setFullContent(prev=>({...prev,[e.id]:{text:dbm.text||'',html:dbm.html||''}}))
+            await db.emails.update(e.id,{ text:dbm.text||e.text, html:dbm.html||e.html } as any)
+            setLoadingContent(prev=>({...prev,[e.id]:false}))
+            continue
+          }
+        }catch{}
         setLoadingContent(prev=>({...prev,[e.id]:false}))
+        setContentError(prev=>({...prev,[e.id]:true}))
       }
     })
     await Promise.allSettled(promises)
+  },[])
+
+  // 单封重试：库 → IMAP
+  const retryMailContent = useCallback(async(e: EmailMessage)=>{
+    setContentError(prev=>({...prev,[e.id]:false}))
+    setLoadingContent(prev=>({...prev,[e.id]:true}))
+    const parts = e.id.split('-')
+    const uid = parts[parts.length-1]
+    const accountId = e.accountId || parts[0]
+    try{
+      const dbm = await fetchDbMail(accountId, uid)
+      if(dbm && (dbm.text || dbm.html)){
+        setFullContent(prev=>({...prev,[e.id]:{text:dbm.text||'',html:dbm.html||''}}))
+        await db.emails.update(e.id,{ text:dbm.text||e.text, html:dbm.html||e.html } as any)
+        return
+      }
+      const items = [{email:e, uid}]
+      const results = await fetchFullEmailBatch(accountId, [uid]).catch(()=> ({} as Record<string,{text:string;html:string}>))
+      const full = (results as any)[uid]
+      if(full && (full.text || full.html)){
+        setFullContent(prev=>({...prev,[e.id]:{text:full.text||'',html:full.html||''}}))
+        await db.emails.update(e.id,{ text:full.text||e.text, html:full.html||e.html } as any)
+        return
+      }
+    }catch{}
+    finally{ setLoadingContent(prev=>({...prev,[e.id]:false})) }
+    setContentError(prev=>({...prev,[e.id]:true}))
   },[])
 
   const filtered = list.filter(c=>{
@@ -263,6 +306,7 @@ export default function CustomersPage(){
                 const isSent = e.folder==='sent' || (e.from||'').toLowerCase().includes('evan@maxemblem.com')
                 const loaded = fullContent[e.id]
                 const loading = loadingContent[e.id]
+                const failed = contentError[e.id]
                 const displayText = loaded?.text || e.text || ''
                 const displayHtml = loaded?.html || e.html || ''
                 return(
@@ -281,6 +325,8 @@ export default function CustomersPage(){
                       <div className="email-html text-[11px] leading-relaxed max-h-40 overflow-auto border rounded-lg p-2 bg-white" dangerouslySetInnerHTML={{__html: displayHtml}} />
                     ) : displayText ? (
                       <div className="text-[11px] text-gray-600 whitespace-pre-wrap max-h-40 overflow-auto border rounded-lg p-2 bg-white">{displayText.slice(0,2000)}</div>
+                    ) : failed ? (
+                      <button onClick={()=> retryMailContent(e)} className="text-[11px] text-red-400 py-2 hover:text-red-600">⚠️ 全文加载失败，点击重试（先查服务端库，再走IMAP）</button>
                     ) : (
                       <div className="text-[11px] text-gray-400 py-2">暂无内容</div>
                     )}

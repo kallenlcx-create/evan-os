@@ -317,23 +317,37 @@ export default function InboxPage(){
 
   // ====== 搜索模式：优先服务端邮件库全文检索 ======
   const [searching, setSearching] = useState(false)
+  const [searchHint, setSearchHint] = useState('')
   const handleSearch = useCallback(async()=>{
-    if(!q.trim()){ setSearchMode(false); setSearchResults([]); return }
-    setSearching(true)
+    if(!q.trim()){ setSearchMode(false); setSearchResults([]); setSearchHint(''); return }
+    setSearching(true); setSearchHint('')
+    const kw = q.trim().toLowerCase()
+    const merged = new Map<string, EmailMessage>()
     try{
       const accs = accounts.length ? accounts : await listAccounts()
       if(accs.length){
         const results = await searchDbMails(accs[0].id, q.trim(), 50)
-        setSearchResults(results)
-        setSearchMode(true)
-        return
+        results.forEach(e=> merged.set(e.id, e))
+      } else {
+        setSearchHint('未绑定邮箱账号，仅搜本地')
       }
-    }catch{ /* 回退本地过滤 */ }
+    }catch(e:any){
+      setSearchHint(`服务端检索失败（${String(e.message||e).slice(0,40)}），已回退本地`)
+    }
     finally{ setSearching(false) }
-    const results = emails.filter(e =>
-      `${e.subject} ${e.from} ${e.text} ${e.intent}`.toLowerCase().includes(q.toLowerCase())
-    ).slice(0, 50)
-    setSearchResults(results)
+    // 本地库直查（不依赖内存 state，state 可能为空或过期）
+    try{
+      const local = await db.emails.toArray()
+      local.filter(e =>
+        `${e.subject} ${e.from} ${e.to||''} ${e.text||''} ${e.intent||''}`.toLowerCase().includes(kw)
+      ).slice(0, 50).forEach(e=>{ if(!merged.has(e.id)) merged.set(e.id, e as EmailMessage) })
+    }catch{}
+    // 内存 state 兜底
+    emails.filter(e =>
+      `${e.subject} ${e.from} ${e.text} ${e.intent}`.toLowerCase().includes(kw)
+    ).slice(0, 50).forEach(e=>{ if(!merged.has(e.id)) merged.set(e.id, e) })
+    setSearchResults([...merged.values()].slice(0, 50))
+    if(merged.size===0) setSearchHint(h=> h || '本地与服务端库均无匹配：可点顶栏「🗄️ 入库」把邮件先入库，或点「⟳ 同步」拉取到本地')
     setSearchMode(true)
   },[emails, q, accounts])
 
@@ -473,12 +487,12 @@ export default function InboxPage(){
                 <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300"/>
                 <input value={q} onChange={e=> setQ(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleSearch() }} placeholder="搜索邮件（回车检索）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border rounded-lg text-xs"/>
               </div>
-              {q && <button onClick={()=>{ setQ(''); setSearchMode(false) }} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>}
+              {q && <button onClick={()=>{ setQ(''); setSearchMode(false); setSearchHint('') }} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>}
               {folder==='inbox' && <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs shrink-0 ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>}
             </div>
           </div>
           <div className="px-2 py-1 border-b text-xs text-gray-400">
-            {searching ? '服务端检索中…' : searchMode ? `搜索结果 ${searchResults.length} 封` : `${filtered.length} 封`}
+            {searching ? '服务端检索中…' : searchMode ? `搜索结果 ${searchResults.length} 封${searchHint ? ` · ${searchHint}` : ''}` : `${filtered.length} 封`}
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}

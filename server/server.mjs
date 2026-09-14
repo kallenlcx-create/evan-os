@@ -992,6 +992,26 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
   res.json({ emails: rows, total: rows.length, mode:'db' })
 }))
 
+// 库内单封全文：GET /email/db-mail/:accountId/:uid（优先走库，不碰 IMAP）
+app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, uid } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const uidNum = Number(uid)
+  if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
+  const [rows] = await pool.query(
+    `SELECT account_id, folder, uid, message_id, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached
+     FROM mail_messages WHERE account_id=? AND uid=? LIMIT 1`,[accountId, uidNum])
+  if(!rows.length) return res.status(404).json({ error:'库中无此邮件' })
+  const e = rows[0]
+  res.json({
+    subject: e.subject, from: e.from_name ? `${e.from_name} <${e.from_addr}>` : e.from_addr,
+    to: e.to_addr, date: e.msg_date, isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+    text: e.body_text || '', html: '', cached: !!e.body_cached,
+  })
+}))
+
 // 按需加载单封邮件全文：GET /email/full/:accountId/:uid
 app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
   const { accountId, uid } = req.params

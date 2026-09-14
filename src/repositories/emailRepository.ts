@@ -155,6 +155,16 @@ export async function markRead(id:string, isRead:boolean){
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 
+export async function fetchDbMail(accountId: string, uid: string): Promise<{text:string;html:string;from:string;to:string;subject:string}|null>{
+  const h = await serverHeaders()
+  if(!h) return null
+  try{
+    const r = await fetch(`${h.url}/email/db-mail/${accountId}/${uid}`,{ headers: bypassHeaders(h) })
+    if(!r.ok) return null
+    return await r.json()
+  }catch{ return null }
+}
+
 export async function fetchFullEmail(accountId: string, uid: string): Promise<{text:string;html:string;from:string;to:string;subject:string}|null>{
   const h = await serverHeaders()
   if(!h) return null
