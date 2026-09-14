@@ -137,13 +137,13 @@ export default function InboxPage(){
     const onDone=()=> refresh()
     window.addEventListener('evan-email-sync-progress', onProg as any)
     window.addEventListener('evan-email-synced', onDone as any)
-    const refreshTimer = setInterval(()=>{ if(isEmailSyncing()) refresh() }, 3000)
+    // 注意：同步进行中不再定时 refresh（之前每3秒全量重载上万封+并发写库=浏览器崩溃），只靠进度条+结束时刷新一次
     const id=setInterval(()=> setSyncProgress(prev=>{
       if(isEmailSyncing()) return prev
       const cfg = getEmailSyncConfig()
       return { status: cfg.nextSyncAt? `下次 ${new Date(cfg.nextSyncAt).toLocaleTimeString()}`:'', done:0, total:0, errors:0 }
     }), 5000)
-    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any); clearInterval(id); clearInterval(refreshTimer) }
+    return ()=>{ window.removeEventListener('evan-email-sync-progress', onProg as any); window.removeEventListener('evan-email-synced', onDone as any); clearInterval(id) }
   },[])
   const handleSyncSelected = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')

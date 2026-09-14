@@ -90,33 +90,41 @@ export async function syncReal(accountId:string, limit:number|'all'=20, offset=0
   const emails: any[] = j.emails||[]
   // 并行分类意图（批量 Promise.all）
   const intents = await Promise.all(emails.map(e => classifyIntent(e.subject+' '+ (e.text||'').slice(0,500))))
-  // 并行写 IndexedDB（分组50一批避免锁冲突）
+  // 并行写 IndexedDB（分组50一批，避免锁冲突；用 bulkPut 减少事务次数）
   const BATCH = 50
   let added=0
   for(let i=0; i<emails.length; i+=BATCH){
     const chunk = emails.slice(i, i+BATCH)
     const intentChunk = intents.slice(i, i+BATCH)
-    await Promise.all(chunk.map(async(e, idx)=>{
-      const m: EmailMessage = {
-        id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
-        from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
-        date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
-        product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
-        intent: intentChunk[idx] as EmailIntent,
-        priority: '中', status: e.isRead?'已处理':'待处理',
-      }
-      await db.emails.put(m)
-      try{
-        const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
-        if(addr && addr.includes('@')){
-          const exist = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===addr.toLowerCase()).first() as any
-          if(!exist){
-            const { uid:uid2 } = await import('./result')
-            await db.customers.put({ id: uid2(), type:'customer', title: (e.from.split('<')[0].trim()||addr.split('@')[0]), description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email:addr, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) } as any)
-          }
-        }
-      }catch{}
+    const mails: EmailMessage[] = chunk.map((e, idx)=>({
+      id: e.id, accountId: e.accountId||accountId, folder: e.folder||'inbox',
+      from: e.from, to: e.to, subject: e.subject, text: e.text||'', html: e.html||'',
+      date: e.date, isRead: !!e.isRead, hasAttachment: !!e.hasAttachment,
+      product: /coin/i.test(e.subject+e.text)?'Coin': /patch/i.test(e.subject+e.text)?'Patch': /pin/i.test(e.subject)?'Pin':'Coin',
+      intent: intentChunk[idx] as EmailIntent,
+      priority: '中', status: e.isRead?'已处理':'待处理',
     }))
+    await db.emails.bulkPut(mails)
+    // 客户去重：整批一次查询 + 一次批量写入（之前是每封2次查询）
+    try{
+      const addrTitle = new Map<string,string>()
+      for(const e of chunk){
+        const addr = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim()
+        if(addr && addr.includes('@') && !addrTitle.has(addr.toLowerCase()))
+          addrTitle.set(addr.toLowerCase(), e.from.split('<')[0].trim()||addr.split('@')[0])
+      }
+      if(addrTitle.size){
+        const keys = [...addrTitle.keys()]
+        const existRows = await db.customers.where('email').anyOf(keys).toArray() as any[]
+        const existSet = new Set(existRows.map(c=> (c.email||'').toLowerCase()))
+        const fresh = keys.filter(k=> !existSet.has(k)).map(k=>({
+          id: uid(), type:'customer', title: addrTitle.get(k), description:'', emoji:'👤', tags:['邮件'],
+          createdAt:now(), updatedAt:now(), relations:[], company:'', email:k, stage:'lead',
+          isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10),
+        } as any))
+        if(fresh.length) await db.customers.bulkPut(fresh)
+      }
+    }catch{}
     added += chunk.length
   }
   await db.emailAccounts.update(accountId,{lastSyncAt: now()} as any).catch(()=>{})
