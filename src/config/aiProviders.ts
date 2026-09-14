@@ -173,7 +173,27 @@ const LS_SESSIONS = 'evan-os-ai-sessions'
 export function getChatSessions(): ChatSession[] {
   try {
     const raw = localStorage.getItem(LS_SESSIONS)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const sessions = JSON.parse(raw) as ChatSession[]
+      // 一次性修复：合并历史残留的同 id 快照（流式输出旧 bug 产生），保留最后一条
+      let dirty = false
+      for (const s of sessions) {
+        const seen = new Set<string>()
+        const kept: typeof s.messages = []
+        for (const m of s.messages) {
+          if (seen.has(m.id)) {
+            kept[kept.findIndex(k => k.id === m.id)] = m
+            dirty = true
+          } else {
+            seen.add(m.id)
+            kept.push(m)
+          }
+        }
+        s.messages = kept
+      }
+      if (dirty) saveChatSessions(sessions)
+      return sessions
+    }
   } catch {}
   return []
 }
@@ -200,7 +220,10 @@ export function appendMessage(sessionId: string, msg: ChatMessage) {
   const sessions = getChatSessions()
   const s = sessions.find(s => s.id === sessionId)
   if (s) {
-    s.messages.push(msg)
+    // 同 id 视为同一条消息的更新（流式输出的分片快照），直接覆盖而非追加
+    const idx = s.messages.findIndex(m => m.id === msg.id)
+    if (idx >= 0) s.messages[idx] = { ...msg }
+    else s.messages.push(msg)
     s.updatedAt = Date.now()
     if (s.messages.length === 1 && msg.role === 'user') {
       s.title = msg.content.slice(0, 30) + (msg.content.length > 30 ? '…' : '')
