@@ -599,7 +599,7 @@ app.post('/email/accounts', auth, wrap(async (req,res)=>{
   if(!email||!pass) return res.status(400).json({error:'需要 email 与授权码/应用密码'})
   let ih=imap_host, ip=Number(imap_port||993), sh=smtp_host, sp=Number(smtp_port||465)
   // 校验 IMAP 连通性（5s超时）
-  const client=new ImapFlow({ host: ih, port: ip, secure: ip===993, auth:{user:email, pass}, logger:false, socketTimeout: 8000 })
+  const client=makeImapClient({ host: ih, port: ip, user:email, pass, socketTimeout: 8000 })
   try{ await client.connect(); await client.logout(); }catch(e){ return res.status(400).json({error:'IMAP连接失败：'+(e.message||e)}) }
   // 去重：同邮箱只更新
   if(dbReady){
@@ -651,7 +651,7 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:30000 })
+  const client=makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:30000 })
   try{
     await client.connect()
     const lock=await client.getMailboxLock(folder)
@@ -691,7 +691,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host: acc.imap_host, port: acc.imap_port, secure: acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:180000 })
+  const client=makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:180000 })
   await client.connect()
   const lock=await client.getMailboxLock(folder)
   try{
@@ -809,7 +809,12 @@ function sqlDate(d){
   }catch{ return null }
 }
 function sqlNow(){ return new Date().toISOString().slice(0,23).replace('T',' ') }
-// IMAP 连接硬超时：Gmail 限流时会“假死”挂起，imap 自带超时未必触发，循环任务必须自己掐
+// 统一创建 IMAP 客户端：必须吞掉 'error' 事件，否则 socket 异常会掀翻整个 Node 进程
+function makeImapClient({ host, port, user, pass, socketTimeout = 60000 }){
+  const client = new ImapFlow({ host, port, secure: port === 993, auth:{ user, pass }, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout })
+  client.on('error', ()=>{})
+  return client
+}
 async function imapConnect(client, ms = 30000){
   let timer = null
   try{
@@ -818,7 +823,9 @@ async function imapConnect(client, ms = 30000){
       new Promise((_, rej)=>{ timer = setTimeout(()=>rej(new Error('imap-connect-timeout')), ms) }),
     ])
   }catch(e){
-    try{ if(typeof client.close === 'function') await client.close().catch(()=>{}) }catch{}
+    // 半开连接直接丢弃，不等待（close 在半开状态也可能 hang）
+    try{ if(typeof client.destroy === 'function') client.destroy() }catch{}
+    try{ if(typeof client.close === 'function') client.close().catch(()=>{}) }catch{}
     throw e
   }finally{
     if(timer) clearTimeout(timer)
@@ -860,7 +867,7 @@ async function runMailIngest(accountId, username, opts = {}){
     const pass = decAuth(acc.auth_enc)
     for(const folder of folders){
       st.folder = folder
-      const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:180000 })
+      const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:180000 })
       await imapConnect(client, 30000)
       try{
         const lock = await client.getMailboxLock(folder)
@@ -1055,7 +1062,7 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
     const dbCount = Number(crows[0]?.c)||0
     const bodyCount = Number(crows[0]?.bodies)||0
     let imapTotal = 0, uidnext = 0, uidvalidity = 0
-    const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:30000 })
+    const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:30000 })
     try{
       await client.connect()
       const lock = await client.getMailboxLock(folder)
@@ -1134,13 +1141,17 @@ const mailWatchers = new Map() // accountId -> {running, username, mode, lastEve
 async function mailWatchLoop(accountId, username){
   const w = mailWatchers.get(accountId)
   if(!w) return
+  const wlog = ()=>{}
+  wlog(`loop-start ${accountId}`)
   let backoff = 5000
   while(w.running){
     try{
+      wlog('load-account')
       const acc = await loadMailAccount(accountId, username)
       if(!acc) throw new Error('账号不存在')
+      wlog('connecting')
       const pass = decAuth(acc.auth_enc)
-      const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+      const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:120000 })
       await imapConnect(client, 30000)
       backoff = 5000
       w.mode = 'idle'; w.error = ''
@@ -1223,7 +1234,7 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
   const uidNum = Number(uid)
   if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
   const pass = decAuth(acc.auth_enc)
-  const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:60000 })
+  const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:60000 })
   try{
     await client.connect()
     const lock = await client.getMailboxLock(folder)
@@ -1250,7 +1261,7 @@ app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:60000 })
+  const client=makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:60000 })
   await client.connect()
   const uidNum = Number(uid)
   if(!isFinite(uidNum)) { await client.logout().catch(()=>{}); return res.status(400).json({error:'无效UID'}) }
@@ -1300,7 +1311,7 @@ app.post('/email/full-batch', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  const client=new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+  const client=makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:120000 })
   await client.connect()
   const results = {}
   try{
