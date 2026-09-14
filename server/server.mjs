@@ -912,6 +912,7 @@ async function runMailIngest(accountId, username, opts = {}){
           st.phase = 'envelope'
           missing.sort((a,b)=>a-b)
           for(let i=0;i<missing.length;i+=500){
+            if(st.cancelled) throw new Error('cancelled')
             const batch = missing.slice(i, i+500)
             try{
               for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, internalDate:true, gmailMessageId:true, gmailThreadId:true }, { uid:true })){
@@ -940,35 +941,58 @@ async function runMailIngest(accountId, username, opts = {}){
           }
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的）
           st.phase = 'body'
+          const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
           while(true){
+            if(st.cancelled) throw new Error('cancelled')
             const [todo] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid LIMIT 200',[accountId, folder]).catch(()=> [[]])
             if(!todo.length) break
             for(let i=0;i<todo.length;i+=25){
+              if(st.cancelled) throw new Error('cancelled')
               const batch = todo.slice(i,i+25).map(r=>Number(r.uid))
+              // B1: 先取大小，超大件直接占位跳过
+              let sizes = new Map()
               try{
-                for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, source:true }, { uid:true })){
-                  try{
-                    const parsed = await simpleParser(msg.source).catch(()=>null)
-                    if(!parsed) continue
-                    const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
-                    const atts = parsed.attachments || []
-                    const att = atts.length ? 1 : 0
-                    await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
-                      [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
-                    // 附件元数据+落盘
-                    for(const a of atts){
-                      try{
-                        const sv = await saveAttachment(accountId, folder, msg.uid, a)
-                        if(sv.saved){
-                          await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
-                            [accountId, folder, msg.uid, safeFileName(a.filename), sv.size || a.size || 0, String(a.contentType||'').slice(0,128), sv.path || ''])
-                        }
-                      }catch{}
-                    }
-                    st.done++
-                  }catch{}
+                for await (const msg of client.fetch(batch.join(','), { size:true, uid:true }, { uid:true })){
+                  sizes.set(msg.uid, Number(msg.size)||0)
                 }
               }catch{}
+              for(const u of batch.filter(u=> (sizes.get(u)||0) > BODY_MAX)){
+                await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
+                  [sqlNow(), accountId, folder, u]).catch(()=>{})
+                st.done++
+              }
+              const small = batch.filter(u=> (sizes.get(u)||0) <= BODY_MAX)
+              if(!small.length) continue
+              // B2: 取正文，整批4分钟硬超时（超时整批跳过，下轮重试）
+              try{
+                await Promise.race([
+                  (async()=>{
+                    for await (const msg of client.fetch(small.join(','), { envelope:true, flags:true, uid:true, source:true }, { uid:true })){
+                      try{
+                        const parsed = await simpleParser(msg.source).catch(()=>null)
+                        if(!parsed) continue
+                        const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
+                        const atts = parsed.attachments || []
+                        const att = atts.length ? 1 : 0
+                        await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
+                          [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
+                        // 附件元数据+落盘
+                        for(const a of atts){
+                          try{
+                            const sv = await saveAttachment(accountId, folder, msg.uid, a)
+                            if(sv.saved){
+                              await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
+                                [accountId, folder, msg.uid, safeFileName(a.filename), sv.size || a.size || 0, String(a.contentType||'').slice(0,128), sv.path || ''])
+                            }
+                          }catch{}
+                        }
+                        st.done++
+                      }catch{}
+                    }
+                  })(),
+                  new Promise((_, rej)=>setTimeout(()=>rej(new Error('body-batch-timeout')), 4*60*1000)),
+                ])
+              }catch(e){ console.log('[ingest] body batch skip:', String(e.message||e).slice(0,80)) }
               await new Promise(r=>setImmediate(r))
             }
           }
@@ -1045,6 +1069,13 @@ app.post('/email/ingest/:accountId', auth, wrap(async (req,res)=>{
 // 入库进度：GET /email/ingest-status/:accountId
 app.get('/email/ingest-status/:accountId', auth, wrap(async (req,res)=>{
   res.json({ job: ingestJobs.get(req.params.accountId) || null })
+}))
+
+// 取消入库任务：POST /email/ingest-stop/:accountId
+app.post('/email/ingest-stop/:accountId', auth, wrap(async (req,res)=>{
+  const job = ingestJobs.get(req.params.accountId)
+  if(job) job.cancelled = true
+  res.json({ ok:true })
 }))
 
 // 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步）
