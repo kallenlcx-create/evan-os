@@ -184,6 +184,59 @@ async function init() {
       INDEX idx_date (account_id, folder, msg_date),
       FULLTEXT INDEX ft_mail (subject, from_addr, to_addr, body_text) WITH PARSER ngram
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mail_threads (
+      account_id VARCHAR(80) NOT NULL,
+      thread_id VARCHAR(64) NOT NULL,
+      subject_norm VARCHAR(512) DEFAULT '',
+      count INT DEFAULT 0,
+      last_date DATETIME NULL,
+      PRIMARY KEY (account_id, thread_id)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mail_attachments (
+      account_id VARCHAR(80) NOT NULL,
+      folder VARCHAR(128) NOT NULL,
+      uid BIGINT NOT NULL,
+      filename VARCHAR(512) DEFAULT '',
+      size BIGINT DEFAULT 0,
+      mime VARCHAR(128) DEFAULT '',
+      path VARCHAR(512) DEFAULT '',
+      PRIMARY KEY (account_id, folder, uid, filename(191)),
+      INDEX idx_uid (account_id, folder, uid)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mail_drafts (
+      id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      account_id VARCHAR(80) NOT NULL,
+      to_addr TEXT,
+      cc_addr TEXT,
+      subject VARCHAR(1024) DEFAULT '',
+      body_html MEDIUMTEXT,
+      body_text MEDIUMTEXT,
+      template_id VARCHAR(80) DEFAULT '',
+      updated_at TIMESTAMP(3) NOT NULL,
+      INDEX idx_user (username, updated_at)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mail_outbox (
+      id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      account_id VARCHAR(80) NOT NULL,
+      to_list TEXT NOT NULL,
+      subject VARCHAR(1024) DEFAULT '',
+      body_html MEDIUMTEXT,
+      body_text MEDIUMTEXT,
+      status VARCHAR(16) DEFAULT 'queued',
+      try_count INT DEFAULT 0,
+      next_try_at TIMESTAMP(3) NULL,
+      error VARCHAR(512) DEFAULT '',
+      idempotency_key VARCHAR(80) DEFAULT '',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_status (username, status, next_try_at),
+      UNIQUE INDEX idx_idem (idempotency_key)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
   console.log('[sync-server] storage ready')
   }catch(e){
     dbReady=false
@@ -554,6 +607,7 @@ app.post('/email/accounts', auth, wrap(async (req,res)=>{
     if(exists.length>0){
       const id=exists[0].id
       await pool.query('UPDATE email_accounts SET auth_enc=?, imap_host=?, imap_port=?, smtp_host=?, smtp_port=? WHERE id=?',[encAuth(String(pass)), ih, ip, sh||'', sp||0, id])
+      startMailWatcher(id, req.user)
       return res.json({ id, email, provider })
     }
   } else {
@@ -568,6 +622,7 @@ app.post('/email/accounts', auth, wrap(async (req,res)=>{
   } else {
     const arr=memEmailAccounts.get(req.user)||[]; arr.push({ id, email, provider:provider||'custom', imap_host:ih, imap_port:ip, smtp_host:sh, smtp_port:sp||0, auth_enc: encAuth(String(pass)), created_at: new Date().toISOString()}); memEmailAccounts.set(req.user, arr); saveEmailAccounts()
   }
+  if(dbReady) startMailWatcher(id, req.user) // 绑定即启动常驻监听
   res.json({ id, email, provider })
 }))
 app.get('/email/accounts', auth, wrap(async (req,res)=>{
@@ -579,7 +634,7 @@ app.get('/email/accounts', auth, wrap(async (req,res)=>{
 }))
 app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
   if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); saveEmailAccounts(); return res.json({ok:true}) }
-  await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); res.json({ok:true})
+  await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); stopMailWatcher(req.params.id); res.json({ok:true})
 }))
 // 预读邮件总数：GET /email/count/:id（默认查 [Gmail]/All Mail 获取全部邮件数）
 app.get('/email/count/:id', auth, wrap(async (req,res)=>{
@@ -754,6 +809,44 @@ function sqlDate(d){
   }catch{ return null }
 }
 function sqlNow(){ return new Date().toISOString().slice(0,23).replace('T',' ') }
+// IMAP 连接硬超时：Gmail 限流时会“假死”挂起，imap 自带超时未必触发，循环任务必须自己掐
+async function imapConnect(client, ms = 30000){
+  let timer = null
+  try{
+    await Promise.race([
+      client.connect(),
+      new Promise((_, rej)=>{ timer = setTimeout(()=>rej(new Error('imap-connect-timeout')), ms) }),
+    ])
+  }catch(e){
+    try{ if(typeof client.close === 'function') await client.close().catch(()=>{}) }catch{}
+    throw e
+  }finally{
+    if(timer) clearTimeout(timer)
+  }
+}
+function normSubject(s){
+  return String(s||'').replace(/^\s*(re|fwd|fw|回复|转发|答复)\s*[:：]\s*/gi, '').trim().slice(0,512)
+}
+function safeFileName(s){
+  return String(s||'attachment').replace(/[\\/:"*?<>|]/g, '_').slice(0,180) || 'attachment'
+}
+// 附件落盘 D:\mail-data\<accountId>\<uid>\，只记元数据进库
+const ATTACH_BASE = 'D:\\mail-data'
+const madeDirs = new Set()
+async function saveAttachment(accountId, folder, uid, att){
+  try{
+    const dir = path.join(ATTACH_BASE, accountId, String(uid))
+    if(!madeDirs.has(dir)){ fs.mkdirSync(dir, { recursive:true }); madeDirs.add(dir) }
+    const name = safeFileName(att.filename)
+    const fp = path.join(dir, name)
+    const buf = att.content
+    if(buf && buf.length){
+      if(buf.length > 50*1024*1024) return { saved:false, reason:'too-large' } // 单个50MB以上跳过
+      fs.writeFileSync(fp, buf)
+    }
+    return { saved:true, path:fp, size:buf?buf.length:0 }
+  }catch(e){ return { saved:false, reason:String(e.message||e).slice(0,80) } }
+}
 const ingestJobs = new Map() // accountId -> {running, mode, folder, done, total, added, updated, startedAt, error}
 
 async function runMailIngest(accountId, username, opts = {}){
@@ -768,7 +861,7 @@ async function runMailIngest(accountId, username, opts = {}){
     for(const folder of folders){
       st.folder = folder
       const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:180000 })
-      await client.connect()
+      await imapConnect(client, 30000)
       try{
         const lock = await client.getMailboxLock(folder)
         try{
@@ -851,9 +944,20 @@ async function runMailIngest(accountId, username, opts = {}){
                     const parsed = await simpleParser(msg.source).catch(()=>null)
                     if(!parsed) continue
                     const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
-                    const att = parsed.attachments && parsed.attachments.length ? 1 : 0
+                    const atts = parsed.attachments || []
+                    const att = atts.length ? 1 : 0
                     await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
                       [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
+                    // 附件元数据+落盘
+                    for(const a of atts){
+                      try{
+                        const sv = await saveAttachment(accountId, folder, msg.uid, a)
+                        if(sv.saved){
+                          await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
+                            [accountId, folder, msg.uid, safeFileName(a.filename), sv.size || a.size || 0, String(a.contentType||'').slice(0,128), sv.path || ''])
+                        }
+                      }catch{}
+                    }
                     st.done++
                   }catch{}
                 }
@@ -895,6 +999,17 @@ async function runMailIngest(accountId, username, opts = {}){
             }catch{}
           }
           const maxUid = allUids.length ? Math.max(...allUids) : lastUid
+          // 线程聚合重建（本文件夹，客户往来查询变单条SQL）
+          try{
+            const [trows] = await pool.query(`SELECT gmail_threadid AS tid, COUNT(*) AS c, MAX(msg_date) AS lastd, ANY_VALUE(subject) AS subj FROM mail_messages WHERE account_id=? AND folder=? AND gmail_threadid<>'' GROUP BY gmail_threadid`,[accountId, folder])
+            for(let i=0;i<trows.length;i+=500){
+              const ch = trows.slice(i,i+500)
+              const vals = []
+              const params = []
+              for(const t of ch){ vals.push('(?,?,?,?,?)'); params.push(accountId, String(t.tid).slice(0,64), normSubject(t.subj), Number(t.c)||0, t.lastd) }
+              if(vals.length) await pool.query(`INSERT INTO mail_threads (account_id, thread_id, subject_norm, count, last_date) VALUES ${vals.join(',')} ON DUPLICATE KEY UPDATE subject_norm=VALUES(subject_norm), count=VALUES(count), last_date=VALUES(last_date)`, params)
+            }
+          }catch(e){ console.log('[ingest] threads skip:', String(e.message||e).slice(0,120)) }
           await pool.query(
             `INSERT INTO mail_sync_state (account_id, folder, uidvalidity, last_uid, uidnext, full_sync_done, last_sync_at)
              VALUES (?,?,?,?,?,1,?) ON DUPLICATE KEY UPDATE uidvalidity=VALUES(uidvalidity), last_uid=GREATEST(last_uid, VALUES(last_uid)), uidnext=VALUES(uidnext), full_sync_done=1, last_sync_at=VALUES(last_sync_at)`,
@@ -1011,6 +1126,114 @@ app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
     to: e.to_addr, date: e.msg_date, isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
     text: e.body_text || '', html: '', cached: !!e.body_cached,
   })
+}))
+
+// ====== 常驻邮件 watcher：一账号一连接，IDLE 秒级通知 + 5分钟轮询兜底 ======
+const mailWatchers = new Map() // accountId -> {running, username, mode, lastEventAt, lastCycleAt, lastUid, error}
+
+async function mailWatchLoop(accountId, username){
+  const w = mailWatchers.get(accountId)
+  if(!w) return
+  let backoff = 5000
+  while(w.running){
+    try{
+      const acc = await loadMailAccount(accountId, username)
+      if(!acc) throw new Error('账号不存在')
+      const pass = decAuth(acc.auth_enc)
+      const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:120000 })
+      await imapConnect(client, 30000)
+      backoff = 5000
+      w.mode = 'idle'; w.error = ''
+      const lock = await client.getMailboxLock('INBOX')
+      const onExists = ()=>{ w.lastEventAt = new Date().toISOString(); try{ client.breakIdle() }catch{} }
+      client.on('exists', onExists)
+      try{
+        // IDLE 最多 5 分钟一轮：有事件立刻醒，无事件到点也醒一次做增量（防漏）
+        await Promise.race([
+          client.idle(),
+          new Promise((_, rej)=>{ w.idleTimer = setTimeout(()=>rej(new Error('idle-tick')), 5*60*1000) }),
+        ])
+      }catch(e){
+        if(e && e.message !== 'idle-tick' && e.message !== 'break') throw e
+      }finally{
+        clearTimeout(w.idleTimer); w.idleTimer = null
+        try{ client.off('exists', onExists) }catch{}
+        try{ lock.release() }catch{}
+      }
+      await client.logout().catch(()=>{})
+      // 醒来就跑一次增量（新邮件+状态），两个文件夹
+      w.mode = 'syncing'; w.lastCycleAt = new Date().toISOString()
+      await runMailIngest(accountId, username, { mode:'incremental', folders:['[Gmail]/All Mail','INBOX'] }).catch(()=>{})
+      try{
+        const [srows] = await pool.query('SELECT MAX(last_uid) AS m FROM mail_sync_state WHERE account_id=?',[accountId])
+        w.lastUid = Number(srows[0]?.m)||0
+      }catch{}
+    }catch(e){
+      w.mode = 'backoff'
+      w.error = String(e.message||e).slice(0,120)
+      await new Promise(r=>setTimeout(r, backoff))
+      backoff = Math.min(backoff*2, 8*60*1000)
+    }
+  }
+}
+function startMailWatcher(accountId, username){
+  const cur = mailWatchers.get(accountId)
+  if(cur && cur.running) return cur
+  const w = { running:true, username, mode:'starting', lastEventAt:'', lastCycleAt:'', lastUid:0, error:'', idleTimer:null }
+  mailWatchers.set(accountId, w)
+  mailWatchLoop(accountId, username).catch(()=>{})
+  return w
+}
+function stopMailWatcher(accountId){
+  const w = mailWatchers.get(accountId)
+  if(w){ w.running = false; if(w.idleTimer) clearTimeout(w.idleTimer); mailWatchers.delete(accountId) }
+}
+async function startAllMailWatchers(){
+  if(!dbReady) return
+  try{
+    const [rows] = await pool.query('SELECT id, username FROM email_accounts')
+    for(const r of rows) startMailWatcher(r.id, r.username)
+  }catch{}
+}
+
+// 监听状态：GET /email/watch-status/:accountId
+app.get('/email/watch-status/:accountId', auth, wrap(async (req,res)=>{
+  const { accountId } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const w = mailWatchers.get(accountId)
+  if(!w) return res.json({ watching:false })
+  res.json({ watching:true, mode:w.mode, lastEventAt:w.lastEventAt, lastCycleAt:w.lastCycleAt, lastUid:w.lastUid, error:w.error })
+}))
+
+// 启动监听：POST /email/watch/:accountId
+app.post('/email/watch/:accountId', auth, wrap(async (req,res)=>{
+  const { accountId } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  res.json({ ok:true, watcher: (()=>{ const w = startMailWatcher(accountId, req.user); return { mode:w.mode } })() })
+}))
+
+// 标已读回写 Gmail：POST /email/mark-read {accountId, uid, read, folder?}
+app.post('/email/mark-read', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, uid, read = true, folder = '[Gmail]/All Mail' } = req.body || {}
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const uidNum = Number(uid)
+  if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
+  const pass = decAuth(acc.auth_enc)
+  const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:60000 })
+  try{
+    await client.connect()
+    const lock = await client.getMailboxLock(folder)
+    try{
+      if(read) await client.messageFlagsAdd(String(uidNum), ['\\Seen'], { uid:true })
+      else await client.messageFlagsRemove(String(uidNum), ['\\Seen'], { uid:true })
+    }finally{ lock.release() }
+  }finally{ await client.logout().catch(()=>{}) }
+  await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND uid=?',[read?1:0, sqlNow(), accountId, uidNum])
+  res.json({ ok:true })
 }))
 
 // 按需加载单封邮件全文：GET /email/full/:accountId/:uid
@@ -1159,5 +1382,6 @@ init().then(() => {
     const dbMode = dbReady ? 'MySQL' : '内存+文件'
     const secretMode = process.env.SECRET ? '环境变量' : 'secret.key'
     console.log(`[sync-server] listening on :${PORT} | 数据库: ${dbMode} | 密钥: ${secretMode}`)
+    startAllMailWatchers() // 启动所有账号常驻监听
   })
 })
