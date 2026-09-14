@@ -272,7 +272,22 @@ export default function CustomersPage(){
       <div className="flex items-center gap-2">
         <h1 className="text-xl font-bold">👥 客户</h1>
         <span className="text-xs text-gray-400">{filtered.length} / {list.length}</span>
-        <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
+        <button onClick={async()=>{
+          try{
+            const accs = await listAccounts()
+            if(!accs.length) return alert('请先绑定邮箱账号')
+            if(!confirm('从 Gmail 标签（A/B/重点客户/已下单）批量导入客户？会同步到跟进、营销、拓扑和全景。')) return
+            const h = await (await import('../repositories/emailRepository')).serverHeaders()
+            if(!h) return alert('请先登录云同步')
+            const r = await fetch(`${h.url}/email/import-labeled-customers/${accs[0].id}`, { method:'POST',
+              headers:{ 'Content-Type':'application/json', 'x-evan-token': h.token }, body: JSON.stringify({}) })
+            const j = await r.json().catch(()=>({}))
+            if(!r.ok) return alert('导入失败：' + String(j.error||r.status).slice(0,150))
+            alert(`导入完成：扫描 ${j.senders} 个发件人，新建客户 ${j.customers} 个、新建跟进 ${j.followUps} 条\n请到 ☁️ 云同步点一次同步，多端即刻同步`)
+            await load()
+          }catch(e:any){ alert('导入失败：' + String(e.message||e).slice(0,150)) }
+        }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="A/B/重点客户/已下单 → 等级/阶段/重点，跟进/营销/拓扑/全景同步">📥 导入Gmail标签</button>
+        <button onClick={()=> setFilter('key' as any)} className={`px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
       </div>
       <div className="flex gap-1 flex-wrap">
         {(['all','A+','A','B','C','D'] as const).map(l=> <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l==='all'?'全部':l}</button>)}
