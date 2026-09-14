@@ -711,9 +711,9 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
     }finally{ lock.release() }
   }catch(e){
     res.status(500).json({error:'获取邮件数失败：'+(e.message||e)})
-  }finally{
-    await client.logout().catch(()=>{})
-  }
+              }finally{
+                await logoutSafe(wc)
+              }
 }))
 
 // 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX&search=UNSEEN&sinceUid=12345
@@ -838,7 +838,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
       ? uids.length >= limit  // SEARCH 模式：如果返回了 limit 条，可能还有更多
       : (offset + out.length) < total
     res.json({ emails: out, total, hasMore, nextOffset: offset + out.length })
-  }finally{ lock.release(); await client.logout().catch(()=>{}) }
+  }finally{ lock.release(); await logoutSafe(client) }
 }))
 
 // ====== 服务端邮件库：绑定一次全量入库，之后只增量 ======
@@ -1078,7 +1078,7 @@ async function runMailIngest(accountId, username, opts = {}){
               }catch(e){
                 // 连不上：记一笔直接返回，避免空转忙循环打爆 Gmail
                 wcFailed.push(String(e.message||e).slice(0,60))
-                try{ await wc.logout().catch(()=>{}) }catch{}
+                try{ await logoutSafe(wc) }catch{}
                 return
               }
               try{
@@ -1088,7 +1088,7 @@ async function runMailIngest(accountId, username, opts = {}){
                   await new Promise(r=>setImmediate(r))
                 }
               }finally{
-                await wc.logout().catch(()=>{})
+                await wc.logout().catch(()=>{}); await logoutSafe(wc)
               }
             })
             const results = await Promise.allSettled(workers)
@@ -1152,7 +1152,7 @@ async function runMailIngest(accountId, username, opts = {}){
              VALUES (?,?,?,?,?,1,?) ON DUPLICATE KEY UPDATE uidvalidity=VALUES(uidvalidity), last_uid=GREATEST(last_uid, VALUES(last_uid)), uidnext=VALUES(uidnext), full_sync_done=1, last_sync_at=VALUES(last_sync_at)`,
             [accountId, folder, uidvalidity, maxUid, uidnext, sqlNow()])
         }finally{ lock.release() }
-      }finally{ await client.logout().catch(()=>{}) }
+      }finally{ await logoutSafe(client) }
     }
   }catch(e){ st.error = String(e.message||e).slice(0,200) }
   finally{ st.running = false }
@@ -1386,7 +1386,7 @@ async function mailWatchLoop(accountId, username){
         try{ client.off('exists', onExists) }catch{}
         try{ lock.release() }catch{}
       }
-      await client.logout().catch(()=>{})
+      await logoutSafe(client)
       // 醒来就跑一次增量（新邮件+状态），两个文件夹
       w.mode = 'syncing'; w.lastCycleAt = new Date().toISOString()
       await runMailIngest(accountId, username, { mode:'incremental', folders:['[Gmail]/All Mail','INBOX'] }).catch(()=>{})
