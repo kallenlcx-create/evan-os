@@ -947,6 +947,14 @@ async function runMailIngest(accountId, username, opts = {}){
               })(), 3*60*1000, 'envelope-batch')
             }catch(e){ console.log('[ingest] envelope batch skip:', String(e.message||e).slice(0,60)) }
             await new Promise(r=>setImmediate(r))
+            // 游标实时落库：中断后下轮从这里续，db-status 也有数可显示
+            try{
+              const doneMax = batch[batch.length-1]
+              await pool.query(
+                `INSERT INTO mail_sync_state (account_id, folder, uidvalidity, last_uid, uidnext, full_sync_done, last_sync_at)
+                 VALUES (?,?,?,?,?,0,?) ON DUPLICATE KEY UPDATE uidvalidity=VALUES(uidvalidity), last_uid=GREATEST(last_uid, VALUES(last_uid)), uidnext=GREATEST(uidnext, VALUES(uidnext)), last_sync_at=VALUES(last_sync_at)`,
+                [accountId, folder, uidvalidity, doneMax, uidnext, sqlNow()])
+            }catch{}
           }
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的）
           st.phase = 'body'
@@ -1106,19 +1114,23 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
     const [crows] = await pool.query('SELECT COUNT(*) AS c, MAX(uid) AS maxUid, SUM(body_cached) AS bodies FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder])
     const dbCount = Number(crows[0]?.c)||0
     const bodyCount = Number(crows[0]?.bodies)||0
-    let imapTotal = 0, uidnext = 0, uidvalidity = 0
+    const cachedUidnext = Number(srows[0]?.uidnext)||0
+    const cachedLastUid = Number(srows[0]?.last_uid ?? crows[0]?.maxUid ?? 0)||0
+    let imapTotal = 0, uidnext = 0, uidvalidity = 0, live = true
     const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:30000 })
     try{
-      await client.connect()
+      await imapConnect(client, 20000)
       const lock = await client.getMailboxLock(folder)
       try{
         imapTotal = Number(client.mailbox.exists || 0)
         uidnext = Number(client.mailbox.uidNext || 0)
         uidvalidity = Number(client.mailbox.uidValidity || 0)
       }finally{ lock.release() }
-    }catch{}finally{ await client.logout().catch(()=>{}) }
-    const lastUid = Number(srows[0]?.last_uid ?? crows[0]?.maxUid ?? 0) || 0
-    out.push({ folder, dbCount, bodyCount, imapTotal, lastUid, uidnext, uidvalidity,
+    }catch{ live = false }finally{ await client.logout().catch(()=>{}) }
+    // 探测失败（限流/断网）时用库里游标兜底，不再显示 /0
+    if(!live){ imapTotal = cachedUidnext || cachedLastUid || dbCount; uidnext = cachedUidnext; uidvalidity = Number(srows[0]?.uidvalidity)||0 }
+    const lastUid = cachedLastUid
+    out.push({ folder, dbCount, bodyCount, imapTotal, lastUid, uidnext, uidvalidity, live,
       fullSyncDone: !!srows[0]?.full_sync_done,
       lastSyncAt: srows[0]?.last_sync_at || null,
       pending: Math.max(0, (uidnext || imapTotal) - lastUid), // 新增待入库估算

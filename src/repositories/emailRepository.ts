@@ -203,7 +203,7 @@ export async function fetchFullEmailBatch(accountId: string, uids: string[]): Pr
 // ====== 服务端邮件库（MySQL）：一次全量入库 + 增量 + 库内搜索 ======
 export interface DbMailFolderStatus {
   folder: string; dbCount: number; bodyCount: number; imapTotal: number; lastUid: number
-  uidnext: number; uidvalidity: number; fullSyncDone: boolean
+  uidnext: number; uidvalidity: number; fullSyncDone: boolean; live: boolean
   lastSyncAt: string | null; pending: number; job: any
 }
 export async function dbMailStatus(accountId: string): Promise<DbMailFolderStatus[]> {
