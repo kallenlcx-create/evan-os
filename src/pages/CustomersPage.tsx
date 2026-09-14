@@ -98,7 +98,45 @@ export default function CustomersPage(){
     await load()
     window.dispatchEvent(new CustomEvent('evan-customers-updated'))
   }
+
   const [q,setQ]=useState('')
+  const [selectMode, setSelectMode] = useState(false)
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [bulkLevel, setBulkLevel] = useState('')
+  const [bulkStage, setBulkStage] = useState('')
+  const [bulkTag, setBulkTag] = useState('')
+  const toggleCheck = (id: string) => setChecked(prev => { const n = new Set(prev); if(n.has(id)) n.delete(id); else n.add(id); return n })
+  const clearCheck = () => { setChecked(new Set()); setSelectMode(false) }
+  const bulkApply = async (kind: 'level' | 'stage' | 'tag' | 'delete') => {
+    if(!checked.size) return alert('请先勾选客户')
+    if(kind === 'delete' && !confirm(`删除选中的 ${checked.size} 个客户？跟进记录一并删除，该操作可通过云同步墓碑同步。`)) return
+    if(kind === 'level' && !bulkLevel) return alert('请先选择等级')
+    if(kind === 'stage' && !bulkStage) return alert('请先选择阶段')
+    if(kind === 'tag' && !bulkTag.trim()) return alert('请先输入标签')
+    const ts = new Date().toISOString()
+    let n = 0
+    for(const id of checked){
+      if(kind === 'delete'){
+        await db.followUps.where('customerId').equals(id).delete().catch(()=>{})
+        await db.customers.delete(id)
+      } else if(kind === 'level'){
+        await db.customers.update(id, { level: bulkLevel, updatedAt: ts } as any)
+      } else if(kind === 'stage'){
+        await db.customers.update(id, { stage: bulkStage, updatedAt: ts } as any)
+      } else if(kind === 'tag'){
+        const c = await db.customers.get(id) as Customer | undefined
+        if(!c) continue
+        const tags = [...new Set([...(c.tags || []), bulkTag.trim()])]
+        await db.customers.update(id, { tags, updatedAt: ts } as any)
+      }
+      n++
+    }
+    setBulkTag('')
+    clearCheck()
+    await load()
+    window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+    alert(`批量${kind === 'delete' ? '删除' : kind === 'level' ? '改等级' : kind === 'stage' ? '改阶段' : '加标签'}完成：${n} 个`)
+  }
   const [selectedCustomer, setSelectedCustomer] = useState<Customer|null>(null)
   const [customerEmails, setCustomerEmails] = useState<EmailMessage[]>([])
   const [emailStats, setEmailStats] = useState<Record<string, { count: number; totalAmount: number }>>({})
@@ -281,6 +319,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       alert(`导入完成：新建 ${nNew} 个，合并 ${nMerge} 个，新建跟进 ${nFu} 条\n客户/跟进/营销/拓扑/全景已同步（云同步会自动上传多端）`)
       setShowImport(false); setImportText('')
       await load()
+      // 导入后自动排重（邮件自动建的 vs 批量导入的，保留批量导入）
+      try{ await handleDedupe(true) }catch{}
     }catch(e:any){ alert('导入失败：' + String(e.message||e).slice(0,200)) }
     finally{ setImporting(false) }
   }
@@ -318,6 +358,70 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[autoClassified])
 
   useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[load])
+
+  // ====== 一键排重：同邮箱多条 → 保留批量导入的，合并后删除其余 ======
+  const [deduping, setDeduping] = useState(false)
+  const handleDedupe = useCallback(async (silent = false) => {
+    setDeduping(true)
+    try{
+      const all = await db.customers.toArray() as Customer[]
+      const groups = new Map<string, Customer[]>()
+      for(const c of all){
+        const mails = new Set<string>()
+        if(c.email) mails.add(c.email.toLowerCase())
+        for(const e of (c.extraEmails || [])) mails.add(String(e).toLowerCase())
+        for(const m of mails){
+          if(!groups.has(m)) groups.set(m, [])
+          if(!groups.get(m)!.some(x=> x.id === c.id)) groups.get(m)!.push(c)
+        }
+      }
+      const LEVEL_ORDER = ['D','C','B','A','A+']
+      let merged = 0, removed = 0
+      const gone = new Set<string>()
+      for(const [, arr] of groups){
+        const alive = arr.filter(c=> !gone.has(c.id))
+        if(alive.length < 2) continue
+        // 保留优先级：有“批量导入”标签 > 最近更新
+        alive.sort((a, b)=>{
+          const ai = (a.tags||[]).includes('批量导入') ? 0 : 1
+          const bi = (b.tags||[]).includes('批量导入') ? 0 : 1
+          if(ai !== bi) return ai - bi
+          return String(b.updatedAt||'') < String(a.updatedAt||'') ? -1 : 1
+        })
+        const keeper = alive[0]
+        const patch: any = {
+          extraEmails: [...new Set([...(keeper.extraEmails||[]), ...alive.slice(1).flatMap(c=> [c.email, ...(c.extraEmails||[])].filter(Boolean).map((e:string)=> e.toLowerCase())).filter(e=> e !== (keeper.email||'').toLowerCase())])],
+          tags: [...new Set([...(keeper.tags||[]), ...alive.slice(1).flatMap(c=> c.tags||[])])],
+          updatedAt: new Date().toISOString(),
+        }
+        for(const d of alive.slice(1)){
+          if(LEVEL_ORDER.indexOf(d.level || 'C') > LEVEL_ORDER.indexOf(keeper.level || 'C')) patch.level = d.level
+          if(d.isKey) patch.isKey = true
+          if(d.stage === 'won') patch.stage = 'won'
+          if((d.repurchaseCount || 0) > (keeper.repurchaseCount || 0)) patch.repurchaseCount = d.repurchaseCount
+          if((d.value || 0) > (keeper.value || 0)){ patch.value = d.value; patch.currency = (d as any).currency || 'USD' }
+          const dp = [...(keeper.portrait?.products || []), ...((d.portrait as any)?.products || [])]
+          if(dp.length) patch.portrait = { ...(keeper.portrait || {}), products: [...new Set(dp)] }
+          if(d.notes) patch.notes = [patch.notes || keeper.notes, d.notes].filter(Boolean).join(' | ').slice(0, 500)
+          if(!keeper.company && d.company) patch.company = d.company
+          if(!keeper.phone && (d as any).phone) patch.phone = (d as any).phone
+        }
+        await db.customers.update(keeper.id, patch)
+        for(const d of alive.slice(1)){
+          // 跟进记录转给保留者
+          await db.followUps.where('customerId').equals(d.id).modify({ customerId: keeper.id } as any).catch(()=>{})
+          await db.customers.delete(d.id)
+          gone.add(d.id)
+          removed++
+        }
+        merged++
+      }
+      await load()
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+      if(!silent) alert(`排重完成：合并 ${merged} 组，删除重复 ${removed} 条（已保留批量导入的，跟进已转移）`)
+      return { merged, removed }
+    }finally{ setDeduping(false) }
+  }, [load])
 
   // 点击客户 → 优先服务端线程接口（预聚合，秒开），回退本地库匹配
   const handleCustomerClick = useCallback(async(c: Customer)=>{
@@ -476,8 +580,28 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <h1 className="text-xl font-bold">👥 客户</h1>
         <span className="text-xs text-gray-400">{filtered.length} / {list.length}</span>
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
+        <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
+        <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
         <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
       </div>
+      {/* 批量操作条 */}
+      {selectMode && (
+        <div className="flex items-center gap-2 flex-wrap bg-gray-900 text-white rounded-2xl px-3 py-2 text-xs sticky top-0 z-10">
+          <span>已选 {checked.size} 个</span>
+          <select value={bulkLevel} onChange={e=> setBulkLevel(e.target.value)} className="px-2 py-1 rounded text-xs text-gray-800">
+            <option value="">改等级…</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option>
+          </select>
+          <button onClick={()=> void bulkApply('level')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用</button>
+          <select value={bulkStage} onChange={e=> setBulkStage(e.target.value)} className="px-2 py-1 rounded text-xs text-gray-800">
+            <option value="">改阶段…</option><option value="lead">新线索</option><option value="contacted">已联系</option><option value="qualified">已确认</option><option value="proposal">报价中</option><option value="negotiation">谈判中</option><option value="won">已下单</option><option value="lost">流失</option>
+          </select>
+          <button onClick={()=> void bulkApply('stage')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用</button>
+          <input value={bulkTag} onChange={e=> setBulkTag(e.target.value)} placeholder="加标签…" className="w-24 px-2 py-1 rounded text-xs text-gray-800" />
+          <button onClick={()=> void bulkApply('tag')} className="px-2 py-1 bg-teal-600 rounded text-[11px]">加标签</button>
+          <button onClick={()=> void bulkApply('delete')} className="ml-auto px-2 py-1 bg-red-600 rounded text-[11px]">删除</button>
+          <button onClick={clearCheck} className="px-2 py-1 text-gray-300">取消</button>
+        </div>
+      )}
       <div className="flex gap-1 flex-wrap">
         {(['all','A+','A','B','C','D'] as const).map(l=> <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l==='all'?'全部':l}</button>)}
         <span className="text-gray-300 self-center">|</span>
@@ -520,13 +644,17 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           const EmailIcon = emailType.icon
           const stats = emailStats[(c.email||'').toLowerCase()] || { count:0, totalAmount:0 }
           return(
-            <div key={c.id} onClick={()=> handleCustomerClick(c)} className={`bg-white rounded-2xl border p-4 cursor-pointer hover:shadow-md transition-shadow ${c.isKey?'border-yellow-200 bg-yellow-50/30':''}`}>
+            <div key={c.id} onClick={()=> selectMode ? toggleCheck(c.id) : handleCustomerClick(c)} className={`relative bg-white rounded-2xl border p-4 cursor-pointer hover:shadow-md transition-shadow ${c.isKey?'border-yellow-200 bg-yellow-50/30':''} ${selectMode && checked.has(c.id)?'ring-2 ring-blue-400':''}`}>
+              {selectMode && (
+                <input type="checkbox" checked={checked.has(c.id)} onChange={()=> toggleCheck(c.id)} onClick={e=> e.stopPropagation()} className="absolute top-2 right-2 w-4 h-4 accent-blue-600" />
+              )}
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-sm">{c.contactName||c.title}</span>
                 {c.isKey && <Star size={12} className="text-yellow-500 fill-yellow-500"/>}
                 <span className="ml-auto text-xs px-1.5 py-0.5 bg-gray-100 rounded">{c.level||'C'}</span>
               </div>
-              <div className="text-xs text-gray-500 truncate">{c.company || c.email}</div>
+              <div className="text-xs text-gray-500 truncate">{c.email || '无邮箱'}</div>
+              {c.company && <div className="text-[11px] text-gray-400 truncate">🏢 {c.company}</div>}
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${emailType.color}`}><EmailIcon size={9}/>{emailType.label}</span>
                 {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
