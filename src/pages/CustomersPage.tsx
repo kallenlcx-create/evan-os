@@ -191,7 +191,6 @@ export default function CustomersPage(){
         await db.emails.update(e.id,{ text:dbm.text||e.text, html:dbm.html||e.html } as any)
         return
       }
-      const items = [{email:e, uid}]
       const results = await fetchFullEmailBatch(accountId, [uid]).catch(()=> ({} as Record<string,{text:string;html:string}>))
       const full = (results as any)[uid]
       if(full && (full.text || full.html)){
