@@ -172,7 +172,7 @@ export default function CampaignsPage() {
         const subject = renderTemplate(activeTemplate.subject, c)
         const body = renderTemplate(activeTemplate.body, c)
         if (mode === 'queue') {
-          await enqueueMail(acc.id, c.email || '', subject, body, `camp-${Date.now()}-${c.id}`)
+          await enqueueMail(acc.id, c.email || '', subject, body, `camp-${Date.now()}-${c.id}`, true)
           newHistory.push({ id: `camp-${Date.now()}-${i}`, customerId: c.id, customerEmail: c.email || '',
             templateId: activeTemplate.id, sentAt: new Date().toISOString(), status: 'sent' })
         } else {

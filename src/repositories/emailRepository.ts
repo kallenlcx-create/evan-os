@@ -367,11 +367,11 @@ export async function deleteDraft(id: string){
   if(!h) return
   try{ await fetch(`${h.url}/email/drafts/${id}`, { method:'DELETE', headers: bypassHeaders(h) }) }catch{}
 }
-export async function enqueueMail(accountId: string, to: string, subject: string, text: string, idempotencyKey?: string): Promise<{id:string;status:string}>{
+export async function enqueueMail(accountId: string, to: string, subject: string, text: string, idempotencyKey?: string, respectWindow = false): Promise<{id:string;status:string}>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const r = await fetch(`${h.url}/email/outbox`, { method:'POST', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
-    body: JSON.stringify({ accountId, to, subject, text, idempotencyKey }) })
+    body: JSON.stringify({ accountId, to, subject, text, idempotencyKey, respectWindow }) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`入队失败 ${r.status}`)
   return j
@@ -429,7 +429,7 @@ export const patchSequence = (customerId: string, p: any) => seqApi(`/email/sequ
 export const getSeqTemplates = () => seqApi('/email/seq-templates?kind=auto')
 export const saveSeqTemplate = (p: any) => seqApi('/email/seq-templates', 'PUT', p)
 export const getSeqConfig = () => seqApi('/email/seq-config')
-export const saveSeqConfig = (intervals: number[]) => seqApi('/email/seq-config', 'PUT', { intervals })
+export const saveSeqConfig = (intervals: number[], opts?: { sendStart?: number; sendEnd?: number; skipHolidays?: boolean }) => seqApi('/email/seq-config', 'PUT', { intervals, ...opts })
 
 // Mock 同步：生成假邮件（878封缩略版）仅演示用
 export async function mockSync(accountId:string): Promise<number> {

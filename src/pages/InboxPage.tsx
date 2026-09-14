@@ -44,6 +44,7 @@ export default function InboxPage(){
   const [sending, setSending] = useState(false)
   const [replyDraftId, setReplyDraftId] = useState('')
   const [draftNote, setDraftNote] = useState('')
+  const [aiDraftingReply, setAiDraftingReply] = useState(false)
   const [showOutbox, setShowOutbox] = useState(false)
   const [outboxList, setOutboxList] = useState<any[]>([])
 
@@ -810,6 +811,25 @@ export default function InboxPage(){
                   alert('草稿已生成')
                 }} className="flex-1 py-1.5 bg-blue-600 text-white rounded text-[11px]">一键生成</button>
                 <button onClick={handleOpenReply} className="flex-1 py-1.5 bg-green-50 text-green-600 border border-green-200 rounded text-[11px] flex items-center justify-center gap-1"><Send size={10}/> 回复</button>
+                <button onClick={async()=>{
+                  if(!selected) return
+                  setAiDraftingReply(true)
+                  try{
+                    const c = customer || await ensureCustomer(selected.from, selected.from)
+                    const hist = thread.slice(-10).map(e=> `[${e.date}] ${e.folder==='sent'?'我':'客'}: ${(e.text||'').slice(0,300)}`).join('\n')
+                    const amounts = (hist.match(/\$\s*[\d,]+/g)||[]).slice(0,5).join(' ')
+                    const prompt = `你是Maxemblem外贸业务员Evan，给下面这位客户写一封专属英文回复邮件（不是模板，必须结合他的背景和往来记录）。只返回正文，落款Evan。\n客户：${c?.contactName||c?.title}（${c?.email}，${c?.company||'公司未知'}），等级${c?.level||'C'}${c?.isKey?'重点':''}，阶段${c?.stage||''}，复购${c?.repurchaseCount||0}次\n画像：${c?.aiSummary||'无'}，常购：${(c?.portrait as any)?.products?.join('/')||'未知'}，出现过的金额：${amounts||'无'}\n最近往来：\n${hist}\n当前这封：${selected.subject}\n${(selected.text||'').slice(0,1500)}`
+                    const { chatOnce } = await import('../services/aiChat')
+                    const draft = await chatOnce(prompt)
+                    if(!draft || draft.startsWith('⚠️')){ alert(draft||'AI 生成失败'); return }
+                    const fromAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim()
+                    setReplyTo(fromAddr)
+                    setReplySubject(selected.subject.startsWith('Re:') ? selected.subject : `Re: ${selected.subject}`)
+                    setReplyBody(draft.trim())
+                    setReplyDraftId(''); setDraftNote('')
+                    setShowReply(true)
+                  }finally{ setAiDraftingReply(false) }
+                }} disabled={aiDraftingReply} className="flex-1 py-1.5 bg-purple-50 text-purple-600 border border-purple-200 rounded text-[11px] disabled:opacity-50">{aiDraftingReply?'生成中…':'✨ 专属回复'}</button>
                 <button onClick={async()=>{ if(selected){ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)} }} className="flex-1 py-1.5 bg-white border rounded text-[11px]">翻译对照</button>
               </div>
             </div>

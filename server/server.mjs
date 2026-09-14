@@ -272,6 +272,11 @@ async function init() {
       intervals_json VARCHAR(256),
       updated_at TIMESTAMP(3) NOT NULL
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  // 发送窗口配置（后加列，兼容已建表）：美东时间白天发送 + 节假日避让
+  await pool.query(`ALTER TABLE followup_config ADD COLUMN send_start INT DEFAULT 8`).catch(()=>{})
+  await pool.query(`ALTER TABLE followup_config ADD COLUMN send_end INT DEFAULT 20`).catch(()=>{})
+  await pool.query(`ALTER TABLE followup_config ADD COLUMN skip_holidays TINYINT DEFAULT 1`).catch(()=>{})
+  await pool.query(`ALTER TABLE mail_outbox ADD COLUMN respect_window TINYINT DEFAULT 0`).catch(()=>{})
   await pool.query(`
     CREATE TABLE IF NOT EXISTS us_holidays (
       date DATE PRIMARY KEY,
@@ -1711,10 +1716,10 @@ app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// 入队发送：POST /email/outbox {accountId, to, subject, text, html, draftId?, idempotencyKey?}（秒返回，后台发出）
+// 入队发送：POST /email/outbox {accountId, to, subject, text, html, draftId?, idempotencyKey?, respectWindow?}（秒返回，后台发出）
 app.post('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
-  const { accountId, to, subject, text, html, draftId, idempotencyKey } = req.body || {}
+  const { accountId, to, subject, text, html, idempotencyKey, respectWindow } = req.body || {}
   if(!accountId || !to || !subject) return res.status(400).json({ error:'需要 accountId, to, subject' })
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -1722,9 +1727,9 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
   const idem = idempotencyKey || id
   try{
     await pool.query(
-      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key)
-       VALUES (?,?,?,?,?,?,?,'queued',0,?)`,
-      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem])
+      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key, respect_window)
+       VALUES (?,?,?,?,?,?,?,'queued',0,?,?)`,
+      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem, respectWindow ? 1 : 0])
   }catch(e){
     if(e && e.code === 'ER_DUP_ENTRY'){
       const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=?',[idem])
@@ -1750,7 +1755,7 @@ app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// 发件 worker：每 30 秒扫一次到期任务
+// 发件 worker：每 30 秒扫一次到期任务（respect_window 的遇非窗口顺延 30 分钟）
 async function outboxTick(){
   if(!dbReady) return
   try{
@@ -1758,6 +1763,13 @@ async function outboxTick(){
       `SELECT * FROM mail_outbox WHERE status IN ('queued','failed') AND try_count<3 AND (next_try_at IS NULL OR next_try_at<=NOW()) ORDER BY created_at LIMIT 10`)
     for(const job of rows){
       try{
+        if(Number(job.respect_window)){
+          const win = await inSendWindow(job.username)
+          if(!win.ok){
+            await pool.query(`UPDATE mail_outbox SET next_try_at=DATE_ADD(NOW(), INTERVAL 30 MINUTE) WHERE id=?`,[job.id])
+            continue
+          }
+        }
         await pool.query(`UPDATE mail_outbox SET status='sending', try_count=try_count+1 WHERE id=?`,[job.id])
         const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[job.account_id, job.username])
         if(!arows.length) throw new Error('账号不存在')
@@ -1812,19 +1824,28 @@ async function seedDefaultTemplates(username){
     }
   }catch(e){ console.log('[seq] seed skip:', String(e.message||e).slice(0,80)) }
 }
-
-// 序列配置：GET/PUT /email/seq-config {intervals:[1,2,3,4,5,6,7]}
+// 序列配置：GET/PUT /email/seq-config {intervals, sendStart, sendEnd, skipHolidays}
 app.get('/email/seq-config', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
-  res.json({ intervals: await getIntervals(req.user) })
+  const intervals = await getIntervals(req.user)
+  let cfg = { sendStart: 8, sendEnd: 20, skipHolidays: true }
+  try{
+    const [rows] = await pool.query('SELECT send_start, send_end, skip_holidays FROM followup_config WHERE username=?',[req.user])
+    if(rows.length) cfg = { sendStart: Number(rows[0].send_start ?? 8), sendEnd: Number(rows[0].send_end ?? 20), skipHolidays: Number(rows[0].skip_holidays ?? 1) === 1 }
+  }catch{}
+  res.json({ intervals, ...cfg })
 }))
 app.put('/email/seq-config', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const arr = req.body?.intervals
   if(!Array.isArray(arr) || arr.length !== 7 || !arr.every(n=> Number(n) > 0)) return res.status(400).json({ error:'需要7个正数' })
-  await pool.query(`INSERT INTO followup_config (username, intervals_json, updated_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE intervals_json=VALUES(intervals_json), updated_at=VALUES(updated_at)`,
-    [req.user, JSON.stringify(arr.map(Number)), sqlNow()])
-  res.json({ ok:true, intervals: arr.map(Number) })
+  const sendStart = Math.min(23, Math.max(0, Number(req.body?.sendStart ?? 8)))
+  const sendEnd = Math.min(24, Math.max(1, Number(req.body?.sendEnd ?? 20)))
+  const skipHolidays = req.body?.skipHolidays === false ? 0 : 1
+  await pool.query(`INSERT INTO followup_config (username, intervals_json, send_start, send_end, skip_holidays, updated_at) VALUES (?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE intervals_json=VALUES(intervals_json), send_start=VALUES(send_start), send_end=VALUES(send_end), skip_holidays=VALUES(skip_holidays), updated_at=VALUES(updated_at)`,
+    [req.user, JSON.stringify(arr.map(Number)), sendStart, sendEnd, skipHolidays, sqlNow()])
+  res.json({ ok:true, intervals: arr.map(Number), sendStart, sendEnd, skipHolidays: !!skipHolidays })
 }))
 
 // 模板：GET /email/seq-templates?kind=auto ｜ PUT /email/seq-templates ｜ DELETE /email/seq-templates/:id
@@ -1930,6 +1951,7 @@ app.patch('/email/sequences/:customerId', auth, wrap(async (req,res)=>{
 }))
 
 // 序列调度 worker：每 30 分钟扫到期步骤 → 进发件队列；7 步走完无回复 → 沉睡池
+// 非发送窗口（美东深夜/美国节假日）整轮跳过
 async function seqTick(){
   if(!dbReady) return
   try{
@@ -1937,6 +1959,8 @@ async function seqTick(){
       `SELECT * FROM followup_sequences WHERE mode='auto' AND next_due_at IS NOT NULL AND next_due_at<=NOW() AND current_step BETWEEN 1 AND 8 LIMIT 50`)
     for(const s of rows){
       try{
+        const win = await inSendWindow(s.username)
+        if(!win.ok){ console.log(`[seq] 窗口外跳过 ${s.customer_id}：${win.reason}`); continue }
         let steps = []
         try{ steps = JSON.parse(s.steps_json || '[]') }catch{}
         let iv = []
@@ -1983,6 +2007,27 @@ async function seqTick(){
   }catch(e){ console.log('[seq] tick skip:', String(e.message||e).slice(0,100)) }
 }
 setInterval(seqTick, 30*60*1000)
+
+// 发送窗口判定：美东时间 + 美国节假日避让（自动序列/营销群发用，用户手动发送不受限）
+async function inSendWindow(username){
+  let start = 8, end = 20, skipHol = 1
+  try{
+    const [rows] = await pool.query('SELECT send_start, send_end, skip_holidays FROM followup_config WHERE username=?',[username])
+    if(rows.length){ start = Number(rows[0].send_start ?? 8); end = Number(rows[0].send_end ?? 20); skipHol = Number(rows[0].skip_holidays ?? 1) }
+  }catch{}
+  try{
+    const etHour = Number(new Intl.DateTimeFormat('en-US',{ timeZone:'America/New_York', hour:'numeric', hour12:false }).format(new Date()))
+    if(etHour < start || etHour >= end) return { ok:false, reason:`美东${etHour}点，非发送窗口(${start}:00-${end}:00)` }
+  }catch{}
+  if(skipHol){
+    try{
+      const today = new Date().toISOString().slice(0,10)
+      const [hrows] = await pool.query('SELECT name FROM us_holidays WHERE date=?',[today])
+      if(hrows.length) return { ok:false, reason:`今天是美国节假日（${hrows[0].name}），避让` }
+    }catch{}
+  }
+  return { ok:true }
+}
 
 // 实质回复判定：排除自动回复/退信/系统通知
 function isSubstantiveReply(env, parsed){

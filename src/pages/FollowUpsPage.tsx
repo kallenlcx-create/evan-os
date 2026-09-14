@@ -35,6 +35,9 @@ export default function FollowUpsPage() {
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
+  const [sendStart, setSendStart] = useState(8)
+  const [sendEnd, setSendEnd] = useState(20)
+  const [skipHolidays, setSkipHolidays] = useState(true)
   const [showTplModal, setShowTplModal] = useState(false)
   const [tplEdit, setTplEdit] = useState<any>(null)
   const loadSequences = useCallback(async () => {
@@ -45,8 +48,18 @@ export default function FollowUpsPage() {
       setSeqTemplates(t.templates || [])
       const c = await getSeqConfig()
       if(c.intervals) setSeqIntervals(c.intervals)
+      if(c.sendStart != null) setSendStart(c.sendStart)
+      if(c.sendEnd != null) setSendEnd(c.sendEnd)
+      if(c.skipHolidays != null) setSkipHolidays(!!c.skipHolidays)
     }catch{}
   }, [])
+  const seqStats = useMemo(()=>{
+    const auto = sequences.filter(s=> s.mode==='auto').length
+    const replied = sequences.filter(s=> s.replied).length
+    const dormant = sequences.filter(s=> s.mode==='dormant').length
+    const sentSteps = sequences.reduce((n,s)=> n + (s.steps||[]).filter((t:any)=> t.status==='sent').length, 0)
+    return { auto, replied, dormant, sentSteps, total: sequences.length }
+  },[sequences])
   useEffect(()=>{ void loadSequences() },[loadSequences])
   const handleStartSeq = useCallback(async (c: Customer) => {
     try{
@@ -298,7 +311,7 @@ export default function FollowUpsPage() {
 
       {/* ====== 自动跟进序列（7步 / 回复转手动 / 沉睡池）====== */}
       <div className="bg-white rounded-2xl border p-4 mt-3">
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
           <span className="text-sm font-semibold">🔁 自动跟进序列</span>
           <div className="flex gap-1">
             {([['active','进行中'],['replied','🔔有回复'],['dormant','沉睡池']] as const).map(([k, l]) => (
@@ -306,6 +319,9 @@ export default function FollowUpsPage() {
             ))}
           </div>
           <button onClick={()=> setShowTplModal(true)} className="ml-auto px-2 py-1 text-xs border rounded-lg hover:border-blue-300">📝 模板+间隔</button>
+        </div>
+        <div className="text-[11px] text-gray-400 mb-2">
+          共 {seqStats.total} 个序列 · 进行中 {seqStats.auto} · 已回复 {seqStats.replied} · 沉睡 {seqStats.dormant} · 累计发出 {seqStats.sentSteps} 步
         </div>
         {(() => {
           const rows = seqTab === 'active' ? sequences.filter(s=> s.mode==='auto')
@@ -357,7 +373,13 @@ export default function FollowUpsPage() {
                       }} className="w-12 ml-1 px-1 py-0.5 border rounded text-xs" />
                     </label>
                   ))}
-                  <button onClick={async()=>{ try{ await saveSeqConfig(seqIntervals); alert('间隔已保存，新启动序列生效') }catch(e:any){ alert(String(e.message||e)) } }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs">保存间隔</button>
+                  <button onClick={async()=>{ try{ await saveSeqConfig(seqIntervals, { sendStart, sendEnd, skipHolidays }); alert('间隔与发送窗口已保存，新启动序列生效') }catch(e:any){ alert(String(e.message||e)) } }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs">保存间隔</button>
+                </div>
+                <div className="text-xs text-gray-500 mt-2">发送窗口（美东时间，自动序列/营销群发只在窗口内发出，用户手动发送不受限）</div>
+                <div className="flex gap-2 items-center mt-1 text-xs text-gray-500 flex-wrap">
+                  <label>开始 <input type="number" min={0} max={23} value={sendStart} onChange={e=> setSendStart(Number(e.target.value)||0)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
+                  <label>结束 <input type="number" min={1} max={24} value={sendEnd} onChange={e=> setSendEnd(Number(e.target.value)||24)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={skipHolidays} onChange={e=> setSkipHolidays(e.target.checked)} className="accent-blue-600" /> 美国节假日避让</label>
                 </div>
               </div>
               <div className="space-y-2">
