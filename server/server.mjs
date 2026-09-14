@@ -936,8 +936,9 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
   const pass = decAuth(acc.auth_enc)
   for(const folder of folders){
     const [srows] = await pool.query('SELECT * FROM mail_sync_state WHERE account_id=? AND folder=?',[accountId, folder])
-    const [crows] = await pool.query('SELECT COUNT(*) AS c, MAX(uid) AS maxUid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder])
+    const [crows] = await pool.query('SELECT COUNT(*) AS c, MAX(uid) AS maxUid, SUM(body_cached) AS bodies FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder])
     const dbCount = Number(crows[0]?.c)||0
+    const bodyCount = Number(crows[0]?.bodies)||0
     let imapTotal = 0, uidnext = 0, uidvalidity = 0
     const client = new ImapFlow({ host:acc.imap_host, port:acc.imap_port, secure:acc.imap_port===993, auth:{user:acc.email, pass}, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout:30000 })
     try{
@@ -950,7 +951,7 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
       }finally{ lock.release() }
     }catch{}finally{ await client.logout().catch(()=>{}) }
     const lastUid = Number(srows[0]?.last_uid ?? crows[0]?.maxUid ?? 0) || 0
-    out.push({ folder, dbCount, imapTotal, lastUid, uidnext, uidvalidity,
+    out.push({ folder, dbCount, bodyCount, imapTotal, lastUid, uidnext, uidvalidity,
       fullSyncDone: !!srows[0]?.full_sync_done,
       lastSyncAt: srows[0]?.last_sync_at || null,
       pending: Math.max(0, (uidnext || imapTotal) - lastUid), // 新增待入库估算

@@ -409,8 +409,8 @@ export default function InboxPage(){
             {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
           </button>
           {dbFolders.length>0 && dbFolders[0] && (
-            <span className="text-[10px] text-gray-400 hidden lg:inline" title="服务端邮件库 / IMAP总数 / 待入库估算">
-              库 {dbFolders[0].dbCount}/{dbFolders[0].imapTotal}{dbFolders[0].pending>0 ? ` · +${dbFolders[0].pending}` : ' · 已齐'}
+            <span className="text-[10px] text-gray-400 hidden lg:inline" title="服务端邮件库/IMAP总数/正文已补/待入库估算">
+              库 {dbFolders[0].dbCount}/{dbFolders[0].imapTotal} · 正文 {dbFolders[0].bodyCount||0}{dbFolders[0].pending>0 ? ` · +${dbFolders[0].pending}` : ' · 已齐'}
             </span>
           )}
           <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
