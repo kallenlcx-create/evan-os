@@ -809,7 +809,14 @@ function sqlDate(d){
   }catch{ return null }
 }
 function sqlNow(){ return new Date().toISOString().slice(0,23).replace('T',' ') }
-// 统一创建 IMAP 客户端：必须吞掉 'error' 事件，否则 socket 异常会掀翻整个 Node 进程
+// 通用硬超时：任何 IMAP 等待超过 ms 即抛，调用方跳过本批下轮重试
+function withTimeout(promise, ms, label){
+  let timer = null
+  return Promise.race([
+    promise,
+    new Promise((_, rej)=>{ timer = setTimeout(()=>rej(new Error((label||'op')+'-timeout')), ms) }),
+  ]).finally(()=>{ if(timer) clearTimeout(timer) })
+}
 function makeImapClient({ host, port, user, pass, socketTimeout = 60000 }){
   const client = new ImapFlow({ host, port, secure: port === 993, auth:{ user, pass }, logger:false, connectTimeout:20000, authTimeout:15000, socketTimeout })
   client.on('error', ()=>{})
@@ -915,6 +922,7 @@ async function runMailIngest(accountId, username, opts = {}){
             if(st.cancelled) throw new Error('cancelled')
             const batch = missing.slice(i, i+500)
             try{
+              await withTimeout((async()=>{
               for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, internalDate:true, gmailMessageId:true, gmailThreadId:true }, { uid:true })){
                 try{
                   const env = msg.envelope || {}
@@ -936,7 +944,8 @@ async function runMailIngest(accountId, username, opts = {}){
                   })
                 }catch{}
               }
-            }catch{}
+              })(), 3*60*1000, 'envelope-batch')
+            }catch(e){ console.log('[ingest] envelope batch skip:', String(e.message||e).slice(0,60)) }
             await new Promise(r=>setImmediate(r))
           }
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的）
@@ -949,13 +958,15 @@ async function runMailIngest(accountId, username, opts = {}){
             for(let i=0;i<todo.length;i+=25){
               if(st.cancelled) throw new Error('cancelled')
               const batch = todo.slice(i,i+25).map(r=>Number(r.uid))
-              // B1: 先取大小，超大件直接占位跳过
+              // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
               let sizes = new Map()
               try{
-                for await (const msg of client.fetch(batch.join(','), { size:true, uid:true }, { uid:true })){
-                  sizes.set(msg.uid, Number(msg.size)||0)
-                }
-              }catch{}
+                await withTimeout((async()=>{
+                  for await (const msg of client.fetch(batch.join(','), { size:true, uid:true }, { uid:true })){
+                    sizes.set(msg.uid, Number(msg.size)||0)
+                  }
+                })(), 2*60*1000, 'size-batch')
+              }catch(e){ console.log('[ingest] size batch skip:', String(e.message||e).slice(0,60)) }
               for(const u of batch.filter(u=> (sizes.get(u)||0) > BODY_MAX)){
                 await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
                   [sqlNow(), accountId, folder, u]).catch(()=>{})
@@ -996,9 +1007,9 @@ async function runMailIngest(accountId, username, opts = {}){
               await new Promise(r=>setImmediate(r))
             }
           }
-          // 已读状态刷新：UNSEEN 列表 + 最近 2000 封的 FLAGS
+          // 已读状态刷新：UNSEEN 列表 + 最近 2000 封的 FLAGS（每步硬超时，hang 则跳过本轮）
           try{
-            let unseen = await client.search({ unseen:true }, { uid:true })
+            let unseen = await withTimeout(client.search({ unseen:true }, { uid:true }), 60000, 'unseen').catch(()=>[])
             if(!Array.isArray(unseen)) unseen = []
             const unseenSet = new Set(unseen)
             if(unseenSet.size){
@@ -1009,12 +1020,15 @@ async function runMailIngest(accountId, username, opts = {}){
             }
             const tail = allUids.slice().sort((a,b)=>b-a).slice(0,2000)
             for(let i=0;i<tail.length;i+=200){
+              if(st.cancelled) throw new Error('cancelled')
               const batch = tail.slice(i,i+200)
               try{
-                for await (const msg of client.fetch(batch.join(','), { flags:true, uid:true }, { uid:true })){
-                  const seen = (msg.flags||new Set()).has('\\Seen') ? 1 : 0
-                  await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=? AND is_read<>?', [seen, sqlNow(), accountId, folder, msg.uid, seen])
-                }
+                await withTimeout((async()=>{
+                  for await (const msg of client.fetch(batch.join(','), { flags:true, uid:true }, { uid:true })){
+                    const seen = (msg.flags||new Set()).has('\\Seen') ? 1 : 0
+                    await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=? AND is_read<>?', [seen, sqlNow(), accountId, folder, msg.uid, seen])
+                  }
+                })(), 2*60*1000, 'flags-batch')
               }catch{}
             }
           }catch{}
