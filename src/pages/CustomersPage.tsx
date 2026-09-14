@@ -84,6 +84,120 @@ export default function CustomersPage(){
   const [allowRemoteImg, setAllowRemoteImg] = useState(false)
   const [threadMode, setThreadMode] = useState<'server'|'local'|''>('')
 
+  // ====== 批量导入客户（CSV粘贴）：等级/重点/阶段/多品类/复购/类型/多邮箱 ======
+  const [showImport, setShowImport] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importing, setImporting] = useState(false)
+  const IMPORT_TEMPLATE = `姓名,邮箱(多个用;分隔),公司,等级(A+/A/B/C/D),重点(是/否),阶段(lead/contacted/qualified/proposal/negotiation/won/lost/已下单),产品(多个用/分隔),复购次数,类型(政府/企业/消防/学校/个人),电话,国家,备注,下次跟进(YYYY-MM-DD)
+Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,企业,,USA,老客户,2026-09-20`
+  const PRODUCT_MAP: Record<string,string> = { pin:'Pin', patch:'Patch', coin:'Coin', medal:'Medal', keychain:'Keychain', keychains:'Keychain' }
+  const TYPE_MAP: Record<string, Customer['customerType']> = { '政府':'Government', '企业':'Company', '学校':'School', '非盈利':'Organization', '个人':'End Customer', '消防':'Government' }
+  const parseImport = (text: string) => {
+    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean)
+    if(lines.length < 2) return []
+    const rows: any[] = []
+    for(const line of lines.slice(1)){
+      // 简单CSV切分（支持引号包裹逗号）
+      const cols: string[] = []
+      let cur = '', inQ = false
+      for(const ch of line){
+        if(ch === '"'){ inQ = !inQ; continue }
+        if(ch === ',' && !inQ){ cols.push(cur.trim()); cur = ''; continue }
+        cur += ch
+      }
+      cols.push(cur.trim())
+      while(cols.length < 13) cols.push('')
+      const [name, emailsRaw, company, level, isKeyRaw, stageRaw, productsRaw, repRaw, typeRaw, phone, country, notes, followUpAt] = cols
+      const emails = emailsRaw.split(';').map(e=>e.trim().toLowerCase()).filter(e=>e.includes('@'))
+      if(!emails.length) continue
+      const products = productsRaw.split('/').map(p=> PRODUCT_MAP[p.trim().toLowerCase()] || p.trim()).filter(Boolean)
+      const stage = stageRaw === '已下单' ? 'won' : (['lead','contacted','qualified','proposal','negotiation','won','lost'].includes(stageRaw) ? stageRaw : 'lead')
+      rows.push({
+        name: name || emails[0].split('@')[0], emails, primary: emails[0],
+        company, level: (['A+','A','B','C','D'].includes(level) ? level : 'C') as Customer['level'],
+        isKey: isKeyRaw === '是' || level === 'A' || level === 'A+',
+        stage, products, repurchaseCount: Number(repRaw) || 0,
+        customerType: TYPE_MAP[typeRaw] || 'Company', typeRaw,
+        phone, country, notes, followUpAt: /^\d{4}-\d{2}-\d{2}$/.test(followUpAt) ? followUpAt : new Date(Date.now()+3*86400000).toISOString().slice(0,10),
+      })
+    }
+    return rows
+  }
+  const importPreview = parseImport(importText)
+  const handleImportConfirm = async () => {
+    if(!importPreview.length) return alert('没有可导入的有效行')
+    setImporting(true)
+    try{
+      const { uid, now } = await import('../repositories/result')
+      const existing = await db.customers.toArray() as Customer[]
+      const byEmail = new Map<string, Customer>()
+      for(const c of existing){
+        if(c.email) byEmail.set(c.email.toLowerCase(), c)
+        for(const e of (c.extraEmails || [])) byEmail.set(e.toLowerCase(), c)
+      }
+      const LEVEL_ORDER = ['D','C','B','A','A+']
+      let nNew = 0, nMerge = 0, nFu = 0
+      const ts = now()
+      for(const r of importPreview){
+        let target = byEmail.get(r.primary)
+        if(!target){
+          for(const e of r.emails){ const hit = byEmail.get(e); if(hit){ target = hit; break } }
+        }
+        if(target){
+          // 合并：只升级不降级
+          const patch: any = {}
+          if(LEVEL_ORDER.indexOf(r.level) > LEVEL_ORDER.indexOf(target.level || 'C')) patch.level = r.level
+          if(r.isKey && !target.isKey) patch.isKey = true
+          if(r.stage === 'won' && target.stage !== 'won') patch.stage = 'won'
+          const mergedExtra = [...new Set([...(target.extraEmails || []), ...r.emails.filter((e:string)=> e !== target!.email!.toLowerCase())])]
+          if(mergedExtra.join() !== (target.extraEmails || []).join()) patch.extraEmails = mergedExtra
+          const mergedProd = [...new Set([...(target.portrait?.products || []), ...r.products])]
+          if(mergedProd.length !== (target.portrait?.products || []).length) patch.portrait = { ...(target.portrait || {}), products: mergedProd }
+          if((r.repurchaseCount || 0) > (target.repurchaseCount || 0)) patch.repurchaseCount = r.repurchaseCount
+          if(r.notes) patch.notes = [target.notes, `导入:${r.notes}`].filter(Boolean).join(' | ').slice(0, 500)
+          patch.updatedAt = ts
+          if(Object.keys(patch).length > 1){
+            await db.customers.update(target.id, patch)
+            // 同步内存索引，避免同批重复建
+            Object.assign(target, patch)
+            nMerge++
+          }
+          for(const e of r.emails) byEmail.set(e, target)
+        } else {
+          const id = `import-${uid()}`
+          const rec: any = {
+            id, type:'customer', title: r.name, contactName: r.name, company: r.company,
+            email: r.primary, extraEmails: r.emails.slice(1),
+            stage: r.stage, isKey: r.isKey, level: r.level, customerType: r.customerType,
+            tags: ['邮件','批量导入', ...(r.typeRaw === '消防' ? ['消防'] : [])],
+            phone: r.phone, country: r.country,
+            notes: [r.notes, r.typeRaw === '消防' ? '[消防部门]' : ''].filter(Boolean).join(' | '),
+            repurchaseCount: r.repurchaseCount,
+            portrait: r.products.length ? { products: r.products } : undefined,
+            createdAt: ts, updatedAt: ts, relations: [],
+            followUpAt: r.followUpAt, score: 0,
+          }
+          await db.customers.put(rec)
+          byEmail.set(r.primary, rec)
+          for(const e of r.emails) byEmail.set(e, rec)
+          nNew++
+          target = rec
+        }
+        // 无待办跟进则建一条（客户/跟进/营销/拓扑/全景读同一份数据，写一次全端同步）
+        const hasPending = await db.followUps.filter((f:any)=> f.customerId === target!.id && f.status === 'pending').first()
+        if(!hasPending){
+          await db.followUps.put({ id:`fu-${uid()}`, customerId: target!.id, dueAt: r.followUpAt, channel:['批量导入'], note:`批量导入跟进（${r.level}${r.isKey?'/重点':''}）`, status:'pending', createdAt: ts } as any)
+          nFu++
+        }
+      }
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+      alert(`导入完成：新建 ${nNew} 个，合并 ${nMerge} 个，新建跟进 ${nFu} 条\n客户/跟进/营销/拓扑/全景已同步（云同步会自动上传多端）`)
+      setShowImport(false); setImportText('')
+      await load()
+    }catch(e:any){ alert('导入失败：' + String(e.message||e).slice(0,200)) }
+    finally{ setImporting(false) }
+  }
+
   const load = useCallback(async()=>{
     const customers = await db.customers.toArray() as any[]
     setList(customers)
@@ -155,14 +269,15 @@ export default function CustomersPage(){
         }
       }
     }catch{}
-    // 2. 服务端无命中则回退本地库匹配
+    // 2. 服务端无命中则回退本地库匹配（含多邮箱）
     let current: EmailMessage[] = serverMapped
     if(!serverHit){
       const allEmails = await db.emails.toArray() as EmailMessage[]
+      const addrs = new Set([addr, ...((c.extraEmails || []).map((e:string)=> e.toLowerCase()))])
       current = allEmails.filter(e=>{
         const from = (e.from.match(/<(.+?)>/)?.[1]||e.from).trim().toLowerCase()
         const to = (e.to||'').toLowerCase()
-        return from===addr || to.includes(addr)
+        return addrs.has(from) || [...addrs].some(a=> to.includes(a))
       }).sort((a,b)=> new Date(b.date).getTime() - new Date(a.date).getTime())
       setCustomerEmails(current)
       setThreadMode('local')
@@ -272,6 +387,7 @@ export default function CustomersPage(){
       <div className="flex items-center gap-2">
         <h1 className="text-xl font-bold">👥 客户</h1>
         <span className="text-xs text-gray-400">{filtered.length} / {list.length}</span>
+        <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
         <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
       </div>
       <div className="flex gap-1 flex-wrap">
@@ -311,6 +427,54 @@ export default function CustomersPage(){
           )
         })}
       </div>
+
+      {/* 批量导入弹窗 */}
+      {showImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowImport(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl" onClick={e=> e.stopPropagation()}>
+            <div className="p-4 border-b flex items-center gap-2">
+              <div className="font-semibold text-sm">📥 批量导入客户</div>
+              <span className="text-[11px] text-gray-400">CSV格式，第一行为表头；写入后客户/跟进/营销/拓扑/全景自动同步</span>
+              <button onClick={()=> setShowImport(false)} className="ml-auto p-1.5 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+            </div>
+            <div className="p-4 space-y-2 overflow-y-auto">
+              <textarea value={importText} onChange={e=> setImportText(e.target.value)} placeholder="粘贴CSV…" className="w-full h-40 px-3 py-2 border rounded-lg text-xs font-mono resize-y" />
+              {importText.trim() && (
+                <div className="text-xs">
+                  <div className="font-semibold text-gray-600 mb-1">预览（{importPreview.length} 行有效）</div>
+                  <div className="max-h-48 overflow-auto border rounded-lg">
+                    <table className="w-full text-[11px]">
+                      <thead className="bg-gray-50 sticky top-0"><tr><th className="p-1 text-left">姓名</th><th className="p-1 text-left">邮箱</th><th className="p-1">等级</th><th className="p-1">重点</th><th className="p-1">阶段</th><th className="p-1 text-left">产品</th><th className="p-1">复购</th><th className="p-1">类型</th></tr></thead>
+                      <tbody>
+                        {importPreview.slice(0, 50).map((r, i)=>(
+                          <tr key={i} className="border-t">
+                            <td className="p-1">{r.name}</td>
+                            <td className="p-1 break-all">{r.emails.join('; ')}</td>
+                            <td className="p-1 text-center">{r.level}</td>
+                            <td className="p-1 text-center">{r.isKey?'⭐':''}</td>
+                            <td className="p-1 text-center">{r.stage}</td>
+                            <td className="p-1">{r.products.join('/')}</td>
+                            <td className="p-1 text-center">{r.repurchaseCount||''}</td>
+                            <td className="p-1 text-center">{r.customerType}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {importPreview.length > 50 && <div className="text-center text-gray-400 py-1">仅预览前50行</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t flex items-center gap-2">
+              <button onClick={()=> setShowImport(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
+              <div className="flex-1" />
+              <button onClick={handleImportConfirm} disabled={importing || !importPreview.length} className="px-6 py-2 bg-green-600 text-white rounded-lg text-xs hover:bg-green-700 disabled:opacity-50">
+                {importing ? '导入中...' : `确认导入 ${importPreview.length} 个`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 客户邮件详情弹窗 */}
       {selectedCustomer && (

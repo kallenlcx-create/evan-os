@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -407,12 +407,14 @@ export default function InboxPage(){
   // ====== 服务端邮件库：一次全量入库 + 增量状态 ======
   const [dbFolders, setDbFolders] = useState<DbMailFolderStatus[]>([])
   const [ingestJob, setIngestJob] = useState<any>(null)
+  const [watchOff, setWatchOff] = useState(false)
   const refreshDbStatus = useCallback(async()=>{
     try{
       const accs = accounts.length ? accounts : await listAccounts()
       if(!accs.length) return
       setDbFolders(await dbMailStatus(accs[0].id))
       setIngestJob(await mailIngestStatus(accs[0].id))
+      try{ setWatchOff((await getWatchPaused()).paused) }catch{}
     }catch{}
   },[accounts])
   useEffect(()=>{ void refreshDbStatus() },[refreshDbStatus])
@@ -463,6 +465,14 @@ export default function InboxPage(){
           </button>
           <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
             {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
+          </button>
+          <button onClick={async()=>{
+            try{
+              const r = await setWatchPaused(!watchOff)
+              setWatchOff(r.paused)
+            }catch(e:any){ alert(String(e.message||e).slice(0,150)) }
+          }} className={`px-3 py-1.5 rounded-lg text-xs border ${watchOff ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-gray-500'}`} title="入库优先时暂停实时监听，入库完成后再恢复">
+            {watchOff ? '▶ 恢复监听' : '⏸ 暂停监听'}
           </button>
           {dbFolders.length>0 && dbFolders[0] && (
             <span className="text-[10px] text-gray-400 hidden lg:inline" title="服务端邮件库/正文已补（离线时为库内快照）">

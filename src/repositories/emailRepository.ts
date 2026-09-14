@@ -304,6 +304,23 @@ export async function mailIngestStatus(accountId: string): Promise<any> {
   const j = await r.json().catch(() => ({}))
   return j.job || null
 }
+export async function setWatchPaused(pause: boolean): Promise<{ paused: boolean; watchers: number }>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/watch-pause`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) }, body: JSON.stringify({ pause }) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || '操作失败')
+  return j
+}
+export async function getWatchPaused(): Promise<{ paused: boolean; watchers: number }>{
+  const h = await serverHeaders()
+  if (!h) return { paused: false, watchers: 0 }
+  try{
+    const r = await fetch(`${h.url}/email/watch-pause`, { headers: bypassHeaders(h) })
+    return await r.json().catch(() => ({ paused: false, watchers: 0 }))
+  }catch{ return { paused: false, watchers: 0 } }
+}
 export async function searchDbMails(accountId: string, q: string, limit = 50): Promise<EmailMessage[]> {
   const h = await serverHeaders()
   if (!h) throw new Error('请先登录云同步')

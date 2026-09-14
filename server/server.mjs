@@ -959,7 +959,7 @@ async function runMailIngest(accountId, username, opts = {}){
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的；3 连接并行加速）
           st.phase = 'body'
           const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
-          const BODY_CONCURRENCY = 3
+          const BODY_CONCURRENCY = 5 // 入库加速并发连接数
           const processBodyBatch = async (wc, batch) => {
             // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
             let sizes = new Map()
@@ -1129,6 +1129,22 @@ app.post('/email/ingest-stop/:accountId', auth, wrap(async (req,res)=>{
   const job = ingestJobs.get(req.params.accountId)
   if(job) job.cancelled = true
   res.json({ ok:true })
+}))
+
+// 监听暂停/恢复：POST /email/watch-pause {pause:true|false}
+// 入库优先时暂停所有 watcher（把 IMAP 连接让给入库）；入库完成后恢复
+app.post('/email/watch-pause', auth, wrap(async (req,res)=>{
+  const pause = !!req.body?.pause
+  if(pause){
+    for(const id of [...mailWatchers.keys()]) stopMailWatcher(id)
+    res.json({ ok:true, paused:true, watchers: 0 })
+  } else {
+    await startAllMailWatchers()
+    res.json({ ok:true, paused:false, watchers: mailWatchers.size })
+  }
+}))
+app.get('/email/watch-pause', auth, wrap(async (req,res)=>{
+  res.json({ paused: mailWatchers.size === 0, watchers: mailWatchers.size })
 }))
 
 // 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步；light=1 跳过 IMAP 探测，零连接）

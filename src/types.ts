@@ -182,6 +182,8 @@ export interface Customer extends BaseObject {
   isKey?: boolean // 重点客户
   level?: CustomerLevel // A+ VIP … D 沉睡
   customerType?: CustomerType
+  extraEmails?: string[] // 同一客户的多个邮箱（主邮箱放 email）
+  repurchaseCount?: number // 复购次数
   linkedin?: string
   followUpAt?: string // YYYY-MM-DD 下次跟进
   aiSummary?: string // AI总结
