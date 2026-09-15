@@ -1052,6 +1052,15 @@ export interface EmailMessage {
   isRead: boolean
   hasAttachment?: boolean
   customerId?: string
+  /** IMAP 原始文件夹（用于 mark-read 精确回写） */
+  imapFolder?: string
+  /** IMAP UID（与 imapFolder 组成定位键） */
+  uid?: number
+  /** Gmail 稳定消息 ID（优先作业务主键） */
+  gmailMsgId?: string
+  messageId?: string
+  /** 服务端是否已缓存正文 */
+  bodyCached?: boolean
   // AI
   translated?: string
   intent?: EmailIntent

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -47,6 +47,12 @@ export default function InboxPage(){
   const [aiDraftingReply, setAiDraftingReply] = useState(false)
   const [showOutbox, setShowOutbox] = useState(false)
   const [outboxList, setOutboxList] = useState<any[]>([])
+  const [bodyLoading, setBodyLoading] = useState(false)
+  const [bodyError, setBodyError] = useState('')
+  const [attachments, setAttachments] = useState<Array<{filename:string;size:number;mime:string;url:string}>>([])
+  const [serverDrafts, setServerDrafts] = useState<any[]>([])
+  const [serverUnread, setServerUnread] = useState<number|null>(null)
+  const [loadingDraftId, setLoadingDraftId] = useState('')
 
   // 配置表单
   const [provider, setProvider] = useState<EmailAccount['provider']>('qq')
@@ -91,8 +97,46 @@ export default function InboxPage(){
     return c
   }
 
+  const openMail = useCallback(async (m: EmailMessage, markAsRead = true) => {
+    setSelected(m)
+    setBodyError('')
+    setAttachments([])
+    setShowTrans(false)
+    setTranslated('')
+    if (markAsRead) {
+      await markRead(m.id, true)
+      setEmails(prev => prev.map(x => x.id === m.id ? { ...x, isRead: true } : x))
+    }
+    if (!m.text && !m.html) {
+      setBodyLoading(true)
+      try {
+        const full = await loadMailBody(m)
+        setSelected(full)
+        setEmails(prev => prev.map(x => x.id === full.id ? full : x))
+        if (!full.text && !full.html) setBodyError('正文未入库，可点「入库」补全文或稍后再试')
+      } catch (e: any) {
+        setBodyError(String(e?.message || e).slice(0, 80))
+      } finally {
+        setBodyLoading(false)
+      }
+    }
+    if (m.uid != null) {
+      listAttachments(m.accountId, m.uid).then(setAttachments).catch(()=>{})
+    }
+  }, [])
+
+  const refreshServerMeta = useCallback(async () => {
+    try {
+      const accs = accounts.length ? accounts : await listAccounts()
+      if (!accs.length) { setServerDrafts([]); setServerUnread(null); return }
+      setServerDrafts(await getDrafts())
+      setServerUnread(await getUnreadCount(accs[0].id))
+    } catch {}
+  }, [accounts])
+  useEffect(() => { void refreshServerMeta() }, [refreshServerMeta])
+
   useEffect(()=>{
-    if(!selected) { setCustomer(null); setDeepAnalysis(null); return }
+    if(!selected) { setCustomer(null); setDeepAnalysis(null); setAttachments([]); setBodyError(''); return }
     ;(async()=>{
       const c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()=== (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim().toLowerCase()).first() as any
       setCustomer(c||null)
@@ -245,9 +289,10 @@ export default function InboxPage(){
     const t = setInterval(async()=>{
       try{
         const acc = accounts.find(a=> a.id === selected?.accountId) || accounts[0]
-        const id = await saveDraft({ id: replyDraftId || undefined, account_id: acc?.id || '', to_addr: replyTo, subject: replySubject, body_text: replyBody })
+        const id = await saveDraft({ id: replyDraftId || undefined, account_id: acc?.id || '', to_addr: replyTo, subject: replySubject, body_text: replyBody, body_html: replyBody })
         setReplyDraftId(id)
         setDraftNote(`草稿已自动保存 ${new Date().toLocaleTimeString()}`)
+        void refreshServerMeta()
       }catch{}
     }, 10000)
     return ()=> clearInterval(t)
@@ -380,7 +425,9 @@ export default function InboxPage(){
     try{
       const accs = accounts.length ? accounts : await listAccounts()
       if(accs.length){
-        const results = await searchDbMails(accs[0].id, q.trim(), 50)
+        const results = accs.length > 1
+          ? await searchDbMailsAll(q.trim(), 50)
+          : await searchDbMails(accs[0].id, q.trim(), 50)
         results.forEach(e=> merged.set(e.id, e))
       } else {
         setSearchHint('未绑定邮箱账号，仅搜本地')
@@ -545,9 +592,9 @@ export default function InboxPage(){
         <div className="w-[240px] shrink-0 bg-white rounded-2xl border flex flex-col overflow-hidden">
           <div className="p-2 border-b space-y-2">
             <div className="flex items-center gap-1">
-              <button onClick={()=>{ setFolder('inbox'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
+              <button onClick={()=>{ setFolder('inbox'); setSearchMode(false); void refreshServerMeta() }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${serverUnread ?? emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
               <button onClick={()=>{ setFolder('sent'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='sent'?'bg-green-600 text-white':'bg-gray-100 text-gray-600'}`}>已发送</button>
-              <button onClick={()=>{ setFolder('drafts'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿</button>
+              <button onClick={async()=>{ setFolder('drafts'); setSearchMode(false); try{ setServerDrafts(await getDrafts()) }catch{} }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿{folder==='drafts'&&serverDrafts.length?`·${serverDrafts.length}`:''}</button>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -563,8 +610,42 @@ export default function InboxPage(){
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}
+            {!searchMode && folder==='drafts' && serverDrafts.length>0 && (
+              <>
+                {serverDrafts.map(d=>(
+                  <button key={d.id} onClick={async()=>{
+                    setLoadingDraftId(d.id)
+                    setReplyTo(d.to_addr||'')
+                    setReplySubject(d.subject||'')
+                    setReplyBody(d.body_text||d.body_html||'')
+                    setReplyDraftId(d.id)
+                    setDraftNote(`已打开草稿（${new Date(d.updated_at).toLocaleString()}）`)
+                    setShowReply(true)
+                    setLoadingDraftId('')
+                  }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-orange-50/50">
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="font-medium text-gray-700 truncate">{(d.to_addr||'未填收件人').split('<')[0].trim()||d.to_addr}</span>
+                      {loadingDraftId===d.id && <span className="ml-auto text-[10px] text-orange-500">打开中…</span>}
+                    </div>
+                    <div className="text-xs text-gray-800 truncate mt-1">{d.subject||'(无主题)'}</div>
+                    <div className="text-xs text-gray-400 truncate">{(d.body_text||'').slice(0,60)}</div>
+                    <div className="flex gap-1 mt-1">
+                      <span className="text-[10px] text-gray-400">{new Date(d.updated_at).toLocaleDateString()}</span>
+                      <span
+                        className="ml-auto text-[10px] text-red-400 hover:text-red-600"
+                        onClick={async(e)=>{ e.stopPropagation(); if(!confirm('删除该草稿？')) return; await deleteDraft(d.id); setServerDrafts(await getDrafts()) }}
+                      >删除</span>
+                      <span
+                        className="text-[10px] text-blue-500 hover:text-blue-700"
+                        onClick={async(e)=>{ e.stopPropagation(); const r = await appendGmailDraft(d.account_id||'', d.id); alert(r.ok?`已写入 Gmail 草稿箱${r.uid?` UID ${r.uid}`:''}`:`写入失败：${r.error||'未知'}`) }}
+                      >同步到Gmail</span>
+                    </div>
+                  </button>
+                ))}
+              </>
+            )}
             {searchMode ? searchResults.map(m=>(
-              <button key={m.id} onClick={()=>{ setSelected(m); setSearchMode(false) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
+              <button key={m.id} onClick={async()=>{ setSearchMode(false); await openMail(m) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
                 <div className="flex items-center gap-1.5 text-xs">
                   <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
                   <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
@@ -578,7 +659,7 @@ export default function InboxPage(){
               filtered.slice(0, 200).map(m=>{
                 const isSel = selected?.id===m.id
                 return (
-                  <button key={m.id} onClick={async()=>{ setSelected(m); await markRead(m.id,true); setEmails(prev=> prev.map(x=> x.id===m.id? {...x,isRead:true}:x)) }} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
+                  <button key={m.id} onClick={()=> openMail(m)} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
                     <div className="flex items-center gap-1.5 text-xs">
                       <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
                       <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
@@ -629,10 +710,31 @@ export default function InboxPage(){
                 {/* 当前邮件正文 */}
                 {showTrans ? (
                   <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-3 border">{translated || '翻译中...'}</div>
+                ) : bodyLoading ? (
+                  <div className="text-sm text-gray-500 border rounded-lg p-3 bg-white flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/> 正文加载中…
+                  </div>
                 ) : selected.html ? (
                   <MailHtml html={selected.html} allowRemote={allowRemoteImg} height={420} />
                 ) : (
-                  <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-3 bg-white">{(selected.text||'').slice(0,4000) || '(邮件全文加载中...)'}</div>
+                  <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-3 bg-white">
+                    {(selected.text||'').slice(0,20000) || bodyError || '(无正文)'}
+                    {bodyError && (
+                      <button onClick={()=> openMail(selected, false)} className="ml-2 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
+                    )}
+                  </div>
+                )}
+                {attachments.length>0 && (
+                  <div className="rounded-lg border p-2 bg-white">
+                    <div className="text-[11px] text-gray-500 mb-1">附件 {attachments.length}</div>
+                    <div className="flex flex-wrap gap-2">
+                      {attachments.map(a=>(
+                        <a key={a.filename} href={a.url} target="_blank" rel="noreferrer" className="text-[11px] px-2 py-1 border rounded-lg bg-gray-50 hover:bg-blue-50 text-blue-600">
+                          📎 {a.filename} <span className="text-gray-400">({Math.round((a.size||0)/1024)}KB)</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
                 )}
 
                 {/* 邮件往来（仅该客户该主题的对话） */}
@@ -668,6 +770,13 @@ export default function InboxPage(){
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
                   <button onClick={handleOpenReply} className="px-2 py-1 bg-blue-50 text-blue-600 border border-blue-200 rounded text-xs flex items-center gap-1"><Send size={10}/> 回复</button>
+                  <button onClick={async()=>{
+                    if(!selected) return
+                    await markRead(selected.id, false)
+                    setEmails(prev=> prev.map(x=> x.id===selected.id? {...x, isRead:false}:x))
+                    setSelected(s=> s? {...s, isRead:false}:s)
+                    void refreshServerMeta()
+                  }} className="px-2 py-1 bg-white border rounded text-xs">标为未读</button>
                 </div>
               </div>
             </>

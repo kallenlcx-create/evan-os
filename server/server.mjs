@@ -177,6 +177,7 @@ async function init() {
       is_read TINYINT DEFAULT 0,
       has_attachment TINYINT DEFAULT 0,
       body_text MEDIUMTEXT,
+      body_html MEDIUMTEXT,
       body_cached TINYINT DEFAULT 0,
       updated_at TIMESTAMP(3) NOT NULL,
       PRIMARY KEY (account_id, folder, uid),
@@ -184,6 +185,10 @@ async function init() {
       INDEX idx_date (account_id, folder, msg_date),
       FULLTEXT INDEX ft_mail (subject, from_addr, to_addr, body_text) WITH PARSER ngram
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  // 兼容旧库：补 body_html 列（幂等）
+  try{
+    await pool.query(`ALTER TABLE mail_messages ADD COLUMN body_html MEDIUMTEXT AFTER body_text`).catch(()=>{})
+  }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mail_threads (
       account_id VARCHAR(80) NOT NULL,
@@ -958,14 +963,15 @@ async function runMailIngest(accountId, username, opts = {}){
           }
           st.total += missing.length
           const UPSERT_SQL =
-            `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), has_attachment=VALUES(has_attachment),
                body_text=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_text), body_text),
+               body_html=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_html), body_html),
                body_cached=IF(VALUES(body_cached)=1,1,body_cached), updated_at=VALUES(updated_at)`;
           const saveRow = async (row) => {
             const r = await pool.query(UPSERT_SQL,
-              [accountId, folder, row.uid, row.message_id, row.gmail_msgid, row.gmail_threadid, row.subject, row.from_addr, row.from_name, row.to_addr, row.msg_date, row.is_read, row.has_attachment, row.body_text, row.body_cached, sqlNow()]);
+              [accountId, folder, row.uid, row.message_id, row.gmail_msgid, row.gmail_threadid, row.subject, row.from_addr, row.from_name, row.to_addr, row.msg_date, row.is_read, row.has_attachment, row.body_text, row.body_html ?? null, row.body_cached, sqlNow()]);
             if(r[0].affectedRows === 1) st.added++; else st.updated++;
             st.done++;
           };
@@ -994,6 +1000,7 @@ async function runMailIngest(accountId, username, opts = {}){
                     is_read: flags.has('\\Seen') ? 1 : 0,
                     has_attachment: 0,
                     body_text: '',
+                    body_html: null,
                     body_cached: 0,
                   })
                 }catch{}
@@ -1040,10 +1047,11 @@ async function runMailIngest(accountId, username, opts = {}){
                       const parsed = await simpleParser(msg.source).catch(()=>null)
                       if(!parsed) continue
                       const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
+                      const bodyHtml = parsed.html ? String(parsed.html).slice(0, 800000) : null
                       const atts = parsed.attachments || []
                       const att = atts.length ? 1 : 0
-                      await pool.query('UPDATE mail_messages SET body_text=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
-                        [bodyText, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
+                      await pool.query('UPDATE mail_messages SET body_text=?, body_html=?, body_cached=1, has_attachment=GREATEST(has_attachment, ?), is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
+                        [bodyText, bodyHtml, att, ((msg.flags||new Set()).has('\\Seen')?1:0), sqlNow(), accountId, folder, msg.uid])
                       // 回复检测：收件方向+实质内容 → 序列转手动+🔔
                       try{
                         const fromAddr = String(msg.envelope?.from?.[0]?.address || parsed?.from?.value?.[0]?.address || '').toLowerCase()
@@ -1264,7 +1272,7 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const q = String(req.query.q || '').trim().slice(0, 100)
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
-  const cols = 'account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 600) AS snippet'
+  const cols = 'account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 600) AS snippet, body_html'
   if(!q){
     const [rows] = await pool.query(`SELECT ${cols}, body_text FROM mail_messages WHERE account_id=? ORDER BY msg_date DESC LIMIT ?`,[accountId, limit])
     return res.json({ emails: rows, total: rows.length, mode:'latest' })
@@ -1346,15 +1354,21 @@ app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const uidNum = Number(uid)
   if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
-  const [rows] = await pool.query(
-    `SELECT account_id, folder, uid, message_id, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached
-     FROM mail_messages WHERE account_id=? AND uid=? LIMIT 1`,[accountId, uidNum])
+  const mailFolder = String(req.query.folder || '')
+  const [rows] = mailFolder
+    ? await pool.query(
+        `SELECT account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached
+         FROM mail_messages WHERE account_id=? AND uid=? AND folder=? LIMIT 1`,[accountId, uidNum, mailFolder])
+    : await pool.query(
+        `SELECT account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached
+         FROM mail_messages WHERE account_id=? AND uid=? ORDER BY body_cached DESC, updated_at DESC LIMIT 1`,[accountId, uidNum])
   if(!rows.length) return res.status(404).json({ error:'库中无此邮件' })
   const e = rows[0]
   res.json({
     subject: e.subject, from: e.from_name ? `${e.from_name} <${e.from_addr}>` : e.from_addr,
     to: e.to_addr, date: e.msg_date, isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
-    text: e.body_text || '', html: '', cached: !!e.body_cached,
+    text: e.body_text || '', html: e.body_html || '', cached: !!e.body_cached,
+    folder: e.folder, uid: Number(e.uid), gmailMsgId: e.gmail_msgid || '',
   })
 }))
 
@@ -1539,8 +1553,58 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
       else await client.messageFlagsRemove(String(uidNum), ['\\Seen'], { uid:true })
     }finally{ lock.release() }
   }finally{ await client.logout().catch(()=>{}) }
-  await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND uid=?',[read?1:0, sqlNow(), accountId, uidNum])
+  // 优先按 (account, folder, uid) 精确回写；无 folder 时兜底只按 uid
+  if(folder && folder !== '[Gmail]/All Mail'){
+    await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',[read?1:0, sqlNow(), accountId, folder, uidNum])
+  } else {
+    await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND uid=?',[read?1:0, sqlNow(), accountId, uidNum])
+  }
   res.json({ ok:true })
+}))
+
+// 未读数：GET /email/unread-count/:accountId?folder=
+app.get('/email/unread-count/:accountId', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId } = req.params
+  const folder = String(req.query.folder || '')
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const [rows] = folder
+    ? await pool.query(`SELECT COUNT(*) AS c FROM mail_messages WHERE account_id=? AND is_read=0 AND folder=?`,[accountId, folder])
+    : await pool.query(`SELECT COUNT(*) AS c FROM mail_messages WHERE account_id=? AND is_read=0`,[accountId])
+  res.json({ unread: Number(rows[0]?.c)||0 })
+}))
+
+// 多账号库内搜索：GET /email/db-search-all?q=&limit=
+app.get('/email/db-search-all', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const q = String(req.query.q || '').trim().slice(0, 100)
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
+  const cols = 'account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 600) AS snippet, body_html'
+  let rows = []
+  if(!q){
+    const [r] = await pool.query(`SELECT ${cols}, body_text FROM mail_messages WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?) ORDER BY msg_date DESC LIMIT ?`,[req.user, limit])
+    rows = r
+  } else {
+    try{
+      const [r] = await pool.query(
+        `SELECT ${cols}, body_text, MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS relevance
+         FROM mail_messages WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
+           AND MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE)
+         ORDER BY relevance DESC, msg_date DESC LIMIT ?`,[q, req.user, q, limit])
+      rows = r
+    }catch{}
+    if(!rows.length && q.length >= 2){
+      const like = `%${q.replace(/[%_\\\\]/g, m=>'\\\\'+m)}%`
+      const [r] = await pool.query(
+        `SELECT ${cols}, body_text FROM mail_messages
+         WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
+           AND (subject LIKE ? OR from_addr LIKE ? OR to_addr LIKE ? OR body_text LIKE ?)
+         ORDER BY msg_date DESC LIMIT ?`,[req.user, like, like, like, like, limit])
+      rows = r
+    }
+  }
+  res.json({ emails: rows, total: rows.length, mode: q ? 'db' : 'latest' })
 }))
 
 // 按需加载单封邮件全文：GET /email/full/:accountId/:uid
@@ -1573,16 +1637,33 @@ app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
         const r = await client.fetchOne(uidNum, { source:true, uid:true }, {uid:true})
         if(!r || !r.source) continue
         const parsed = await simpleParser(r.source)
+        const bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
+        const bodyHtml = parsed.html ? String(parsed.html).slice(0, 800000) : null
+        const hasAtt = (parsed.attachments||[]).length > 0
+        // 回写服务端库，下次打开免再拉 IMAP
+        if(dbReady){
+          try{
+            await pool.query(
+              `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON DUPLICATE KEY UPDATE body_text=VALUES(body_text), body_html=VALUES(body_html), body_cached=1, has_attachment=GREATEST(has_attachment, VALUES(has_attachment)), updated_at=VALUES(updated_at)`,
+              [accountId, folder, uidNum, String(parsed.messageId||'').slice(0,512), String(parsed.headers?.get('x-gm-msgid')||'').slice(0,64), String(parsed.headers?.get('x-gm-thrid')||'').slice(0,64),
+               String(parsed.subject||'(无主题)').slice(0,1024), String(parsed.from?.value?.[0]?.address||'').slice(0,512), String(parsed.from?.value?.[0]?.name||'').slice(0,256),
+               String(parsed.to?.text||'').slice(0,1024), sqlDate(parsed.date), 1, hasAtt?1:0, bodyText, bodyHtml, 1, sqlNow()])
+          }catch{}
+        }
         await client.logout().catch(()=>{})
         res.json({
           id: `${accountId}-${uid}`,
           from: parsed.from?.text || '',
           to: parsed.to?.text || '',
           subject: parsed.subject || '',
-          text: parsed.text || '',
+          text: bodyText,
           html: parsed.html || '',
           date: parsed.date?.toISOString() || '',
-          hasAttachment: (parsed.attachments||[]).length > 0,
+          hasAttachment: hasAtt,
+          folder: folder.toLowerCase(),
+          uid: uidNum,
         })
         return
       }finally{ lock.release() }
@@ -1699,6 +1780,108 @@ function classifySmtpError(e){
   if(/auth|credential|password|username/i.test(msg)) return { retry:false, note:'SMTP 认证失败，检查授权码' }
   return { retry:true, afterMinutes:5, note:'' }
 }
+
+// 附件列表：GET /email/attachments/:accountId/:uid
+app.get('/email/attachments/:accountId/:uid', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, uid } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const uidNum = Number(uid)
+  if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
+  const [rows] = await pool.query(
+    `SELECT filename, size, mime FROM mail_attachments WHERE account_id=? AND uid=? ORDER BY filename LIMIT 50`,
+    [accountId, uidNum])
+  res.json({ attachments: rows.map(r=>({
+    filename: r.filename, size: Number(r.size)||0, mime: r.mime||'',
+    url: `/email/attachment/${accountId}/${uidNum}/${encodeURIComponent(r.filename)}`
+  })) })
+}))
+
+// 附件下载：GET /email/attachment/:accountId/:uid/:filename
+app.get('/email/attachment/:accountId/:uid/:filename', wrap(async (req,res)=>{
+  // 支持 header 或 ?token=（方便 <a href> 直下）
+  const qtok = String(req.query.token||'')
+  if(qtok){
+    req.headers['x-evan-token'] = qtok
+  }
+  await new Promise((resolve)=> auth(req,res,resolve))
+  if(res.headersSent) return
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, uid, filename } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const uidNum = Number(uid)
+  if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
+  const fname = decodeURIComponent(filename)
+  // 防路径穿越：附件名只允许来自库中记录
+  const [r2] = await pool.query(
+    `SELECT path, mime FROM mail_attachments WHERE account_id=? AND uid=? AND filename=? LIMIT 1`,
+    [accountId, uidNum, fname])
+  const row = r2[0]
+  if(row?.path){
+    const resolved = path.resolve(row.path)
+    if(!resolved.startsWith(ATTACH_BASE + path.sep) && resolved !== ATTACH_BASE){
+      return res.status(403).json({ error:'非法路径' })
+    }
+  }
+  if(!row || !row.path || !fs.existsSync(row.path)) return res.status(404).json({ error:'附件不存在' })
+  res.setHeader('Content-Type', row.mime || 'application/octet-stream')
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`)
+  fs.createReadStream(row.path).pipe(res)
+}))
+
+// Gmail 草稿 APPEND：POST /email/drafts/:id/append-gmail {accountId}
+app.post('/email/drafts/:id/append-gmail', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const accountId = req.body?.accountId
+  if(!accountId) return res.status(400).json({ error:'需要 accountId' })
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const [drows] = await pool.query('SELECT * FROM mail_drafts WHERE id=? AND username=?',[req.params.id, req.user])
+  if(!drows.length) return res.status(404).json({ error:'草稿不存在' })
+  const d = drows[0]
+  const pass = decAuth(acc.auth_enc)
+  const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:60000 })
+  try{
+    await imapConnect(client, 30000)
+    // 组装 RFC822
+    const boundary = 'evan-draft-' + crypto.randomBytes(8).toString('hex')
+    const text = d.body_text || String(d.body_html||'').replace(/<[^>]+>/g, ' ')
+    const html = d.body_html || String(d.body_text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')
+    const raw = [
+      `From: ${acc.email}`,
+      `To: ${d.to_addr || ''}`,
+      d.cc_addr ? `Cc: ${d.cc_addr}` : '',
+      `Subject: ${d.subject || ''}`,
+      `Date: ${new Date().toUTCString()}`,
+      `MIME-Version: 1.0`,
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      text,
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      html,
+      `--${boundary}--`,
+      '',
+    ].filter(Boolean).join('\r\n')
+    const path = '[Gmail]/Drafts'
+    const lock = await client.getMailboxLock(path)
+    let uid = null
+    try{
+      uid = await client.append(path, Buffer.from(raw, 'utf8'), { flags: ['\\Draft'] })
+    }finally{ lock.release() }
+    res.json({ ok:true, uid: uid || null, folder: path })
+  }catch(e){
+    res.status(500).json({ error: String(e?.message||e).slice(0,200) })
+  }finally{
+    await logoutSafe(client)
+  }
+}))
 
 // 草稿：GET /email/drafts
 app.get('/email/drafts', auth, wrap(async (req,res)=>{

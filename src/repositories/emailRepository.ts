@@ -174,6 +174,8 @@ export async function syncFromDb(accountId: string, onBatch?: (done: number, tot
         to: e.to_addr || '', subject: subj, text: '', html: '',
         date: e.msg_date ? new Date(e.msg_date).toISOString() : new Date().toISOString(),
         isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+        imapFolder: String(e.folder||''), uid: Number(e.uid)||undefined,
+        gmailMsgId: (e as any).gmail_msgid || undefined,
         product: /coin/i.test(subj)?'Coin': /patch/i.test(subj)?'Patch': /pin/i.test(subj)?'Pin':'Coin',
         intent: await classifyIntent(subj) as EmailIntent,
         priority: '中', status: e.is_read?'已处理':'待处理',
@@ -217,24 +219,129 @@ export async function markRead(id:string, isRead:boolean){
   try{
     const h = await serverHeaders()
     if(h && m){
-      const parts = id.split('-')
-      const uid = parts[parts.length-1]
+      const uid = m.uid != null ? String(m.uid) : id.split('-').pop()
       await fetch(`${h.url}/email/mark-read`, { method:'POST',
         headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
-        body: JSON.stringify({ accountId: m.accountId, uid, read: isRead }) })
+        body: JSON.stringify({ accountId: m.accountId, uid, read: isRead, folder: m.imapFolder || undefined }) })
     }
   }catch{}
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 
-export async function fetchDbMail(accountId: string, uid: string): Promise<{text:string;html:string;from:string;to:string;subject:string}|null>{
+export async function fetchDbMail(accountId: string, uid: string|number, folder?: string): Promise<{text:string;html:string;from:string;to:string;subject:string;cached?:boolean;folder?:string;uid?:number}|null>{
   const h = await serverHeaders()
   if(!h) return null
   try{
-    const r = await fetch(`${h.url}/email/db-mail/${accountId}/${uid}`,{ headers: bypassHeaders(h) })
+    const fq = folder ? `?folder=${encodeURIComponent(folder)}` : ''
+    const r = await fetch(`${h.url}/email/db-mail/${accountId}/${uid}${fq}`,{ headers: bypassHeaders(h) })
     if(!r.ok) return null
     return await r.json()
   }catch{ return null }
+}
+
+/** 统一正文加载：本地已有 → db-mail → full(IMAP)，成功后写回 IDB */
+export async function loadMailBody(m: EmailMessage): Promise<EmailMessage> {
+  if (m.text || m.html) return m
+  const uid = m.uid != null ? m.uid : Number(String(m.id).split('-').pop())
+  if (!isFinite(uid)) return m
+  let body = await fetchDbMail(m.accountId, uid, m.imapFolder)
+  if (!body || (!body.text && !body.html) || body.cached === false) {
+    const full = await fetchFullEmail(m.accountId, String(uid))
+    if (full && ((full as any).text || (full as any).html)) {
+      body = {
+        text: (full as any).text || body?.text || '',
+        html: (full as any).html || body?.html || '',
+        from: (full as any).from || '',
+        to: (full as any).to || '',
+        subject: (full as any).subject || body?.subject || '',
+        cached: true,
+      }
+    }
+  }
+  if (!body || (!body.text && !body.html)) return m
+  const next: EmailMessage = {
+    ...m,
+    text: body.text || '',
+    html: body.html || '',
+    bodyCached: body.cached !== false,
+    subject: body.subject || m.subject,
+  }
+  await db.emails.put(next)
+  return next
+}
+
+export async function getUnreadCount(accountId: string, folder?: string): Promise<number> {
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const fq = folder ? `?folder=${encodeURIComponent(folder)}` : ''
+  const r = await fetch(`${h.url}/email/unread-count/${accountId}${fq}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`未读数失败 ${r.status}`)
+  return Number(j.unread)||0
+}
+
+export async function searchDbMailsAll(q: string, limit = 50): Promise<EmailMessage[]> {
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/db-search-all?q=${encodeURIComponent(q)}&limit=${limit}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `搜索失败 ${r.status}`)
+  const rows: any[] = j.emails || []
+  return Promise.all(rows.map(async (e) => ({
+    id: `${e.account_id}-${e.uid}`,
+    accountId: e.account_id,
+    folder: String(e.folder||'').includes('sent') ? 'sent' as const : 'inbox' as const,
+    from: e.from_name ? `${e.from_name} <${e.from_addr}>` : (e.from_addr || ''),
+    to: e.to_addr || '', subject: e.subject || '(无主题)',
+    text: e.body_text || e.snippet || '', html: e.body_html || '',
+    date: e.msg_date ? new Date(e.msg_date).toISOString() : new Date().toISOString(),
+    isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+    imapFolder: e.folder || '', uid: Number(e.uid)||undefined,
+    gmailMsgId: e.gmail_msgid || undefined,
+    bodyCached: !!e.body_cached,
+    product: 'Coin' as any,
+    intent: await classifyIntent(`${e.subject || ''} ${(e.body_text || '').slice(0, 500)}`) as EmailIntent,
+    priority: '中' as const, status: e.is_read ? '已处理' : '待处理',
+  })))
+}
+
+export async function listAttachments(accountId: string, uid: number): Promise<Array<{filename:string;size:number;mime:string;url:string}>> {
+  const h = await serverHeaders()
+  if(!h) return []
+  try{
+    const r = await fetch(`${h.url}/email/attachments/${accountId}/${uid}`, { headers: bypassHeaders(h) })
+    if(!r.ok) return []
+    const j = await r.json()
+    return (j.attachments || []).map((a:any)=>({
+      ...a,
+      url: `${h.url}/email/attachment/${accountId}/${uid}/${encodeURIComponent(a.filename)}?token=${encodeURIComponent(h.token)}`
+    }))
+  }catch{ return [] }
+}
+
+export async function downloadAttachmentBlob(accountId: string, uid: number, filename: string): Promise<Blob|null> {
+  const h = await serverHeaders()
+  if(!h) return null
+  try{
+    const r = await fetch(`${h.url}/email/attachment/${accountId}/${uid}/${encodeURIComponent(filename)}`, { headers: bypassHeaders(h) })
+    if(!r.ok) return null
+    return await r.blob()
+  }catch{ return null }
+}
+
+/** 可选：把草稿 APPEND 到 Gmail [Gmail]/Drafts */
+export async function appendGmailDraft(accountId: string, draftId: string): Promise<{ok:boolean;uid?:number;error?:string}> {
+  const h = await serverHeaders()
+  if(!h) return { ok:false, error:'未登录云同步' }
+  try{
+    const r = await fetch(`${h.url}/email/drafts/${draftId}/append-gmail`, {
+      method:'POST', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
+      body: JSON.stringify({ accountId }),
+    })
+    const j = await r.json().catch(()=>({}))
+    if(!r.ok) return { ok:false, error: j.error || String(r.status) }
+    return { ok:true, uid: j.uid }
+  }catch(e:any){ return { ok:false, error: String(e?.message||e).slice(0,120) } }
 }
 
 export interface CustomerMailThread {
@@ -333,9 +440,11 @@ export async function searchDbMails(accountId: string, q: string, limit = 50): P
     accountId, folder: 'inbox' as const,
     from: e.from_name ? `${e.from_name} <${e.from_addr}>` : (e.from_addr || ''),
     to: e.to_addr || '', subject: e.subject || '(无主题)',
-    text: e.body_text || e.snippet || '', html: '',
+    text: e.body_text || e.snippet || '', html: e.body_html || '',
     date: e.msg_date ? new Date(e.msg_date).toISOString() : new Date().toISOString(),
     isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
+    imapFolder: e.folder || '', uid: Number(e.uid)||undefined,
+    gmailMsgId: e.gmail_msgid || undefined, bodyCached: !!e.body_cached,
     product: 'Coin' as any,
     intent: await classifyIntent(`${e.subject || ''} ${(e.body_text || '').slice(0, 500)}`) as EmailIntent,
     priority: '中' as const, status: e.is_read ? '已处理' : '待处理',
@@ -343,12 +452,12 @@ export async function searchDbMails(accountId: string, q: string, limit = 50): P
 }
 
 // ====== 草稿箱 + 发件队列 ======
-export interface MailDraft { id: string; account_id: string; to_addr: string; subject: string; body_text: string }
+export interface MailDraft { id: string; account_id: string; to_addr: string; subject: string; body_text: string; body_html?: string }
 export async function saveDraft(d: Partial<MailDraft> & { id?: string }): Promise<string>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const r = await fetch(`${h.url}/email/drafts`, { method:'PUT', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
-    body: JSON.stringify({ id: d.id, accountId: d.account_id, to: d.to_addr, subject: d.subject, body_text: d.body_text, body_html: d.body_text }) })
+    body: JSON.stringify({ id: d.id, accountId: d.account_id, to: d.to_addr, subject: d.subject, body_text: d.body_text, body_html: d.body_html || d.body_text }) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`保存失败 ${r.status}`)
   return j.id
