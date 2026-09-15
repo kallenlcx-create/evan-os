@@ -1020,7 +1020,9 @@ async function runMailIngest(accountId, username, opts = {}){
           // 阶段 B：后台补正文（断点可续，只补 body_cached=0 的；3 连接并行加速）
           st.phase = 'body'
           const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
-          const BODY_CONCURRENCY = 5 // 入库加速并发连接数
+          // 细水长流：单连接、倒序（新邮件优先）、批间隔15秒，避免触发 Gmail 限速
+          const BODY_CONCURRENCY = 1
+          const BODY_BATCH_GAP_MS = 15000
           const processBodyBatch = async (wc, batch) => {
             st.batch = `${batch[0]}-${batch[batch.length-1]}@${new Date().toISOString().slice(11,19)}`
             const doneBefore = st.done || 0
@@ -1099,7 +1101,7 @@ async function runMailIngest(accountId, username, opts = {}){
           }
           while(true){
             if(st.cancelled) throw new Error('cancelled')
-            const [todoRows] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid LIMIT 600',[accountId, folder]).catch(()=> [[]])
+            const [todoRows] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid DESC LIMIT 600',[accountId, folder]).catch(()=> [[]])
             const todo = (todoRows||[]).map(r=>Number(r.uid)).filter(Boolean)
             if(!todo.length) break
             const roundRealBefore = st.realBodies || 0
@@ -1124,7 +1126,7 @@ async function runMailIngest(accountId, username, opts = {}){
                 for(let i=0;i<slice.length;i+=25){
                   if(st.cancelled) throw new Error('cancelled')
                   await processBodyBatch(wc, slice.slice(i,i+25))
-                  await new Promise(r=>setImmediate(r))
+                  await new Promise(r=>setTimeout(r, BODY_BATCH_GAP_MS))
                 }
               }finally{
                 await logoutSafe(wc)
