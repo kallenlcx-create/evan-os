@@ -1022,6 +1022,7 @@ async function runMailIngest(accountId, username, opts = {}){
           const BODY_MAX = 15*1024*1024 // 超过该大小只记占位，不拉正文
           const BODY_CONCURRENCY = 5 // 入库加速并发连接数
           const processBodyBatch = async (wc, batch) => {
+            st.batch = `${batch[0]}-${batch[batch.length-1]}@${new Date().toISOString().slice(11,19)}`
             // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
             let sizes = new Map()
             try{
