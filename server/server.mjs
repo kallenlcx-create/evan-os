@@ -1072,6 +1072,7 @@ async function runMailIngest(accountId, username, opts = {}){
                         }catch{}
                       }
                       st.done++
+                      st.realBodies = (st.realBodies || 0) + 1
                     }catch{}
                   }
                 })(),
@@ -1079,7 +1080,8 @@ async function runMailIngest(accountId, username, opts = {}){
               ])
             }catch(e){ console.log('[ingest] body batch skip:', String(e.message||e).slice(0,80)) }
             // 本批零进展则记一次失败；连续失败3次→整批占位跳过（点开邮件时在线现取），避免原地打转
-            if((st.done || 0) === doneBefore && batch.length){
+            // 前提：本任务已有真实正文产出，否则说明是整体限流，只报错不隔离（占位会掩盖真实进度）
+            if((st.done || 0) === doneBefore && batch.length && (st.realBodies || 0) > 0){
               const key = `${batch[0]}-${batch[batch.length-1]}`
               st.chunkFails = st.chunkFails || {}
               st.chunkFails[key] = (st.chunkFails[key] || 0) + 1
@@ -1100,6 +1102,7 @@ async function runMailIngest(accountId, username, opts = {}){
             const [todoRows] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 ORDER BY uid LIMIT 600',[accountId, folder]).catch(()=> [[]])
             const todo = (todoRows||[]).map(r=>Number(r.uid)).filter(Boolean)
             if(!todo.length) break
+            const roundRealBefore = st.realBodies || 0
             const wcFailed = []
             // 切片分给 N 个 worker，各自独立连接并行拉取
             const slices = Array.from({ length: BODY_CONCURRENCY }, ()=> [])
@@ -1130,6 +1133,13 @@ async function runMailIngest(accountId, username, opts = {}){
             const results = await Promise.allSettled(workers)
             if(wcFailed.length && wcFailed.length >= slices.filter(s=> s.length).length){
               throw new Error('imap-unavailable: ' + (wcFailed[0]||''))
+            }
+            // 整轮零真实产出则记一次停滞；连续3轮停滞→显式报错结束（ visible，可重试），而不是无限空转
+            if((st.realBodies || 0) === roundRealBefore){
+              st.stallRounds = (st.stallRounds || 0) + 1
+              if(st.stallRounds >= 3) throw new Error('no-progress: continuous fetch failures, likely throttled')
+            } else {
+              st.stallRounds = 0
             }
             for(const r of results){
               if(r.status === 'rejected' && String(r.reason?.message||'') === 'cancelled') throw new Error('cancelled')
