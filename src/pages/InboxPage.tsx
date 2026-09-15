@@ -551,20 +551,7 @@ export default function InboxPage(){
         </div>
       </div>
 
-      {/* 同步进度 */}
-      {(syncing || syncProgress.status) && (
-        <div className="mx-2 mt-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${syncing?'bg-blue-500 animate-pulse':'bg-green-500'}`}/>
-          {syncing ? `同步中… ${syncProgress.status}` : syncProgress.status}
-          {syncing && syncProgress.total>0 && (
-            <div className="flex-1 max-w-[200px] h-1.5 bg-blue-100 rounded-full overflow-hidden ml-2">
-              <div className="h-full bg-blue-500 rounded-full transition-all" style={{width:`${Math.min(100,Math.round(syncProgress.done/syncProgress.total*100))}%`}}/>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 配置抽屉 */}
+      {/* 配置抽屉（含同步进度，功能不变） */}
       {showConfig && (
         <div className="m-3 p-4 bg-white rounded-2xl border shadow-sm">
           <div className="text-xs font-semibold text-gray-600 mb-2">通用 IMAP 接入</div>
@@ -582,6 +569,18 @@ export default function InboxPage(){
             <button onClick={handleAddAccount} className="px-4 py-2 bg-pink-500 text-white rounded-lg text-sm">连接并绑定</button>
             <button onClick={()=> setShowConfig(false)} className="px-3 py-2 text-xs text-gray-400">收起</button>
           </div>
+          {/* 同步进度（ idle 倒计时也在内，功能不变） */}
+          {(syncing || syncProgress.status) && (
+            <div className="mt-3 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${syncing?'bg-blue-500 animate-pulse':'bg-green-500'}`}/>
+              {syncing ? `同步中… ${syncProgress.status}` : syncProgress.status}
+              {syncing && syncProgress.total>0 && (
+                <div className="flex-1 max-w-[200px] h-1.5 bg-blue-100 rounded-full overflow-hidden ml-2">
+                  <div className="h-full bg-blue-500 rounded-full transition-all" style={{width:`${Math.min(100,Math.round(syncProgress.done/syncProgress.total*100))}%`}}/>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
