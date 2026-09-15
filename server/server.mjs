@@ -1086,7 +1086,9 @@ async function runMailIngest(accountId, username, opts = {}){
             // 切片分给 N 个 worker，各自独立连接并行拉取
             const slices = Array.from({ length: BODY_CONCURRENCY }, ()=> [])
             todo.forEach((u, idx)=> slices[idx % BODY_CONCURRENCY].push(u))
-            const workers = slices.filter(s=> s.length).map(async (slice)=>{
+            const workers = slices.filter(s=> s.length).map(async (slice, wi)=>{
+              if(st.cancelled) throw new Error('cancelled')
+              if(wi > 0) await new Promise(r=>setTimeout(r, wi*10000)) // 错峰建连，避免并发握手被掐
               if(st.cancelled) throw new Error('cancelled')
               const wc = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:180000 })
               try{
