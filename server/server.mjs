@@ -1023,6 +1023,7 @@ async function runMailIngest(accountId, username, opts = {}){
           const BODY_CONCURRENCY = 5 // 入库加速并发连接数
           const processBodyBatch = async (wc, batch) => {
             st.batch = `${batch[0]}-${batch[batch.length-1]}@${new Date().toISOString().slice(11,19)}`
+            const doneBefore = st.done || 0
             // B1: 先取大小，超大件直接占位跳过（2分钟硬超时）
             let sizes = new Map()
             try{
@@ -1077,6 +1078,22 @@ async function runMailIngest(accountId, username, opts = {}){
                 new Promise((_, rej)=>setTimeout(()=>rej(new Error('body-batch-timeout')), 4*60*1000)),
               ])
             }catch(e){ console.log('[ingest] body batch skip:', String(e.message||e).slice(0,80)) }
+            // 本批零进展则记一次失败；连续失败3次→整批占位跳过（点开邮件时在线现取），避免原地打转
+            if((st.done || 0) === doneBefore && batch.length){
+              const key = `${batch[0]}-${batch[batch.length-1]}`
+              st.chunkFails = st.chunkFails || {}
+              st.chunkFails[key] = (st.chunkFails[key] || 0) + 1
+              if(st.chunkFails[key] >= 3){
+                console.log(`[ingest] quarantine chunk ${key}`)
+                for(let i=0;i<batch.length;i+=200){
+                  const ch = batch.slice(i,i+200)
+                  await pool.query(
+                    `UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND body_cached=0 AND uid IN (${ch.map(()=> '?').join(',')})`,
+                    [sqlNow(), accountId, folder, ...ch]).catch(()=>{})
+                }
+                delete st.chunkFails[key]
+              }
+            }
           }
           while(true){
             if(st.cancelled) throw new Error('cancelled')
