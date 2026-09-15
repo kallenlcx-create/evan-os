@@ -153,6 +153,17 @@ export default function FollowUpsPage() {
     return rows
   }, [catFilter, radar, list, today, tagFilter])
 
+  // 序列速览：按客户 id 索引 + 今日待发
+  const seqMap = useMemo(()=>{
+    const m = new Map<string, any>()
+    for(const s of sequences) m.set(s.customer_id, s)
+    return m
+  },[sequences])
+  const seqDueToday = useMemo(()=>{
+    const t = new Date().toISOString().slice(0,10)
+    return sequences.filter(s=> s.mode==='auto' && String(s.next_due_at||'').slice(0,10) <= t)
+  },[sequences])
+
   const totalPages = Math.max(1, Math.ceil(catFiltered.length / perPage))
   const pageData = catFiltered.slice((page - 1) * perPage, page * perPage)
 
@@ -280,6 +291,11 @@ export default function FollowUpsPage() {
         </div>
 
         <div className="space-y-2">
+          {seqDueToday.length > 0 && (
+            <div className="px-3 py-2 bg-purple-50 border border-purple-100 rounded-xl text-xs text-purple-700">
+              🔁 今日序列待发 {seqDueToday.length} 个：{seqDueToday.slice(0,5).map(s=> s.customer?.title || s.email).join('、')}{seqDueToday.length>5?'…':''}（半小时调度自动发出）
+            </div>
+          )}
           {pageData.map(({ c, days, stage }) => (
             <div key={c.id} className="flex items-center gap-3 p-3 bg-white border rounded-xl hover:border-blue-200 transition-all">
               <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 text-white flex items-center justify-center font-bold text-sm shrink-0">{(c.contactName || c.title || 'J')[0].toUpperCase()}</div>
@@ -289,6 +305,8 @@ export default function FollowUpsPage() {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${c.isKey ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-500'}`}>{c.level || 'C'}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{STAGE_LABELS[stage] || stage}</span>
                   <span className="text-[10px] text-red-500">沉寂{days}天</span>
+                  {seqMap.get(c.id)?.mode==='auto' && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600">🔁序列{Math.min(seqMap.get(c.id).current_step,7)}/7</span>}
+                  {seqMap.get(c.id)?.replied ? <span className="text-[10px] text-red-500">🔔有回复</span> : null}
                 </div>
                 <div className="text-xs text-gray-400 truncate">{c.email} · {c.company || ''}
                   {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="ml-1 px-1 rounded bg-teal-50 text-teal-600 text-[10px]">{t}</span>)}

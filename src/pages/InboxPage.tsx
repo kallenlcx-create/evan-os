@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -136,11 +136,12 @@ export default function InboxPage(){
   useEffect(() => { void refreshServerMeta() }, [refreshServerMeta])
 
   useEffect(()=>{
-    if(!selected) { setCustomer(null); setDeepAnalysis(null); setAttachments([]); setBodyError(''); return }
+    if(!selected) { setCustomer(null); setDeepAnalysis(null); setAttachments([]); setBodyError(''); setCustSeq(null); return }
     ;(async()=>{
       const c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()=== (selected.from.match(/<(.+?)>/)?.[1]||selected.from).trim().toLowerCase()).first() as any
       setCustomer(c||null)
       setDeepAnalysis(null)
+      await refreshCustSeq(c?.id)
       if(selected.text && !selected.translated){
         const t = await translateEnToZh(selected.text)
         selected.translated = t; await db.emails.put(selected); setTranslated(t)
@@ -376,16 +377,48 @@ export default function InboxPage(){
     }finally{ setAnalyzingCustomer(false) }
   }
 
+  const [custSeq, setCustSeq] = useState<any>(null)
+  const refreshCustSeq = useCallback(async (customerId?: string) => {
+    if(!customerId){ setCustSeq(null); return }
+    try{
+      const j = await getSequences()
+      setCustSeq((j.sequences || []).find((s:any)=> s.customer_id === customerId) || null)
+    }catch{ setCustSeq(null) }
+  }, [])
+
   const handleCustomFollow = async(days:number)=>{
     if(!selected) return
     let c = customer
     if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
     if(!c) return
+    // 防撞车：该客户正在自动序列中，设手动日期前确认是否暂停序列
+    try{
+      const j = await getSequences()
+      const s = (j.sequences || []).find((x:any)=> x.customer_id === c.id && x.mode === 'auto')
+      if(s && !confirm(`该客户正在自动序列第 ${Math.min(s.current_step,7)}/7 步，设手动跟进日期会和序列撞车。\n确定设为 ${days} 天后并暂停自动序列吗？`)) return
+      if(s) await patchSequence(c.id, { mode: 'manual' })
+      setCustSeq(s ? { ...s, mode: 'manual' } : null)
+    }catch{}
     const d=new Date(); d.setDate(d.getDate()+days); const v=d.toISOString().slice(0,10)
     await db.customers.update(c.id,{followUpAt:v} as any)
     await db.followUps.put({id:`fu-${Date.now()}`,customerId:c.id,dueAt:v,channel:['workbench'],status:'pending',createdAt:new Date().toISOString()} as any)
     setCustomer({...c,followUpAt:v} as any)
     alert(`已设 ${v} 跟进`)
+  }
+
+  const handleStartSeqFromInbox = async()=>{
+    if(!selected) return
+    let c = customer
+    if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c || !c.email) return
+    try{
+      const accs = await listAccounts()
+      if(!accs.length) return alert('请先绑定邮箱账号')
+      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？`)) return
+      await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      alert('自动跟进已启动，去跟进页查看进度')
+      await refreshCustSeq(c.id)
+    }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
   }
 
   // ====== 左栏：邮件列表（按文件夹+搜索过滤） ======
@@ -894,6 +927,13 @@ export default function InboxPage(){
             <div className="rounded-xl border p-3">
               <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1"><Calendar size={12}/> 下次跟进</div>
               <div className="text-[10px] text-gray-400 mb-1">当前：{customer?.followUpAt||'未设置'}</div>
+              {custSeq ? (
+                <div className="text-[11px] mb-1 px-2 py-1 rounded-lg bg-purple-50 text-purple-700">
+                  🔁 自动序列{custSeq.mode==='auto' ? `第 ${Math.min(custSeq.current_step,7)}/7 步，下次 ${String(custSeq.next_due_at||'').slice(0,10)}` : custSeq.mode==='dormant' ? '（沉睡池）' : '（已转手动）'}
+                </div>
+              ) : (
+                <button onClick={handleStartSeqFromInbox} className="w-full mb-1 py-1 rounded-lg text-[11px] bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100">🔁 为该客户启动7步自动序列</button>
+              )}
               <div className="flex gap-1 flex-wrap">
                 {[1,3,7,14,30].map(d=> <button key={d} onClick={()=> handleCustomFollow(d)} className="px-2 py-1 bg-white border rounded text-[11px] hover:bg-blue-50">{d}天</button>)}
                 <button onClick={handleFollowUp} className="px-2 py-1 bg-blue-600 text-white rounded text-[11px]"><Clock size={10}/> 自定义</button>

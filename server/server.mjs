@@ -2185,13 +2185,22 @@ async function seqTick(){
         const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[s.account_id, s.username])
         if(!arows.length) throw new Error('账号不存在')
         const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: s.email, subject: step.subject, text: step.body, html, inReplyTo: undefined, references: undefined })
-        // 发件成功：记步、推进
+        // 发件成功：记步、推进，并在云同步 data 表留一条跟进记录（雷达/统计可见）
         step.status = 'sent'; step.sentAt = new Date().toISOString(); step.messageId = info.messageId || ''
         const next = Number(s.current_step) + 1
         const gap = iv[next-1] || iv[iv.length-1] || 1
         const nextDue = next > 7 ? new Date(Date.now() + 7*86400000) : new Date(Date.now() + gap*86400000)
         await pool.query(`UPDATE followup_sequences SET steps_json=?, current_step=?, next_due_at=?, updated_at=? WHERE customer_id=?`,
           [JSON.stringify(steps), next, sqlDate(nextDue), sqlNow(), s.customer_id])
+        try{
+          const fuId = `fu-seq-${s.customer_id}-${s.current_step}`
+          const fuDue = new Date().toISOString().slice(0,10)
+          const fu = { id: fuId, customerId: s.customer_id, dueAt: fuDue, channel:['auto-seq'],
+            note:`自动跟进第${s.current_step}步已发`, status:'sent', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+          await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at, deleted) VALUES (?,?,?,?,?,0)
+            ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
+            [s.username, 'followUps', fuId, JSON.stringify(fu), fu.updatedAt.slice(0,23)])
+        }catch{}
         console.log(`[seq] sent step${s.current_step} -> ${s.email}`)
       }catch(e){ console.log('[seq] step skip:', s.customer_id, String(e.message||e).slice(0,100)) }
     }
