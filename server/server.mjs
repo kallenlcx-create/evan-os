@@ -1085,6 +1085,10 @@ async function gmailApiFullSync(gmail, accountId, username, folder, st, haveMap,
     await new Promise(r=>setImmediate(r));
   }
   // Phase A：信封（METADATA，并发 8）
+  // 去重两道：① gmail_msgid（API id，老 IMAP 行若有 X-GM-MSGID 直接命中）
+  // ② Message-ID 头（老行基本都有 message_id，但是 gmail_msgid 为空的救命钥匙）
+  const [midRows] = await pool.query('SELECT message_id, uid FROM mail_messages WHERE account_id=? AND folder=? AND message_id<>""',[accountId, folder]).catch(()=> [[]]);
+  const midMap = new Map((midRows||[]).map(r=>[String(r.message_id).trim().toLowerCase(), Number(r.uid)]));
   const B = 50;
   for(let i=0;i<missingIds.length;i+=B){
     if(st.cancelled) throw new Error('cancelled');
@@ -1096,17 +1100,21 @@ async function gmailApiFullSync(gmail, accountId, username, folder, st, haveMap,
       const subject = gmailHeader(p, 'Subject') || '(无主题)';
       const from = parseAddrHeader(gmailHeader(p, 'From'));
       const toList = gmailHeader(p, 'To').split(',').map(s=> parseAddrHeader(s).address || s.trim()).filter(Boolean).join(', ').slice(0,1024);
+      const midRaw = gmailHeader(p, 'Message-ID').trim().slice(0,512);
       const internalMs = Number(mm.internalDate || 0);
       const labelIds = mm.labelIds || [];
-      const uid = getCounter();
+      // Message-ID 兜底：命中老 IMAP 行 → 复用其 uid 并补上 gmail_msgid
+      const reuseUid = midMap.get(midRaw.toLowerCase());
+      const uid = reuseUid || getCounter();
       await pool.query(
-        `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
+        `INSERT INTO mail_messages (accountId, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), labels=VALUES(labels), updated_at=VALUES(updated_at)`,
-        [accountId, folder, uid, gmailHeader(p,'Message-ID').slice(0,512), apiId, String(mm.threadId||'').slice(0,64),
+         ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), labels=VALUES(labels), gmail_msgid=VALUES(gmail_msgid), message_id=VALUES(message_id), updated_at=VALUES(updated_at)`,
+        [accountId, folder, uid, midRaw, apiId, String(mm.threadId||'').slice(0,64),
          String(subject).slice(0,1024), from.address.slice(0,512), from.name.slice(0,256), toList,
          internalMs ? sqlDate(new Date(internalMs)) : sqlNow().slice(0,19).replace('T',' '), labelIds.includes('UNREAD')?0:1, 0, '', 0, labelIds.join(',').slice(0,1024), sqlNow()]);
       haveMap.set(apiId, uid);
+      if(reuseUid) st.updated = (st.updated||0)+1;
       st.done = (st.done||0)+1;
     });
     await new Promise(r=>setImmediate(r));
