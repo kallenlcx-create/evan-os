@@ -111,7 +111,7 @@ export default function FollowUpsPage() {
     return { high, today: todayCnt, overdue, pendingDeals, repurchase, marketing }
   }, [customers, list, today])
 
-  // ====== 雷达：沉寂客户 ======
+  // ====== 雷达：沉寂客户（基础排行保留7天门槛；卡片点选看全体）======
   const radar = useMemo(() => {
     const byEmail = new Map<string, string>()
     for (const e of emails) {
@@ -128,26 +128,32 @@ export default function FollowUpsPage() {
       }
       return last
     }
-    const keyCustomers = customers.filter(c => c.isKey || (c.level === 'A+' || c.level === 'A' || c.level === 'B'))
-    const scored = keyCustomers.map(c => {
+    const withDays = (arr: Customer[]) => arr.map(c => {
       const last = lastContactOf(c)
       const days = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 99
       return { c, days, stage: c.stage || 'lead' }
-    }).filter(x => x.days >= 7)
-      .sort((a, b) => b.days - a.days)
+    }).sort((a, b) => b.days - a.days)
+    const keyCustomers = customers.filter(c => c.isKey || (c.level === 'A+' || c.level === 'A' || c.level === 'B'))
+    const scored = withDays(keyCustomers).filter(x => x.days >= 7)
     const aList = scored.filter(x => x.c.level === 'A+' || x.c.level === 'A')
     const bList = scored.filter(x => x.c.level === 'B')
-    return { all: scored, aList, bList }
+    // 卡片点选用：不过滤沉寂天数
+    const allKey = withDays(keyCustomers)
+    const allHigh = withDays(customers.filter(c => c.isKey && (c.level === 'A+' || c.level === 'A')))
+    const allRepurchase = withDays(customers.filter(c => c.isKey && (c.score || 0) > 70))
+    const allMarketing = withDays(customers.filter(c => c.isKey))
+    const allPendingDeals = withDays(customers.filter(c => c.stage === 'proposal' || c.stage === 'negotiation'))
+    return { all: scored, aList, bList, allKey, allHigh, allRepurchase, allMarketing, allPendingDeals, lastContactOf }
   }, [customers, emails])
 
   const catFiltered = useMemo(() => {
     let rows: typeof radar.all
-    if (catFilter === 'high') rows = radar.aList
-    else if (catFilter === 'today') rows = radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt === today))
-    else if (catFilter === 'overdue') rows = radar.all.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt < today && f.status === 'pending'))
-    else if (catFilter === 'pending') rows = radar.all
-    else if (catFilter === 'repurchase') rows = radar.all.filter(x => (x.c.score || 0) > 70)
-    else if (catFilter === 'marketing') rows = radar.all
+    if (catFilter === 'high') rows = radar.allHigh
+    else if (catFilter === 'today') rows = radar.allKey.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt === today))
+    else if (catFilter === 'overdue') rows = radar.allKey.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt < today && f.status === 'pending'))
+    else if (catFilter === 'pending') rows = radar.allPendingDeals
+    else if (catFilter === 'repurchase') rows = radar.allRepurchase
+    else if (catFilter === 'marketing') rows = radar.allMarketing
     else rows = radar.all
     if (tagFilter !== 'all') rows = rows.filter(x => ((x.c.tags || []) as string[]).includes(tagFilter))
     return rows
@@ -263,6 +269,11 @@ export default function FollowUpsPage() {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
+      {catFilter !== 'all' && (
+        <div className="text-xs text-gray-500 -mt-2">当前筛选：<b className="text-blue-600">{{high:'高意向客户',today:'今日跟进',overdue:'逾期跟进',pending:'待成交机会',repurchase:'潜在复购',marketing:'营销机会'}[catFilter]}</b>
+          <button onClick={()=> setCatFilter('all')} className="ml-2 text-gray-400 hover:text-gray-600">✕ 清除</button>
+        </div>
+      )}
 
       {/* 6分类 */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
@@ -304,7 +315,9 @@ export default function FollowUpsPage() {
                   <span className="text-sm font-semibold truncate">{c.contactName || c.title}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${c.isKey ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-500'}`}>{c.level || 'C'}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{STAGE_LABELS[stage] || stage}</span>
-                  <span className="text-[10px] text-red-500">沉寂{days}天</span>
+                  {days >= 7
+                    ? <span className="text-[10px] text-red-500">沉寂{days}天</span>
+                    : <span className="text-[10px] text-gray-400">近{days}天有动态</span>}
                   {seqMap.get(c.id)?.mode==='auto' && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600">🔁序列{Math.min(seqMap.get(c.id).current_step,7)}/7</span>}
                   {seqMap.get(c.id)?.replied ? <span className="text-[10px] text-red-500">🔔有回复</span> : null}
                 </div>
