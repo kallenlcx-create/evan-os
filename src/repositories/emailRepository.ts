@@ -411,6 +411,30 @@ export async function mailIngestStatus(accountId: string): Promise<any> {
   const j = await r.json().catch(() => ({}))
   return j.job || null
 }
+export async function stopMailIngest(accountId: string): Promise<void>{
+  const h = await serverHeaders()
+  if (!h) return
+  try{ await fetch(`${h.url}/email/ingest-stop/${accountId}`, { method: 'POST', headers: bypassHeaders(h) }) }catch{}
+}
+export async function startScopedIngest(emails: string[], since = '2026-09-01'): Promise<any>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/ingest-scoped`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ emails, since }) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `启动失败 ${r.status}`)
+  return j.job
+}
+export async function scopedIngestStatus(): Promise<any[]>{
+  const h = await serverHeaders()
+  if (!h) return []
+  try{
+    const r = await fetch(`${h.url}/email/ingest-scoped-status`, { headers: bypassHeaders(h) })
+    const j = await r.json().catch(() => ({}))
+    return j.jobs || []
+  }catch{ return [] }
+}
 export async function setWatchPaused(pause: boolean): Promise<{ paused: boolean; watchers: number }>{
   const h = await serverHeaders()
   if (!h) throw new Error('请先登录云同步')

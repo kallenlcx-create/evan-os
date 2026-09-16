@@ -1232,6 +1232,114 @@ app.post('/email/ingest-stop/:accountId', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
+// 定点入库：POST /email/ingest-scoped {accountId?, emails:[...], since:'2026-09-01', folder?}
+// 只拉指定邮箱集合在 since 之后的邮件（信封+正文一次做完），不受全量任务影响
+app.post('/email/ingest-scoped', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, emails, since, folder } = req.body || {}
+  const list = [...new Set((emails||[]).map((e)=> String(e||'').trim().toLowerCase()))].filter(e=> e.includes('@')).slice(0, 500)
+  if(!list.length) return res.status(400).json({ error:'需要 emails 列表' })
+  const sinceDate = since && !isNaN(new Date(since).getTime()) ? new Date(since) : new Date('2026-09-01')
+  const acc = accountId
+    ? await loadMailAccount(accountId, req.user)
+    : (await pool.query('SELECT * FROM email_accounts WHERE username=? LIMIT 1',[req.user]))[0][0] || null
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const f = folder || '[Gmail]/All Mail'
+  const key = `scoped-${acc.id}`
+  const cur = ingestJobs.get(key)
+  if(cur && cur.running) return res.status(409).json({ error:'定点任务进行中', job:cur })
+  const st = { running:true, mode:'scoped', folder:f, done:0, total:0, added:0, updated:0, matched:0, startedAt:new Date().toISOString(), error:'', batch:'' }
+  ingestJobs.set(key, st)
+  ;(async()=>{
+    const pass = decAuth(acc.auth_enc)
+    const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:180000 })
+    try{
+      await imapConnect(client, 30000)
+      const lock = await client.getMailboxLock(f)
+      try{
+        const uidvalidity = Number(client.mailbox.uidValidity || 0)
+        // 时间范围内的全部 UID（比 76 个 OR 条件可靠得多）
+        let range = await withTimeout(client.search({ since: sinceDate }, { uid:true }), 60000, 'scoped-search').catch(()=>[])
+        if(!Array.isArray(range)) range = []
+        range.sort((a,b)=>a-b)
+        st.total = range.length
+        const emailSet = new Set(list)
+        const BATCH = 100
+        for(let i=0;i<range.length;i+=BATCH){
+          if(st.cancelled) throw new Error('cancelled')
+          const batch = range.slice(i,i+BATCH)
+          st.batch = `${batch[0]}-${batch[batch.length-1]}`
+          let fetched = []
+          try{
+            fetched = await withTimeout((async()=>{
+              const out = []
+              for await (const msg of client.fetch(batch.join(','), { envelope:true, flags:true, uid:true, internalDate:true, gmailMessageId:true, gmailThreadId:true }, { uid:true })){
+                out.push(msg)
+              }
+              return out
+            })(), 3*60*1000, 'scoped-env')
+          }catch(e){ console.log('[scoped] env skip:', String(e.message||e).slice(0,60)); continue }
+          for(const msg of fetched){
+            try{
+              const env = msg.envelope || {}
+              const fromAddr = String(env.from?.[0]?.address || '').toLowerCase()
+              const toAddrs = (env.to||[]).map((a)=> String(a.address||'').toLowerCase())
+              const hit = emailSet.has(fromAddr) || toAddrs.some((t)=> emailSet.has(t))
+              if(!hit) { st.done++; continue }
+              st.matched++
+              // 命中：信封+正文一次入库
+              let bodyText = '', bodyHtml = null, att = 0
+              try{
+                const full = await withTimeout((async()=>{
+                  for await (const m2 of client.fetch(String(msg.uid), { envelope:true, flags:true, uid:true, source:true }, { uid:true })){
+                    return m2
+                  }
+                  return null
+                })(), 2*60*1000, 'scoped-body')
+                if(full && full.source){
+                  const parsed = await simpleParser(full.source).catch(()=>null)
+                  if(parsed){
+                    bodyText = String(parsed.text || parsed.html || '').slice(0, 500000)
+                    bodyHtml = parsed.html ? String(parsed.html).slice(0, 800000) : null
+                    att = (parsed.attachments || []).length ? 1 : 0
+                  }
+                }
+              }catch{}
+              const flags = msg.flags || new Set()
+              const glabels = Array.isArray(msg.gmailLabels) ? msg.gmailLabels.map(String).slice(0,20).join(',') : ''
+              await pool.query(
+                `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached, labels, updated_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE subject=VALUES(subject), is_read=VALUES(is_read), labels=VALUES(labels),
+                   body_text=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_text), body_text),
+                   body_html=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_html), body_html),
+                   body_cached=IF(VALUES(body_cached)=1,1,body_cached), updated_at=VALUES(updated_at)`,
+                [acc.id, f, msg.uid,
+                 String(env.messageId||'').slice(0,512), String(msg.gmailMessageId||'').slice(0,64), String(msg.gmailThreadId||'').slice(0,64),
+                 String(env.subject||'(无主题)').slice(0,1024),
+                 String(env.from?.[0]?.address||'').slice(0,512), String(env.from?.[0]?.name||'').slice(0,256),
+                 (env.to||[]).map((a)=>a.address).filter(Boolean).join(', ').slice(0,1024),
+                 sqlDate(msg.internalDate || env.date), flags.has('\\Seen')?1:0, att,
+                 bodyText, bodyHtml, bodyText?1:0, glabels, sqlNow()])
+              st.done++
+              if(bodyText) st.added++
+              else st.updated++
+            }catch{}
+          }
+          await new Promise(r=>setImmediate(r))
+        }
+      }finally{ lock.release() }
+    }catch(e){ st.error = String(e.message||e).slice(0,200) }
+    finally{ await logoutSafe(client); st.running = false }
+  })().catch(()=>{})
+  res.json({ ok:true, job: st })
+}))
+app.get('/email/ingest-scoped-status', auth, wrap(async (req,res)=>{
+  const jobs = []
+  for(const [k, v] of ingestJobs) if(String(k).startsWith('scoped-')) jobs.push({ key:k, ...v })
+  res.json({ jobs })
+}))
+
 // 监听暂停/恢复：POST /email/watch-pause {pause:true|false}
 // 入库优先时暂停所有 watcher（把 IMAP 连接让给入库）；入库完成后恢复
 app.post('/email/watch-pause', auth, wrap(async (req,res)=>{
