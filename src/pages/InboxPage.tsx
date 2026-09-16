@@ -713,7 +713,7 @@ export default function InboxPage(){
               </>
             )}
             {searchMode ? searchResults.map(m=>(
-              <button key={m.id} onClick={async()=>{ setSearchMode(false); await openMail(m) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
+              <button key={m.id} onClick={async()=>{ await openMail(m) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
                 <div className="flex items-center gap-1.5 text-xs">
                   <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
                   <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
@@ -805,7 +805,8 @@ export default function InboxPage(){
                   </div>
                 )}
 
-                {/* 邮件往来（仅该客户该主题的对话） */}
+                {/* 邮件往来：仅搜索邮箱后展示（普通点开只看正文） */}
+                {searchMode && (
                 <div className="rounded-xl border overflow-hidden">
                   <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
                     <span>邮件往来</span>
@@ -831,6 +832,7 @@ export default function InboxPage(){
                     {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
                   </div>
                 </div>
+                )}
 
                 {/* 快捷操作 */}
                 <div className="flex gap-1 flex-wrap">
