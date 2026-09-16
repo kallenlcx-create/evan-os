@@ -713,10 +713,16 @@ app.get('/email/oauth/config', auth, wrap(async (req,res)=>{
 }))
 // 生成授权链接：GET /email/oauth/url?accountId=（accountId 可为空，新绑定时先建占位账号）
 app.get('/email/oauth/url', auth, wrap(async (req,res)=>{
-  const o = await buildOAuthClient(req, null)
-  const state = Buffer.from(JSON.stringify({ u: req.user, a: req.query.accountId || '' })).toString('base64url')
-  const url = o.generateAuthUrl({ access_type:'offline', prompt:'consent', scope: GMAIL_SCOPES, state })
-  res.json({ url })
+  try{
+    const o = await buildOAuthClient(req, null)
+    const state = Buffer.from(JSON.stringify({ u: req.user, a: req.query.accountId || '' })).toString('base64url')
+    const url = o.generateAuthUrl({ access_type:'offline', prompt:'consent', scope: GMAIL_SCOPES, state })
+    return res.json({ url })
+  }catch(e){
+    const msg = String(e.message||e)
+    if(msg.includes('未配置')) return res.status(400).json({ error:'还没配置 Google OAuth 应用：请先去 Google Cloud Console 建 OAuth 客户端，把 Client ID/Secret 填到下方“高级：Client ID 配置”里（文档见 server/GMAIL_API_SETUP.md 第一章）' })
+    return res.status(500).json({ error: msg.slice(0,200) })
+  }
 }))
 // OAuth 回调（Google 跳转回来，不需要 token，用 state 验用户）
 app.get('/email/oauth/callback', wrap(async (req,res)=>{
