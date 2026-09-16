@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, stopMailIngest, startScopedIngest, scopedIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -503,39 +503,6 @@ export default function InboxPage(){
   const [dbFolders, setDbFolders] = useState<DbMailFolderStatus[]>([])
   const [ingestJob, setIngestJob] = useState<any>(null)
   const [watchOff, setWatchOff] = useState(false)
-  const [scopedJob, setScopedJob] = useState<any>(null)
-  const handleScopedIngest = useCallback(async()=>{
-    try{
-      const accs = accounts.length ? accounts : await listAccounts()
-      if(!accs.length) return alert('请先绑定邮箱账号')
-      const all = await db.customers.toArray() as Customer[]
-      const emails = new Set<string>()
-      for(const c of all){
-        if(!(c.tags || []).includes('已下单')) continue
-        if(c.email) emails.add(c.email.toLowerCase())
-        for(const e of (c.extraEmails || [])) emails.add(String(e).toLowerCase())
-      }
-      if(!emails.size) return alert('没有带「已下单」标签的客户（客户页打标签后重试）')
-      if(!confirm(`只入库 ${emails.size} 个已下单客户邮箱 9 月以来的邮件？\n将暂停监听并停止全量任务，其他邮件暂时不动。`)) return
-      await setWatchPaused(true)
-      setWatchOff(true)
-      try{ await stopMailIngest(accs[0].id) }catch{}
-      const job = await startScopedIngest([...emails], '2026-09-01')
-      setScopedJob(job)
-      alert(`定点入库已启动：${emails.size} 个邮箱，2026-09-01 起`)
-    }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
-  },[accounts])
-  useEffect(()=>{
-    let stop = false
-    const t = setInterval(async()=>{
-      if(stop) return
-      try{
-        const jobs = await scopedIngestStatus()
-        if(!stop) setScopedJob(jobs[0] || null)
-      }catch{}
-    }, 8000)
-    return ()=>{ stop = true; clearInterval(t) }
-  },[])
   const refreshDbStatus = useCallback(async()=>{
     try{
       const accs = accounts.length ? accounts : await listAccounts()
@@ -593,9 +560,6 @@ export default function InboxPage(){
           </button>
           <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
             {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
-          </button>
-          <button onClick={handleScopedIngest} disabled={!!scopedJob?.running} title="只入库已下单客户9月以来的邮件，其他暂停" className="px-3 py-1.5 bg-orange-500 text-white rounded-lg text-xs hover:bg-orange-600 disabled:opacity-50">
-            {scopedJob?.running ? `定点 ${scopedJob.matched||0}/${scopedJob.total||'?'}·命中${scopedJob.added||0}` : '🎯 定点入库'}
           </button>
           <button onClick={async()=>{
             try{
