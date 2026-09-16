@@ -646,7 +646,7 @@ export default function InboxPage(){
           {provider==='gmail' && (
             <div className="mb-3 p-3 bg-blue-50/60 border border-blue-100 rounded-xl space-y-2">
               <div className="text-xs font-semibold text-blue-700">🔐 Gmail 推荐走 Google 授权（OAuth，不限流）</div>
-              <div className="text-[11px] text-gray-500">IMAP 授权码易被 Google 限流；OAuth 用官方 API 配额，又快又稳。QQ/网易/163/Outlook 请继续用下面的授权码方式。</div>
+              <div className="text-[11px] text-gray-500">已用 IMAP 授权码绑过的 Gmail，点账号旁「⬆️ 升级到官方 API」：会弹出 Google 官方授权窗口，同意后自动切换为 REST API 模式并停用 IMAP 同步。QQ/网易/163/Outlook 请继续用下面的授权码方式。</div>
               <div className="flex flex-wrap items-center gap-2">
                 {accounts.filter(a=> (a.provider||'')==='gmail').map(a=>(
                   <OAuthBadge key={a.id} accountId={a.id} email={a.email} onChanged={()=> refresh()} />

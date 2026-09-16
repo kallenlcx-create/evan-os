@@ -57,8 +57,8 @@ export function OAuthBadge({ accountId, email, onChanged }: { accountId: string;
       const url = await getOAuthAuthUrl(accountId)
       window.open(url, '_blank', 'width=560,height=700')
       const ok = await pollUntilConnected(accountId)
-      if(ok){ alert('重新授权成功'); await load(); onChanged() }
-      else alert('未检测到授权完成')
+      if(ok){ alert('升级成功：该邮箱已从 IMAP 授权码切换为 Google 官方 API 模式，IMAP 监听已自动停用，去点一次同步即可'); await load(); onChanged() }
+      else alert('未检测到授权完成（请确认在 Google 页面点了允许）')
     }catch(e:any){ alert(String(e.message||e).slice(0,150)) }
   }
   const unbind = async () => {
@@ -70,10 +70,10 @@ export function OAuthBadge({ accountId, email, onChanged }: { accountId: string;
   return (
     <span className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border rounded-lg text-[11px]">
       <span className={`w-1.5 h-1.5 rounded-full ${st.connected ? 'bg-green-500' : 'bg-gray-300'}`} />
-      {email} · {st.connected ? `OAuth 已连接${st.historyId ? '（增量游标就绪）' : ''}` : '未授权（走 IMAP 旧通道）'}
+      {email} · {st.connected ? `OAuth 已连接${st.historyId ? '（增量游标就绪）' : ''}` : 'IMAP 授权码模式（易限流）'}
       {st.connected
         ? <button onClick={unbind} className="text-gray-400 hover:text-red-500">解绑</button>
-        : <button onClick={reauth} className="text-blue-600 hover:underline">去授权</button>}
+        : <button onClick={reauth} className="text-blue-600 hover:underline font-medium">⬆️ 升级到官方 API</button>}
     </span>
   )
 }

@@ -752,6 +752,9 @@ app.get('/email/oauth/callback', wrap(async (req,res)=>{
         ON DUPLICATE KEY UPDATE email=VALUES(email), refresh_token=VALUES(refresh_token), access_token=VALUES(access_token), access_expires_at=VALUES(access_expires_at), scope=VALUES(scope), updated_at=VALUES(updated_at)`,
         [accountId, st.u, email, encAuth(tokens.refresh_token), tokens.access_token ? encAuth(tokens.access_token) : null,
          tokens.expiry_date ? sqlDate(new Date(tokens.expiry_date)) : null, GMAIL_SCOPES.join(' '), sqlNow()])
+      // 一键升级：已有 IMAP 账号授权成功后，自动停掉它的 IMAP 监听，切 REST API 模式
+      // （usesGmailApi 此后返回 true：ingest/标已读自动走 API；旧授权码保留不动）
+      try{ stopMailWatcher(accountId) }catch{}
       // 记初始 historyId，后续增量用
       try{
         const hid = me.data.historyId || ''
