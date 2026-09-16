@@ -81,6 +81,7 @@ export default function InboxPage(){
       if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m); fixed++ }
     }
     setEmails(list)
+    setKeepReadIds(new Set())
     fetchServerCounts(accs)
   },[fetchServerCounts])
   useEffect(()=>{ void refresh() },[refresh])
@@ -106,6 +107,8 @@ export default function InboxPage(){
     if (markAsRead) {
       await markRead(m.id, true)
       setEmails(prev => prev.map(x => x.id === m.id ? { ...x, isRead: true } : x))
+      // 刚读过的留在未读列表里（变灰），不等下次刷新再消失，避免列表跳动
+      setKeepReadIds(prev => { const n = new Set(prev); n.add(m.id); return n })
     }
     if (!m.text && !m.html) {
       setBodyLoading(true)
@@ -422,16 +425,18 @@ export default function InboxPage(){
   }
 
   // ====== 左栏：邮件列表（按文件夹+搜索过滤） ======
+  // 刚在本屏读过的邮件暂留列表（变灰），切文件夹/搜索/刷新后才消失，防止列表跳动
+  const [keepReadIds, setKeepReadIds] = useState<Set<string>>(new Set())
   const filtered = useMemo(()=>{
     return emails.filter(m=>{
       if(folder==='inbox' && m.folder!=='inbox') return false
       if(folder==='sent' && m.folder!=='sent') return false
       if(folder==='drafts' && m.folder!=='drafts') return false
-      if(folder==='inbox' && filter==='unread' && m.isRead) return false
+      if(folder==='inbox' && filter==='unread' && m.isRead && !keepReadIds.has(m.id)) return false
       if(q && !(`${m.subject} ${m.from} ${m.text} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
       return true
     })
-  },[emails, folder, filter, q])
+  },[emails, folder, filter, q, keepReadIds])
 
   // ====== 中栏：当前选中邮件的往来线程（仅该客户的对话） ======
   const thread = useMemo(()=>{
@@ -739,6 +744,7 @@ export default function InboxPage(){
                     <div className="flex items-center gap-1.5 text-xs">
                       <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
                       <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
+                      {m.isRead && keepReadIds.has(m.id) && <span className="text-[9px] text-gray-300">刚读过</span>}
                       <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
                     </div>
                     <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
