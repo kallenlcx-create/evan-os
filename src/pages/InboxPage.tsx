@@ -1,6 +1,6 @@
 // ====== 邮件中心：客户经营中心 ======
 // 三栏：左邮件列表+搜索 | 中邮件往来（纯邮件展示） | 右AI侧栏（客户+工作台+分析+跟进+回复）
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
@@ -438,14 +438,22 @@ export default function InboxPage(){
     if(!selected) return []
     const selectedAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).toLowerCase()
     const selectedSubj = selected.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
+    const ts = (d: string) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0 }
     return emails.filter(e=>{
       const eAddr = (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase()
       const eTo = (e.to||'').toLowerCase()
       const eSubj = e.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
       // 匹配条件：同一发件人地址 + 相同主题（去掉Re:/Fwd:）
       return (eAddr===selectedAddr || eTo.includes(selectedAddr)) && eSubj===selectedSubj
-    }).sort((a,b)=> new Date(a.date).getTime()-new Date(b.date).getTime())
+      // Gmail 式：从上至下按时间正序，最新的沉底
+    }).sort((a,b)=> ts(a.date)-ts(b.date))
   },[emails, selected])
+  // 线程打开/变化时自动滚到底（最新邮件处，和 Gmail 一致）
+  const threadBoxRef = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    const el = threadBoxRef.current
+    if(el) el.scrollTop = el.scrollHeight
+  },[thread.length, selected?.id])
 
   // ====== 搜索模式：优先服务端邮件库全文检索 ======
   const [searching, setSearching] = useState(false)
@@ -805,16 +813,15 @@ export default function InboxPage(){
                   </div>
                 )}
 
-                {/* 邮件往来：仅搜索邮箱后展示（普通点开只看正文） */}
+                {/* 邮件往来：仅搜索邮箱后展示（普通点开只看正文），Gmail 式从上至下按时间排，最新沉底 */}
                 {searchMode && (
                 <div className="rounded-xl border overflow-hidden">
                   <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
                     <span>邮件往来</span>
                     <span className="text-[10px] text-gray-400">共 {thread.length} 封 · {thread.length > 0 ? `${new Date(thread[0].date).toLocaleDateString()} → ${new Date(thread[thread.length-1].date).toLocaleDateString()}` : ''}</span>
-                    {thread.length > 20 && <span className="ml-auto text-[10px] text-orange-400">仅显示最近20封</span>}
                   </div>
-                  <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
-                    {thread.slice(-20).map((m)=>(
+                  <div ref={threadBoxRef} className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
+                    {thread.map((m)=>(
                       <div key={m.id} className={`p-3 ${m.id===selected.id?'bg-blue-50/30':''}`}>
                         <div className="flex items-center gap-2 text-xs mb-1">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发件':'收件'}</span>
