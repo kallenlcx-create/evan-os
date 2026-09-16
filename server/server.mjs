@@ -668,9 +668,11 @@ async function saveGoogleOAuthConfig(id, secret){
   if(secret) await pool.query(`INSERT INTO server_config (k, v, updated_at) VALUES ('google_client_secret',?,?) ON DUPLICATE KEY UPDATE v=VALUES(v), updated_at=VALUES(updated_at)`,[secret, now]).catch(()=>{})
 }
 function getOAuthRedirect(req){
-  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0]
-  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
-  return `${proto}://${host}/email/oauth/callback`
+  try{
+    const proto = String((req && req.headers && req.headers['x-forwarded-proto']) || (req && req.protocol) || 'https').split(',')[0]
+    const host = String((req && req.headers && (req.headers['x-forwarded-host'] || req.headers.host)) || 'win-8c09k6b093h.tail73fe40.ts.net')
+    return `${proto}://${host}/email/oauth/callback`
+  }catch{ return 'https://win-8c09k6b093h.tail73fe40.ts.net/email/oauth/callback' }
 }
 async function buildOAuthClient(req, accountId){
   const { google } = await import('googleapis')
