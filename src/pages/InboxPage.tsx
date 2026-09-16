@@ -10,6 +10,7 @@ import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing }
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
 import { useAskText } from '../components/PromptModal'
 import MailHtml from '../components/MailHtml'
+import { OAuthBindButton, OAuthBadge, OAuthAppForm } from '../components/GmailOAuth'
 
 const INTENT_COLOR: Record<string,string> = {
   '新询价':'bg-red-50 text-red-600','报价回复':'bg-blue-50 text-blue-600','询问价格':'bg-orange-50 text-orange-600',
@@ -642,6 +643,22 @@ export default function InboxPage(){
               <button key={k} onClick={()=> setProvider(k as any)} className={`px-3 py-2 rounded-lg border text-xs ${provider===k?'border-red-300 bg-red-50 text-red-600':'border-gray-200 text-gray-500'}`}>{v.label}</button>
             ))}
           </div>
+          {provider==='gmail' && (
+            <div className="mb-3 p-3 bg-blue-50/60 border border-blue-100 rounded-xl space-y-2">
+              <div className="text-xs font-semibold text-blue-700">🔐 Gmail 推荐走 Google 授权（OAuth，不限流）</div>
+              <div className="text-[11px] text-gray-500">IMAP 授权码易被 Google 限流；OAuth 用官方 API 配额，又快又稳。QQ/网易/163/Outlook 请继续用下面的授权码方式。</div>
+              <div className="flex flex-wrap items-center gap-2">
+                {accounts.filter(a=> (a.provider||'')==='gmail').map(a=>(
+                  <OAuthBadge key={a.id} accountId={a.id} email={a.email} onChanged={()=> refresh()} />
+                ))}
+                {accounts.filter(a=> (a.provider||'')==='gmail').length===0 && <OAuthBindButton onDone={()=> refresh()} />}
+              </div>
+              <details className="text-[11px] text-gray-500">
+                <summary className="cursor-pointer hover:text-gray-700">高级：Client ID 配置（Google Cloud Console 建一次即可）</summary>
+                <OAuthAppForm />
+              </details>
+            </div>
+          )}
           <div className="grid md:grid-cols-2 gap-3">
             <div><div className="text-xs text-gray-400 mb-1">邮箱地址：</div><input value={emailAddr} onChange={e=> setEmailAddr(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm"/></div>
             <div><div className="text-xs text-gray-400 mb-1">授权码：</div><input value={authCode} onChange={e=> setAuthCode(e.target.value)} type="password" className="w-full px-3 py-2 border rounded-lg text-sm"/></div>

@@ -7,8 +7,9 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "mysql2": "^3.11.0",
+    "googleapis": "^178.0.0",
     "imapflow": "^1.0.193",
-    "mailparser": "^3.6.5"
+    "mailparser": "^3.6.5",
+    "mysql2": "^3.11.0"
   }
 }

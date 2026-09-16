@@ -435,8 +435,57 @@ export async function scopedIngestStatus(): Promise<any[]>{
     return j.jobs || []
   }catch{ return [] }
 }
-export async function setWatchPaused(pause: boolean): Promise<{ paused: boolean; watchers: number }>{
+// ====== Gmail OAuth（替代 IMAP 授权码）======
+export async function getOAuthAppConfig(): Promise<{ hasId: boolean; hasSecret: boolean }>{
   const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/oauth/config`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || '查询失败')
+  return j
+}
+export async function saveOAuthAppConfig(clientId: string, clientSecret: string): Promise<any>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/oauth/config`, { method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ clientId, clientSecret }) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || '保存失败')
+  return j
+}
+export async function getOAuthAuthUrl(accountId = ''): Promise<string>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/oauth/url${accountId ? `?accountId=${accountId}` : ''}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || '获取授权链接失败')
+  return j.url
+}
+export async function getOAuthStatus(accountId: string): Promise<{ connected: boolean; email: string; historyId: boolean; authType: string }>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/oauth/status/${accountId}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || '查询失败')
+  return j
+}
+export async function disconnectOAuth(accountId: string): Promise<void>{
+  const h = await serverHeaders()
+  if (!h) return
+  try{ await fetch(`${h.url}/email/oauth/disconnect/${accountId}`, { method: 'POST', headers: bypassHeaders(h) }) }catch{}
+}
+export async function startGsync(accountId: string, mode: 'auto' | 'full' | 'incremental' = 'auto'): Promise<any>{
+  const h = await serverHeaders()
+  if (!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/gsync/${accountId}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+    body: JSON.stringify({ mode }) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `启动失败 ${r.status}`)
+  return j.job
+}
+export async function setWatchPaused(pause: boolean): Promise<{ paused: boolean; watchers: number }>{  const h = await serverHeaders()
   if (!h) throw new Error('请先登录云同步')
   const r = await fetch(`${h.url}/email/watch-pause`, { method: 'POST',
     headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) }, body: JSON.stringify({ pause }) })

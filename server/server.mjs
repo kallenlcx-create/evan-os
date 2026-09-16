@@ -161,6 +161,28 @@ async function init() {
       last_sync_at TIMESTAMP(3) NULL,
       PRIMARY KEY (account_id, folder)
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  // Gmail API 游标与 OAuth 凭证（P0）
+  await pool.query(`ALTER TABLE mail_sync_state ADD COLUMN history_id VARCHAR(64) DEFAULT ''`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gmail_oauth (
+      account_id VARCHAR(80) PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      email VARCHAR(128) DEFAULT '',
+      refresh_token TEXT NOT NULL,
+      access_token TEXT,
+      access_expires_at TIMESTAMP(3) NULL,
+      scope VARCHAR(512) DEFAULT '',
+      updated_at TIMESTAMP(3) NOT NULL,
+      INDEX idx_user (username)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`ALTER TABLE gmail_oauth ADD COLUMN topic_name VARCHAR(256) DEFAULT ''`).catch(()=>{})
+  await pool.query(`ALTER TABLE gmail_oauth ADD COLUMN watch_expiration TIMESTAMP(3) NULL`).catch(()=>{})
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_config (
+      k VARCHAR(80) PRIMARY KEY,
+      v TEXT,
+      updated_at TIMESTAMP(3) NOT NULL
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mail_messages (
       account_id VARCHAR(80) NOT NULL,
@@ -624,6 +646,632 @@ app.delete('/files/:id', auth, wrap(async (req, res) => {
   await pool.query('DELETE FROM files WHERE id = ? AND username = ?', [req.params.id, req.user])
   res.json({ ok: true })
 }))
+
+// ---------- Gmail API OAuth2（P0：替代 IMAP 授权码）----------
+// 前置步骤（用户在 Google Cloud Console 做一次）：
+// 1. 建项目 → 启用 Gmail API → OAuth 同意屏幕（外部/测试模式，加自己为测试用户）
+// 2. 凭据 → 创建 OAuth 客户端 ID（Web 应用）→ 已获授权的重定向 URI 填：
+//    https://win-8c09k6b093h.tail73fe40.ts.net/email/oauth/callback
+// 3. 把 Client ID / Client Secret 填入下方管理接口（或环境变量 GOOGLE_CLIENT_ID/_SECRET）
+const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+async function getGoogleOAuthConfig(){
+  let id = process.env.GOOGLE_CLIENT_ID || '', secret = process.env.GOOGLE_CLIENT_SECRET || ''
+  try{
+    const [rows] = await pool.query('SELECT k, v FROM server_config WHERE k IN (?,?)',['google_client_id','google_client_secret'])
+    for(const r of rows){ if(r.k==='google_client_id') id = r.v || id; if(r.k==='google_client_secret') secret = r.v || secret }
+  }catch{}
+  return { id, secret }
+}
+async function saveGoogleOAuthConfig(id, secret){
+  const now = sqlNow()
+  if(id) await pool.query(`INSERT INTO server_config (k, v, updated_at) VALUES ('google_client_id',?,?) ON DUPLICATE KEY UPDATE v=VALUES(v), updated_at=VALUES(updated_at)`,[id, now]).catch(()=>{})
+  if(secret) await pool.query(`INSERT INTO server_config (k, v, updated_at) VALUES ('google_client_secret',?,?) ON DUPLICATE KEY UPDATE v=VALUES(v), updated_at=VALUES(updated_at)`,[secret, now]).catch(()=>{})
+}
+function getOAuthRedirect(req){
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0]
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+  return `${proto}://${host}/email/oauth/callback`
+}
+async function buildOAuthClient(req, accountId){
+  const { google } = await import('googleapis')
+  const cfg = await getGoogleOAuthConfig()
+  if(!cfg.id || !cfg.secret) throw new Error('未配置 Google OAuth Client（先在 Google Cloud Console 建凭据，再调 PUT /email/oauth/config 填入）')
+  const o = new google.auth.OAuth2(cfg.id, cfg.secret, getOAuthRedirect(req))
+  if(accountId && dbReady){
+    try{
+      const [rows] = await pool.query('SELECT refresh_token, access_token, access_expires_at FROM gmail_oauth WHERE account_id=?',[accountId])
+      if(rows.length && rows[0].refresh_token){
+        o.setCredentials({ refresh_token: decAuth(rows[0].refresh_token),
+          access_token: rows[0].access_token ? decAuth(rows[0].access_token) : undefined,
+          expiry_date: rows[0].access_expires_at ? new Date(rows[0].access_expires_at).getTime() : undefined })
+        o.on('tokens', (t)=>{
+          (async()=>{
+            try{
+              if(t.refresh_token) await pool.query('UPDATE gmail_oauth SET refresh_token=?, updated_at=? WHERE account_id=?',[encAuth(t.refresh_token), sqlNow(), accountId])
+              if(t.access_token) await pool.query('UPDATE gmail_oauth SET access_token=?, access_expires_at=?, updated_at=? WHERE account_id=?',
+                [encAuth(t.access_token), sqlDate(new Date(t.expiry_date || Date.now()+3500*1000)), sqlNow(), accountId])
+            }catch{}
+          })()
+        })
+      }
+    }catch{}
+  }
+  return o
+}
+// 保存/查看 OAuth 应用配置（Client ID 可回显，Secret 不回显）
+app.put('/email/oauth/config', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { clientId, clientSecret } = req.body || {}
+  if(!clientId && !clientSecret) return res.status(400).json({ error:'需要 clientId / clientSecret' })
+  await saveGoogleOAuthConfig(clientId || '', clientSecret || '')
+  const cfg = await getGoogleOAuthConfig()
+  res.json({ ok:true, hasId: !!cfg.id, hasSecret: !!cfg.secret, redirectUri: `${req.protocol}://${req.headers.host}/email/oauth/callback` })
+}))
+app.get('/email/oauth/config', auth, wrap(async (req,res)=>{
+  const cfg = await getGoogleOAuthConfig()
+  res.json({ hasId: !!cfg.id, hasSecret: !!cfg.secret })
+}))
+// 生成授权链接：GET /email/oauth/url?accountId=（accountId 可为空，新绑定时先建占位账号）
+app.get('/email/oauth/url', auth, wrap(async (req,res)=>{
+  const o = await buildOAuthClient(req, null)
+  const state = Buffer.from(JSON.stringify({ u: req.user, a: req.query.accountId || '' })).toString('base64url')
+  const url = o.generateAuthUrl({ access_type:'offline', prompt:'consent', scope: GMAIL_SCOPES, state })
+  res.json({ url })
+}))
+// OAuth 回调（Google 跳转回来，不需要 token，用 state 验用户）
+app.get('/email/oauth/callback', wrap(async (req,res)=>{
+  try{
+    const { code, state } = req.query
+    if(!code || !state) return res.status(400).send('缺少 code/state')
+    const st = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8'))
+    const o = await buildOAuthClient(req, null)
+    const { tokens } = await o.getToken(String(code))
+    if(!tokens.refresh_token) throw new Error('Google 未返回 refresh_token（请用 prompt=consent 重新授权）')
+    o.setCredentials(tokens)
+    const { google } = await import('googleapis')
+    const gmail = google.gmail({ version:'v1', auth:o })
+    const me = await gmail.users.getProfile({ userId:'me' })
+    const email = me.data.emailAddress || ''
+    // 找或建账号行
+    let accountId = st.a || ''
+    if(dbReady){
+      if(accountId){
+        const [ex] = await pool.query('SELECT id FROM email_accounts WHERE id=? AND username=?',[accountId, st.u])
+        if(!ex.length) accountId = ''
+      }
+      if(!accountId){
+        const [ex2] = await pool.query('SELECT id FROM email_accounts WHERE username=? AND email=?',[st.u, email])
+        if(ex2.length) accountId = ex2[0].id
+      }
+      if(!accountId){
+        accountId = crypto.randomUUID()
+        await pool.query(`INSERT INTO email_accounts (id, username, email, provider, imap_host, imap_port, smtp_host, smtp_port, auth_enc) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [accountId, st.u, email, 'gmail', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, encAuth('oauth:'+accountId)])
+      }
+      await pool.query(`INSERT INTO gmail_oauth (account_id, username, email, refresh_token, access_token, access_expires_at, scope, updated_at) VALUES (?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE email=VALUES(email), refresh_token=VALUES(refresh_token), access_token=VALUES(access_token), access_expires_at=VALUES(access_expires_at), scope=VALUES(scope), updated_at=VALUES(updated_at)`,
+        [accountId, st.u, email, encAuth(tokens.refresh_token), tokens.access_token ? encAuth(tokens.access_token) : null,
+         tokens.expiry_date ? sqlDate(new Date(tokens.expiry_date)) : null, GMAIL_SCOPES.join(' '), sqlNow()])
+      // 记初始 historyId，后续增量用
+      try{
+        const hid = me.data.historyId || ''
+        if(hid) await pool.query(`INSERT INTO mail_sync_state (account_id, folder, uidvalidity, last_uid, uidnext, full_sync_done, last_sync_at, history_id) VALUES (?,?,?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE history_id=VALUES(history_id)`,[accountId, '[Gmail]/All Mail', 0, 0, 0, 0, sqlNow(), String(hid)])
+      }catch{}
+    }
+    res.send(`<html><body style="font-family:sans-serif;padding:40px"><h2>✅ Gmail 授权成功</h2><p>账号：${email}</p><p>可以关闭此页面，回到工作台点“同步”开始首次全量。</p></body></html>`)
+  }catch(e){
+    res.status(500).send('授权失败：' + String(e.message||e).slice(0,200))
+  }
+}))
+// OAuth 状态：GET /email/oauth/status/:accountId
+app.get('/email/oauth/status/:accountId', auth, wrap(async (req,res)=>{
+  const acc = await loadMailAccount(req.params.accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  let connected = false, email = acc.email || '', historyId = ''
+  try{
+    const [rows] = await pool.query('SELECT email FROM gmail_oauth WHERE account_id=?',[req.params.accountId])
+    if(rows.length){ connected = true; email = rows[0].email || email }
+    const [srows] = await pool.query(`SELECT history_id FROM mail_sync_state WHERE account_id=? AND folder='[Gmail]/All Mail'`,[req.params.accountId])
+    if(srows.length) historyId = srows[0].history_id || ''
+  }catch{}
+  res.json({ connected, email, historyId: historyId ? true : false, authType: connected ? 'oauth' : 'none' })
+}))
+// 解绑 OAuth：POST /email/oauth/disconnect/:accountId（只删凭证，不删邮件库）
+app.post('/email/oauth/disconnect/:accountId', auth, wrap(async (req,res)=>{
+  await pool.query('DELETE FROM gmail_oauth WHERE account_id=?',[req.params.accountId]).catch(()=>{})
+  res.json({ ok:true })
+}))
+
+// ---------- Gmail 推送（P3：需 GCP Pub/Sub，见 GMAIL_API_SETUP.md）----------
+// 开通/续期 watch：POST /email/push/watch/:accountId {topicName?}
+app.post('/email/push/watch/:accountId', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId } = req.params
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  const topicName = String(req.body?.topicName || '')
+  try{
+    const { google } = await import('googleapis');
+    const o = await buildOAuthClient(req, accountId);
+    const gmail = google.gmail({ version:'v1', auth:o });
+    let topic = topicName
+    if(!topic){
+      const [rows] = await pool.query('SELECT topic_name FROM gmail_oauth WHERE account_id=?',[accountId]).catch(()=> [[]])
+      topic = rows.length ? String(rows[0].topic_name || '') : ''
+    }
+    if(!topic) return res.status(400).json({ error:'需要 topicName（GCP Pub/Sub 主题，如 projects/xxx/topics/gmail）' })
+    const st0 = { apiCalls:0 }
+    const w = await gmailCall(()=> gmail.users.watch({ userId:'me', requestBody:{ topicName: topic, labelIds:['INBOX'] } }), st0, 'users.watch');
+    await pool.query('UPDATE gmail_oauth SET topic_name=?, watch_expiration=?, updated_at=? WHERE account_id=?',
+      [topic, w.data.expiration ? sqlDate(new Date(Number(w.data.expiration))) : null, sqlNow(), accountId])
+    res.json({ ok:true, historyId: w.data.historyId, expiration: w.data.expiration })
+  }catch(e){
+    res.status(502).json({ error:'开通 watch 失败：' + String(e.message||e).slice(0,200) })
+  }
+}))
+// 推送状态：GET /email/push/status/:accountId
+app.get('/email/push/status/:accountId', auth, wrap(async (req,res)=>{
+  const [rows] = await pool.query('SELECT topic_name, watch_expiration FROM gmail_oauth WHERE account_id=?',[req.params.accountId]).catch(()=> [[]])
+  if(!rows.length) return res.json({ push:false })
+  const exp = rows[0].watch_expiration ? new Date(rows[0].watch_expiration).getTime() : 0
+  res.json({ push: !!rows[0].topic_name, topic: rows[0].topic_name || '', expiration: rows[0].watch_expiration || null,
+    valid: exp > Date.now() + 2*86400000 })
+}))
+// Pub/Sub webhook 入口：POST /email/push/hook?token=xxx（Google 调用，需公网可达）
+// token 在 server_config(push_secret) 里，Google Cloud 控制台订阅推送时带上 ?token=
+// 收到后只做一件事：触发对应账号增量同步
+app.post('/email/push/hook', wrap(async (req,res)=>{
+  try{
+    let secret = process.env.PUSH_SECRET || ''
+    try{
+      const [rows] = await pool.query(`SELECT v FROM server_config WHERE k='push_secret'`).catch(()=> [[]])
+      if(rows.length) secret = rows[0].v || secret
+    }catch{}
+    if(!secret || String(req.query.token || '') !== secret) return res.status(403).send('forbidden')
+    const msg = req.body && req.body.message;
+    if(!msg || !msg.data) return res.json({ ok:true })
+    const payload = JSON.parse(Buffer.from(String(msg.data), 'base64').toString('utf8'))
+    const email = String(payload.emailAddress || '').toLowerCase()
+    const hid = String(payload.historyId || '')
+    if(!email) return res.json({ ok:true })
+    const [arows] = await pool.query(`SELECT ea.id, ea.username FROM email_accounts ea JOIN gmail_oauth go ON go.account_id=ea.id WHERE LOWER(ea.email)=?`,[email]).catch(()=> [[]])
+    for(const a of (arows||[])){
+      const cur = ingestJobs.get(a.id)
+      if(cur && cur.running) continue
+      runGmailApiSync(a.id, a.username, { mode:'incremental' }).catch(()=>{})
+    }
+    res.json({ ok:true, historyId: hid })
+  }catch(e){ res.json({ ok:true }) }
+}))
+// watch 自动续期：每天检查一次，2天内过期则续（需 topic 已配）
+async function pushRenewTick(){
+  if(!dbReady) return
+  try{
+    const [rows] = await pool.query(`SELECT account_id, username, topic_name, watch_expiration FROM gmail_oauth WHERE topic_name<>'' AND watch_expiration IS NOT NULL AND watch_expiration < DATE_ADD(NOW(), INTERVAL 2 DAY)`).catch(()=> [[]])
+    for(const r of rows){
+      try{
+        const { google } = await import('googleapis');
+        // 构造内部 req 桩供 buildOAuthClient 取 host（续期不依赖本次请求，用 server_config 回退无妨，此处直接连）
+        const o = await buildOAuthClient({ headers:{}, protocol:'https' }, r.account_id);
+        const gmail = google.gmail({ version:'v1', auth:o });
+        const st0 = { apiCalls:0 };
+        const w = await gmailCall(()=> gmail.users.watch({ userId:'me', requestBody:{ topicName: r.topic_name, labelIds:['INBOX'] } }), st0, 'users.watch-renew');
+        await pool.query('UPDATE gmail_oauth SET watch_expiration=?, updated_at=? WHERE account_id=?',
+          [w.data.expiration ? sqlDate(new Date(Number(w.data.expiration))) : null, sqlNow(), r.account_id]);
+        console.log(`[push] watch 续期 ok ${r.account_id}`)
+      }catch(e){ console.log('[push] watch 续期失败:', String(e.message||e).slice(0,120)) }
+    }
+  }catch{}
+}
+setInterval(pushRenewTick, 24*60*60*1000)
+
+// ---------- Gmail API 同步引擎（P1，替代 IMAP；OAuth 必需）----------
+// 游标：historyId 单真相源（mail_sync_state.history_id），去重键：gmail message id
+// IMAP 时代的 gmail_msgid 即 API id（同一不可变 ID 的 hex），老数据天然对齐
+const GMAIL_API_FOLDER = '[Gmail]/All Mail';
+const GMAIL_BODY_MAX = 15*1024*1024; // 正文/附件单体上限，复用 IMAP 时代阈值语义
+function gmailApiErr(e){
+  const code = e && e.code;
+  const reason = (e && e.errors && e.errors[0] && e.errors[0].reason) || '';
+  return { code, reason, message: String((e && e.message) || e).slice(0,200) };
+}
+function b64urlToBuf(s){
+  if(!s) return null;
+  try{
+    s = String(s).replace(/-/g,'+').replace(/_/g,'/');
+    while(s.length % 4) s += '=';
+    return Buffer.from(s, 'base64');
+  }catch{ return null }
+}
+function parseAddrHeader(v){
+  v = String(v || '').trim();
+  if(!v) return { name:'', address:'' };
+  const m = v.match(/^(?:"?([^"]*)"?\s*)?<([^<>@\s]+@[^<>\s]+)>\s*$/);
+  if(m) return { name:(m[1]||'').trim(), address:m[2].trim() };
+  const m2 = v.match(/([^\s<>,;]+@[^\s<>,;]+)/);
+  return { name:'', address: m2 ? m2[1].trim() : '' };
+}
+function walkGmailPayload(payload, cb){
+  const stack = [payload].filter(Boolean);
+  while(stack.length){
+    const p = stack.pop();
+    if(!p) continue;
+    if(p.parts && p.parts.length){ for(const c of p.parts) stack.push(c); continue }
+    cb(p);
+  }
+}
+function extractGmailBody(payload){
+  let text = '', html = '';
+  walkGmailPayload(payload, (p)=>{
+    const mime = String(p.mimeType || '');
+    const data = p.body && p.body.data;
+    if(!data) return;
+    if(p.filename) return; // 附件另行处理
+    const buf = b64urlToBuf(data);
+    if(!buf) return;
+    const s = buf.toString('utf8');
+    if(mime === 'text/plain' && !text) text = s;
+    else if(mime === 'text/html' && !html) html = s;
+  });
+  return { text, html };
+}
+function extractGmailAttachments(payload){
+  const out = [];
+  walkGmailPayload(payload, (p)=>{
+    if(p.filename && p.body && p.body.attachmentId){
+      out.push({ filename: p.filename, attachmentId: p.body.attachmentId,
+        mime: p.mimeType || '', size: p.body.size || 0 });
+    }
+  });
+  return out;
+}
+function gmailHeader(payload, name){
+  const hs = (payload && payload.headers) || [];
+  const h = hs.find(x=> String(x.name||'').toLowerCase() === String(name).toLowerCase());
+  return h ? String(h.value || '') : '';
+}
+// 配额感知调用：429/限流/5xx 指数退避重试；401 抛认证错；404 抛未找到（调用方转全量）
+async function gmailCall(fn, st, label){
+  let wait = 5000;
+  for(let attempt = 0; attempt < 6; attempt++){
+    if(st && st.cancelled) throw new Error('cancelled');
+    try{
+      if(st) st.apiCalls = (st.apiCalls || 0) + 1;
+      return await fn();
+    }catch(e){
+      const { code, reason, message } = gmailApiErr(e);
+      if(code === 401) throw new Error('Gmail 授权失效，请重新 OAuth 绑定');
+      if(code === 404) { const err = new Error('historyId 过期'); err.gapi404 = true; throw err }
+      const retryable = code === 429 || code === 403 || (code >= 500 && code < 600) || !code;
+      if(!retryable || attempt === 5) throw new Error(`Gmail API 失败(${label}): ${reason || code || ''} ${message}`.slice(0,200));
+      await new Promise(r=>setTimeout(r, wait));
+      wait = Math.min(wait*2, 5*60*1000);
+    }
+  }
+}
+async function getGmailService(accountId, username, req){
+  const { google } = await import('googleapis');
+  const o = await buildOAuthClient(req, accountId);
+  const [rows] = await pool.query('SELECT refresh_token FROM gmail_oauth WHERE account_id=?',[accountId]).catch(()=> [[]]);
+  if(!rows.length || !rows[0].refresh_token) throw new Error('该账号未 OAuth 绑定，请先绑定');
+  return google.gmail({ version:'v1', auth:o });
+}
+async function rebuildGmailThreads(accountId, folder){
+  try{
+    const [trows] = await pool.query(`SELECT gmail_threadid AS tid, COUNT(*) AS c, MAX(msg_date) AS lastd, ANY_VALUE(subject) AS subj FROM mail_messages WHERE account_id=? AND folder=? AND gmail_threadid<>'' GROUP BY gmail_threadid`,[accountId, folder]);
+    for(let i=0;i<trows.length;i+=500){
+      const ch = trows.slice(i,i+500);
+      const vals = [];
+      const params = [];
+      for(const t of ch){ vals.push('(?,?,?,?,?)'); params.push(accountId, String(t.tid).slice(0,64), normSubject(t.subj), Number(t.c)||0, t.lastd) }
+      if(vals.length) await pool.query(`INSERT INTO mail_threads (account_id, thread_id, subject_norm, count, last_date) VALUES ${vals.join(',')} ON DUPLICATE KEY UPDATE subject_norm=VALUES(subject_norm), count=VALUES(count), last_date=VALUES(last_date)`, params);
+    }
+  }catch(e){ console.log('[gapi] threads skip:', String(e.message||e).slice(0,80)) }
+}
+// 单封 FULL 消息 → 入库行（含正文+附件），复用 IMAP 时代的表结构与钩子
+async function ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st){
+  const full = await gmailCall(()=> gmail.users.messages.get({ userId:'me', id: apiId, format:'FULL' }), st, 'messages.get');
+  const m = full.data || {};
+  const payload = m.payload || {};
+  const subject = gmailHeader(payload, 'Subject') || '(无主题)';
+  const from = parseAddrHeader(gmailHeader(payload, 'From'));
+  const toList = gmailHeader(payload, 'To').split(',').map(s=> parseAddrHeader(s).address || s.trim()).filter(Boolean).join(', ').slice(0,1024);
+  const msgId = gmailHeader(payload, 'Message-ID').slice(0,512);
+  const internalMs = Number(m.internalDate || 0);
+  const msgDate = internalMs ? sqlDate(new Date(internalMs)) : sqlDate(new Date());
+  const labelIds = m.labelIds || [];
+  const seen = !labelIds.includes('UNREAD');
+  const labels = labelIds.join(',');
+  const { text: bodyText0, html: bodyHtml0 } = extractGmailBody(payload);
+  let bodyText = String(bodyText0 || bodyHtml0 || '').slice(0, 500000);
+  let bodyHtml = bodyHtml0 ? String(bodyHtml0).slice(0, 800000) : null;
+  const atts = extractGmailAttachments(payload);
+  const bigTotal = atts.reduce((s,a)=> s + (Number(a.size)||0), 0);
+  if(bigTotal > GMAIL_BODY_MAX && !bodyText){
+    bodyText = '[超大邮件，正文未入库，请在线查看]';
+  }
+  const r = await pool.query(
+    `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached, labels, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE subject=VALUES(subject), is_read=VALUES(is_read), has_attachment=GREATEST(has_attachment, VALUES(has_attachment)), labels=VALUES(labels),
+       body_text=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_text), body_text),
+       body_html=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_html), body_html),
+       body_cached=IF(VALUES(body_cached)=1,1,body_cached), updated_at=VALUES(updated_at)`,
+    [accountId, folder, uid, msgId, apiId, String(m.threadId||'').slice(0,64), String(subject).slice(0,1024),
+     from.address.slice(0,512), from.name.slice(0,256), toAddrsFix(toList), msgDate, seen?1:0, atts.length?1:0,
+     bodyText, bodyHtml, bodyText?1:0, labels.slice(0,1024), sqlNow()]);
+  const isNew = r[0].affectedRows === 1;
+  if(isNew) st.added = (st.added||0)+1; else st.updated = (st.updated||0)+1;
+  st.done = (st.done||0)+1;
+  st.realBodies = (st.realBodies||0) + (bodyText && !bodyText.startsWith('[') ? 1 : 0);
+  // 附件：小附件 inline 取，大附件跳过记元数据
+  for(const a of atts.slice(0,10)){
+    try{
+      if((Number(a.size)||0) > 50*1024*1024) continue;
+      const ad = await gmailCall(()=> gmail.users.messages.attachments.get({ userId:'me', messageId: apiId, id: a.attachmentId }), st, 'attachments.get');
+      const buf = b64urlToBuf(ad.data && ad.data.data);
+      if(!buf) continue;
+      const sv = await saveAttachment(accountId, folder, uid, { filename: a.filename, content: buf, size: buf.length, contentType: a.mime });
+      if(sv.saved){
+        await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
+          [accountId, folder, uid, safeFileName(a.filename), sv.size || 0, String(a.mime||'').slice(0,128), sv.path || '']);
+      }
+    }catch{}
+  }
+  // 回复检测（14天内新邮件才触发，复用 IMAP 时代钩子）
+  try{
+    const fromAddr = from.address.toLowerCase();
+    const meAddr = ''; // 与账号自身比对在外层做，这里只传结构
+    void meAddr;
+    const env = { subject, from:[{ address: from.address, name: from.name }] };
+    const parsed = { subject, text: bodyText, from:{ value:[{ address: from.address }] }, headers: new Map() };
+    await seqReplyCheck(accountId, username, uid, env, parsed, internalMs ? new Date(internalMs) : new Date());
+  }catch{}
+  return { isNew, hasBody: !!bodyText };
+}
+function toAddrsFix(s){ return String(s||'').slice(0,1024) }
+// 并发池（无新依赖）
+async function pmap(items, n, fn){
+  const out = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async ()=>{
+    while(true){
+      const k = i++;
+      if(k >= items.length) return;
+      out[k] = await fn(items[k], k);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+async function readSyncHistoryId(accountId, folder){
+  try{
+    const [rows] = await pool.query('SELECT history_id FROM mail_sync_state WHERE account_id=? AND folder=?',[accountId, folder]);
+    if(rows.length && rows[0].history_id) return String(rows[0].history_id);
+  }catch{}
+  return '';
+}
+async function writeSyncHistoryId(accountId, folder, historyId, fullDone){
+  try{
+    await pool.query(`INSERT INTO mail_sync_state (account_id, folder, uidvalidity, last_uid, uidnext, full_sync_done, last_sync_at, history_id)
+      VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE history_id=VALUES(history_id), full_sync_done=GREATEST(full_sync_done, VALUES(full_sync_done)), last_sync_at=VALUES(last_sync_at)`,
+      [accountId, folder, 0, 0, 0, fullDone?1:0, sqlNow(), String(historyId||'')]);
+  }catch{}
+}
+// Gmail API 全量：messages.list 分页取 ID → 差集 → METADATA 信封 → FULL 正文
+async function gmailApiFullSync(gmail, accountId, username, folder, st, haveMap, getCounter){
+  let pageToken = undefined;
+  const missingIds = [];
+  for(;;){
+    if(st.cancelled) throw new Error('cancelled');
+    const res = await gmailCall(()=> gmail.users.messages.list({ userId:'me', maxResults:500, pageToken }), st, 'messages.list');
+    const msgs = (res.data && res.data.messages) || [];
+    for(const m of msgs){ if(m.id && !haveMap.has(m.id)) missingIds.push(m.id); }
+    st.total = (st.total||0) + msgs.length;
+    pageToken = res.data.nextPageToken;
+    if(!pageToken) break;
+    await new Promise(r=>setImmediate(r));
+  }
+  // Phase A：信封（METADATA，并发 8）
+  const B = 50;
+  for(let i=0;i<missingIds.length;i+=B){
+    if(st.cancelled) throw new Error('cancelled');
+    const batch = missingIds.slice(i,i+B);
+    await pmap(batch, 8, async (apiId)=>{
+      const meta = await gmailCall(()=> gmail.users.messages.get({ userId:'me', id: apiId, format:'METADATA', metadataHeaders:['Subject','From','To','Date','Message-ID'] }), st, 'messages.get-meta');
+      const mm = meta.data || {};
+      const p = mm.payload || {};
+      const subject = gmailHeader(p, 'Subject') || '(无主题)';
+      const from = parseAddrHeader(gmailHeader(p, 'From'));
+      const toList = gmailHeader(p, 'To').split(',').map(s=> parseAddrHeader(s).address || s.trim()).filter(Boolean).join(', ').slice(0,1024);
+      const internalMs = Number(mm.internalDate || 0);
+      const labelIds = mm.labelIds || [];
+      const uid = getCounter();
+      await pool.query(
+        `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), labels=VALUES(labels), updated_at=VALUES(updated_at)`,
+        [accountId, folder, uid, gmailHeader(p,'Message-ID').slice(0,512), apiId, String(mm.threadId||'').slice(0,64),
+         String(subject).slice(0,1024), from.address.slice(0,512), from.name.slice(0,256), toList,
+         internalMs ? sqlDate(new Date(internalMs)) : sqlNow().slice(0,19).replace('T',' '), labelIds.includes('UNREAD')?0:1, 0, '', 0, labelIds.join(',').slice(0,1024), sqlNow()]);
+      haveMap.set(apiId, uid);
+      st.done = (st.done||0)+1;
+    });
+    await new Promise(r=>setImmediate(r));
+  }
+  // Phase B：正文（FULL，并发 4，沿用停滞熔断语义）
+  await gmailApiBackfillBodies(gmail, accountId, username, folder, st);
+}
+// 正文回填：body_cached=0 的倒序补 FULL（新邮件优先），整轮零产出记停滞
+async function gmailApiBackfillBodies(gmail, accountId, username, folder, st){
+  for(;;){
+    if(st.cancelled) throw new Error('cancelled');
+    const [todoRows] = await pool.query('SELECT gmail_msgid AS gid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 AND gmail_msgid<>"" ORDER BY msg_date DESC LIMIT 400',[accountId, folder]).catch(()=> [[]]);
+    const todo = (todoRows||[]).map(r=>String(r.gid)).filter(Boolean);
+    if(!todo.length) break;
+    const roundBefore = st.realBodies || 0;
+    const [urows] = await pool.query('SELECT gmail_msgid, uid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[]]);
+    const uidOf = new Map((urows||[]).map(r=>[String(r.gmail_msgid), Number(r.uid)]));
+    await pmap(todo, 4, async (apiId)=>{
+      if(st.cancelled) throw new Error('cancelled');
+      const uid = uidOf.get(apiId);
+      if(!uid) return;
+      try{
+        await ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st);
+      }catch(e){
+        st.chunkFails = st.chunkFails || {};
+        const k = 'api:' + apiId.slice(-8);
+        st.chunkFails[k] = (st.chunkFails[k] || 0) + 1;
+        if(st.chunkFails[k] >= 3 && (st.realBodies||0) > 0){
+          await pool.query(`UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=? AND body_cached=0`,
+            [sqlNow(), accountId, folder, uid]).catch(()=>{});
+        }
+      }
+    });
+    if((st.realBodies||0) === roundBefore){
+      st.stallRounds = (st.stallRounds||0)+1;
+      if(st.stallRounds >= 3) throw new Error('no-progress: continuous fetch failures, likely throttled');
+    } else st.stallRounds = 0;
+  }
+}
+// Gmail API 增量：history.list → added/deleted/labels
+async function gmailApiIncremental(gmail, accountId, username, folder, st, startHistoryId){
+  let pageToken = undefined;
+  let latestHid = startHistoryId;
+  const toFetchFull = [];
+  const toCheckMin = [];
+  const toDelete = [];
+  for(;;){
+    if(st.cancelled) throw new Error('cancelled');
+    let res;
+    try{
+      res = await gmailCall(()=> gmail.users.history.list({ userId:'me', startHistoryId, historyTypes:['messageAdded','messageDeleted','labelAdded','labelRemoved'], maxResults:500, pageToken }), st, 'history.list');
+    }catch(e){
+      if(e && e.gapi404) throw new Error('HISTORY_EXPIRED');
+      throw e;
+    }
+    const data = res.data || {};
+    if(data.historyId) latestHid = data.historyId;
+    for(const h of (data.history || [])){
+      for(const a of (h.messagesAdded || [])) if(a.message && a.message.id) toFetchFull.push(a.message.id);
+      for(const d of (h.messagesDeleted || [])) if(d.message && d.message.id) toDelete.push(d.message.id);
+      for(const l of (h.labelsAdded || [])) if(l.message && l.message.id) toCheckMin.push(l.message.id);
+      for(const l of (h.labelsRemoved || [])) if(l.message && l.message.id) toCheckMin.push(l.message.id);
+    }
+    pageToken = data.nextPageToken;
+    if(!pageToken) break;
+  }
+  // 预载去重表
+  const [haveRows] = await pool.query('SELECT gmail_msgid, uid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[]]);
+  const haveMap = new Map((haveRows||[]).map(r=>[String(r.gmail_msgid), Number(r.uid)]));
+  let [mx] = await pool.query('SELECT MAX(uid) AS m FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[{m:0}]]);
+  let counter = Number((mx[0] && mx[0].m) || 0);
+  const getCounter = ()=> ++counter;
+  // 新增：FULL 入库（含正文）
+  const fresh = [...new Set(toFetchFull)].filter(id=> !haveMap.has(id));
+  st.total = (st.total||0) + fresh.length;
+  await pmap(fresh, 4, async (apiId)=>{
+    if(st.cancelled) throw new Error('cancelled');
+    const uid = getCounter();
+    try{
+      await ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st);
+      haveMap.set(apiId, uid);
+    }catch(e){
+      if(String(e.message||'').includes('cancelled')) throw e;
+      st.chunkFails = st.chunkFails || {};
+      st.chunkFails['incr'] = (st.chunkFails['incr']||0)+1;
+    }
+  });
+  // 删除：硬删（与 Gmail 一致）
+  for(const gid of [...new Set(toDelete)]){
+    try{
+      const [ur] = await pool.query('SELECT uid FROM mail_messages WHERE account_id=? AND gmail_msgid=?',[accountId, gid]).catch(()=> [[]]);
+      const duid = ur.length ? Number(ur[0].uid) : 0;
+      if(duid) await pool.query('DELETE FROM mail_attachments WHERE account_id=? AND folder=? AND uid=?',[accountId, folder, duid]).catch(()=>{});
+      await pool.query('DELETE FROM mail_messages WHERE account_id=? AND gmail_msgid=?',[accountId, gid]);
+    }catch{}
+  }
+  // 标签变化：MINIMAL 重读已读状态
+  for(const gid of [...new Set(toCheckMin)]){
+    try{
+      const mm = await gmailCall(()=> gmail.users.messages.get({ userId:'me', id: gid, format:'MINIMAL' }), st, 'messages.get-min');
+      const labels = (mm.data && mm.data.labelIds) || [];
+      await pool.query('UPDATE mail_messages SET is_read=?, labels=?, updated_at=? WHERE account_id=? AND gmail_msgid=?',
+        [labels.includes('UNREAD')?0:1, labels.join(',').slice(0,1024), sqlNow(), accountId, gid]);
+    }catch{}
+    await new Promise(r=>setImmediate(r));
+  }
+  await rebuildGmailThreads(accountId, folder);
+  return latestHid;
+}
+// 主入口：POST /email/gsync/:accountId {mode?: auto|full|incremental}
+async function runGmailApiSync(accountId, username, opts = {}){
+  const folder = GMAIL_API_FOLDER;
+  let st = ingestJobs.get(accountId);
+  if(st && st.running) throw new Error('已有同步任务进行中');
+  st = { running:true, mode:'gmail', folder, done:0, total:0, added:0, updated:0, startedAt:new Date().toISOString(), error:'', apiCalls:0, historyId:'' };
+  ingestJobs.set(accountId, st);
+  const acc = await loadMailAccount(accountId, username);
+  if(!acc) { st.running = false; throw new Error('账号不存在或数据库未就绪') }
+  let gmail;
+  try{
+    const { google } = await import('googleapis');
+    const o = await buildOAuthClient(null, accountId);
+    const [orows] = await pool.query('SELECT 1 FROM gmail_oauth WHERE account_id=?',[accountId]).catch(()=> [[]]);
+    if(!orows.length) throw new Error('该账号未 OAuth 绑定，请先绑定');
+    gmail = google.gmail({ version:'v1', auth:o });
+  }catch(e){ st.running = false; st.error = String(e.message||e).slice(0,200); throw e }
+  try{
+    let mode = opts.mode || 'auto';
+    let hid = await readSyncHistoryId(accountId, folder);
+    if(mode === 'auto') mode = hid ? 'incremental' : 'full';
+    if(mode === 'incremental' && hid){
+      try{
+        const latest = await gmailApiIncremental(gmail, accountId, username, folder, st, hid);
+        await writeSyncHistoryId(accountId, folder, latest, true);
+        st.historyId = latest;
+      }catch(e){
+        if(String(e.message||'').includes('HISTORY_EXPIRED')) mode = 'full';
+        else throw e;
+      }
+    }
+    if(mode === 'full'){
+      // 预载去重表 + 计数器
+      const [haveRows] = await pool.query('SELECT gmail_msgid, uid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[]]);
+      const haveMap = new Map((haveRows||[]).map(r=>[String(r.gmail_msgid), Number(r.uid)]).filter(([k])=>k));
+      let [mx] = await pool.query('SELECT MAX(uid) AS m FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[{m:0}]]);
+      let counter = Number((mx[0] && mx[0].m) || 0);
+      // 旧 IMAP 行的 gmail_msgid 即 API id，天然对齐；再按 Message-ID 兜底一行
+      await gmailApiFullSync(gmail, accountId, username, folder, st, haveMap, ()=> ++counter);
+      try{
+        const prof = await gmailCall(()=> gmail.users.getProfile({ userId:'me' }), st, 'getProfile');
+        const newHid = (prof.data && prof.data.historyId) || '';
+        await writeSyncHistoryId(accountId, folder, newHid, true);
+        st.historyId = newHid;
+      }catch{}
+      await rebuildGmailThreads(accountId, folder);
+    }
+  }catch(e){
+    st.error = String(e.message||e).slice(0,200);
+    throw e;
+  }finally{
+    st.running = false;
+  }
+  return st;
+}
+app.post('/email/gsync/:accountId', auth, wrap(async (req,res)=>{
+  const { accountId } = req.params;
+  const acc = await loadMailAccount(accountId, req.user);
+  if(!acc) return res.status(404).json({ error:'账号不存在' });
+  const cur = ingestJobs.get(accountId);
+  if(cur && cur.running) return res.status(409).json({ error:'已有任务进行中', job:cur });
+  const mode = ['full','incremental','auto'].includes(req.body?.mode) ? req.body.mode : 'auto';
+  runGmailApiSync(accountId, req.user, { mode }).catch(()=>{});
+  // 稍等片刻让任务启动，回最新状态
+  await new Promise(r=>setTimeout(r, 800));
+  res.json({ ok:true, mode, job: ingestJobs.get(accountId) });
+}));
 
 // ---------- 真实邮件 IMAP ----------
 // 加密：用 SECRET 对授权码做 AES-GCM（与前端脱敏一致）
@@ -1206,6 +1854,15 @@ async function runMailIngest(accountId, username, opts = {}){
   finally{ st.running = false }
 }
 
+// 双轨路由：Gmail 且已 OAuth → Gmail API 引擎；其他（QQ/网易/163/Outlook）→ IMAP 引擎
+async function usesGmailApi(acc){
+  if(!acc || String(acc.provider||'').toLowerCase() !== 'gmail') return false
+  if(!dbReady) return false
+  try{
+    const [rows] = await pool.query('SELECT 1 FROM gmail_oauth WHERE account_id=?',[acc.id])
+    return rows.length > 0
+  }catch{ return false }
+}
 // 启动入库任务：POST /email/ingest/:accountId {mode:'full'|'incremental', folders?}
 app.post('/email/ingest/:accountId', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（服务端邮件库未就绪）' })
@@ -1214,10 +1871,16 @@ app.post('/email/ingest/:accountId', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const cur = ingestJobs.get(accountId)
   if(cur && cur.running) return res.status(409).json({ error:'入库任务进行中', job:cur })
+  if(await usesGmailApi(acc)){
+    const mode = ['full','incremental','auto'].includes(req.body?.mode) ? req.body.mode : 'auto'
+    runGmailApiSync(accountId, req.user, { mode }).catch(()=>{})
+    await new Promise(r=>setTimeout(r, 800))
+    return res.json({ ok:true, mode, engine:'gmail-api', job: ingestJobs.get(accountId) })
+  }
   const mode = req.body?.mode === 'incremental' ? 'incremental' : 'full'
   const folders = Array.isArray(req.body?.folders) && req.body.folders.length ? req.body.folders.map(String) : undefined
   runMailIngest(accountId, req.user, { mode, folders }).catch(()=>{})
-  res.json({ ok:true, mode, job: ingestJobs.get(accountId) })
+  res.json({ ok:true, mode, engine:'imap', job: ingestJobs.get(accountId) })
 }))
 
 // 入库进度：GET /email/ingest-status/:accountId
@@ -1569,7 +2232,11 @@ function startMailWatcher(accountId, username){
   if(cur && cur.running) return cur
   const w = { running:true, username, mode:'starting', lastEventAt:'', lastCycleAt:'', lastUid:0, error:'', idleTimer:null }
   mailWatchers.set(accountId, w)
-  mailWatchLoop(accountId, username).catch(()=>{})
+  // OAuth 已接管的 Gmail 账号跳过 IMAP IDLE（节流+避重复）
+  loadMailAccount(accountId, username).then(async (acc)=>{
+    try{ if(acc && await usesGmailApi(acc)){ stopMailWatcher(accountId); console.log(`[watch] 跳过 ${accountId}（Gmail API 已接管）`); return } }catch{}
+    mailWatchLoop(accountId, username).catch(()=>{})
+  }).catch(()=>{ mailWatchLoop(accountId, username).catch(()=>{}) })
   return w
 }
 function stopMailWatcher(accountId){
@@ -1676,6 +2343,7 @@ app.get('/email/repurchase-pool', auth, wrap(async (req,res)=>{
 }))
 
 // 标已读回写 Gmail：POST /email/mark-read {accountId, uid, read, folder?}
+// OAuth 账号走 Gmail API（messages.modify），其他走 IMAP STORE
 app.post('/email/mark-read', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const { accountId, uid, read = true, folder = '[Gmail]/All Mail' } = req.body || {}
@@ -1683,16 +2351,32 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const uidNum = Number(uid)
   if(!isFinite(uidNum)) return res.status(400).json({ error:'无效UID' })
-  const pass = decAuth(acc.auth_enc)
-  const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:60000 })
-  try{
-    await client.connect()
-    const lock = await client.getMailboxLock(folder)
+  if(await usesGmailApi(acc)){
     try{
-      if(read) await client.messageFlagsAdd(String(uidNum), ['\\Seen'], { uid:true })
-      else await client.messageFlagsRemove(String(uidNum), ['\\Seen'], { uid:true })
-    }finally{ lock.release() }
-  }finally{ await client.logout().catch(()=>{}) }
+      const { google } = await import('googleapis');
+      const o = await buildOAuthClient(req, accountId);
+      const gmail = google.gmail({ version:'v1', auth:o });
+      const [mrows] = await pool.query('SELECT gmail_msgid FROM mail_messages WHERE account_id=? AND uid=?',[accountId, uidNum]).catch(()=> [[]]);
+      const gid = mrows.length ? String(mrows[0].gmail_msgid || '') : '';
+      if(!gid) throw new Error('本地无此邮件的 Gmail ID');
+      const st0 = { apiCalls:0 };
+      await gmailCall(()=> gmail.users.messages.modify({ userId:'me', id: gid,
+        requestBody: read ? { removeLabelIds:['UNREAD'] } : { addLabelIds:['UNREAD'] } }), st0, 'messages.modify');
+    }catch(e){
+      return res.status(502).json({ error:'Gmail API 标已读失败：' + String(e.message||e).slice(0,120) })
+    }
+  } else {
+    const pass = decAuth(acc.auth_enc)
+    const client = makeImapClient({ host:acc.imap_host, port:acc.imap_port, user:acc.email, pass, socketTimeout:60000 })
+    try{
+      await client.connect()
+      const lock = await client.getMailboxLock(folder)
+      try{
+        if(read) await client.messageFlagsAdd(String(uidNum), ['\\Seen'], { uid:true })
+        else await client.messageFlagsRemove(String(uidNum), ['\\Seen'], { uid:true })
+      }finally{ lock.release() }
+    }finally{ await client.logout().catch(()=>{}) }
+  }
   // 优先按 (account, folder, uid) 精确回写；无 folder 时兜底只按 uid
   if(folder && folder !== '[Gmail]/All Mail'){
     await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',[read?1:0, sqlNow(), accountId, folder, uidNum])
