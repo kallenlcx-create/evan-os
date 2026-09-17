@@ -4,7 +4,7 @@ import {
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
   ChevronLeft, ChevronRight, Plus, Settings, BarChart3, Eye, Zap,
   Plug, FlaskConical, Database, CloudUpload,
-  ChevronDown, Layers, File, Users
+  ChevronDown, Layers, File
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
@@ -20,7 +20,6 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/followups': { icon: CalendarCheck, label: '跟进', emoji: '⏰' },
   '/graph': { icon: Brain, label: '客户拓扑', emoji: '🕸️' },
   '/panorama': { icon: BarChart3, label: '资产全景', emoji: '📊' },
-  '/campaigns': { icon: Users, label: '批量营销', emoji: '📣' },
   '/goals': { icon: Target, label: '目标', emoji: '🎯' },
   '/work': { icon: Briefcase, label: '工作台', emoji: '💼' },
   '/projects': { icon: FolderKanban, label: '项目', emoji: '🚀' },

@@ -29,6 +29,7 @@ import FollowUpsPage from './pages/FollowUpsPage'
 import EmailGraphPage from './pages/EmailGraph'
 import EmailPanoramaPage from './pages/EmailPanorama'
 import CampaignsPage from './pages/CampaignsPage'
+// 批量营销已并入跟进；保留模块文件，路由指向 FollowUps
 void CampaignsPage
 
 import { useEffect } from 'react'
