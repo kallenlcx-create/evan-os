@@ -207,9 +207,12 @@ async function init() {
       INDEX idx_date (account_id, folder, msg_date),
       FULLTEXT INDEX ft_mail (subject, from_addr, to_addr, body_text) WITH PARSER ngram
     ) CHARACTER SET utf8mb4`).catch(()=>{})
-  // 兼容旧库：补 body_html 列（幂等）
+  // 兼容旧库：补 body_html / labels 列（幂等）
   try{
     await pool.query(`ALTER TABLE mail_messages ADD COLUMN body_html MEDIUMTEXT AFTER body_text`).catch(()=>{})
+  }catch{}
+  try{
+    await pool.query(`ALTER TABLE mail_messages ADD COLUMN labels VARCHAR(1024) DEFAULT '' AFTER body_cached`).catch(()=>{})
   }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mail_threads (
@@ -232,6 +235,10 @@ async function init() {
       PRIMARY KEY (account_id, folder, uid, filename(191)),
       INDEX idx_uid (account_id, folder, uid)
     ) CHARACTER SET utf8mb4`).catch(()=>{})
+  // Gmail attachmentId：正文阶段只记元数据时用于后续补二进制
+  try{ await pool.query(`ALTER TABLE mail_attachments ADD COLUMN gmail_att_id VARCHAR(128) DEFAULT '' AFTER mime`).catch(()=>{}) }catch{}
+  // Gmail attachmentId 可达数百字符，128 会截断导致 Invalid token
+  try{ await pool.query(`ALTER TABLE mail_attachments MODIFY gmail_att_id VARCHAR(1024) DEFAULT ''`).catch(()=>{}) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mail_drafts (
       id VARCHAR(80) PRIMARY KEY,
@@ -942,10 +949,10 @@ function gmailHeader(payload, name){
   const h = hs.find(x=> String(x.name||'').toLowerCase() === String(name).toLowerCase());
   return h ? String(h.value || '') : '';
 }
-// 配额感知调用：429/限流/5xx 指数退避重试；401 抛认证错；404 抛未找到（调用方转全量）
+// 配额感知调用：429/403 配额/5xx 指数退避重试；401 抛认证错；404 抛未找到（调用方转全量）
 async function gmailCall(fn, st, label){
-  let wait = 5000;
-  for(let attempt = 0; attempt < 6; attempt++){
+  let wait = 8000;
+  for(let attempt = 0; attempt < 8; attempt++){
     if(st && st.cancelled) throw new Error('cancelled');
     try{
       if(st) st.apiCalls = (st.apiCalls || 0) + 1;
@@ -954,10 +961,13 @@ async function gmailCall(fn, st, label){
       const { code, reason, message } = gmailApiErr(e);
       if(code === 401) throw new Error('Gmail 授权失效，请重新 OAuth 绑定');
       if(code === 404) { const err = new Error('historyId 过期'); err.gapi404 = true; throw err }
-      const retryable = code === 429 || code === 403 || (code >= 500 && code < 600) || !code;
-      if(!retryable || attempt === 5) throw new Error(`Gmail API 失败(${label}): ${reason || code || ''} ${message}`.slice(0,200));
-      await new Promise(r=>setTimeout(r, wait));
-      wait = Math.min(wait*2, 5*60*1000);
+      const isQuota = code === 429 || code === 403
+      const retryable = isQuota || (code >= 500 && code < 600) || !code;
+      if(!retryable || attempt === 7) throw new Error(`Gmail API 失败(${label}): ${reason || code || ''} ${message}`.slice(0,200));
+      // 配额类错误起始等待更长，避免并行 worker 同时撞墙
+      const base = isQuota ? Math.max(wait, 15000) : wait
+      await new Promise(r=>setTimeout(r, base + Math.floor(Math.random()*2000)));
+      wait = Math.min(wait*2, 3*60*1000);
     }
   }
 }
@@ -981,7 +991,8 @@ async function rebuildGmailThreads(accountId, folder){
   }catch(e){ console.log('[gapi] threads skip:', String(e.message||e).slice(0,80)) }
 }
 // 单封 FULL 消息 → 入库行（含正文+附件），复用 IMAP 时代的表结构与钩子
-async function ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st){
+// opts.skipAttachments: 批量回填时跳过附件二进制（只记元数据），打开邮件再下
+async function ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st, opts = {}){
   const full = await gmailCall(()=> gmail.users.messages.get({ userId:'me', id: apiId, format:'FULL' }), st, 'messages.get');
   const m = full.data || {};
   const payload = m.payload || {};
@@ -1002,31 +1013,45 @@ async function ingestGmailFull(gmail, accountId, username, folder, uid, apiId, s
   if(bigTotal > GMAIL_BODY_MAX && !bodyText){
     bodyText = '[超大邮件，正文未入库，请在线查看]';
   }
+  // 占位正文不算已缓存（body_cached=2）
+  const bodyCachedFlag = bodyText ? (bodyText.startsWith('[') ? 2 : 1) : 0;
   const r = await pool.query(
     `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_html, body_cached, labels, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON DUPLICATE KEY UPDATE subject=VALUES(subject), is_read=VALUES(is_read), has_attachment=GREATEST(has_attachment, VALUES(has_attachment)), labels=VALUES(labels),
-       body_text=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_text), body_text),
-       body_html=IF(body_cached=0 AND VALUES(body_cached)=1, VALUES(body_html), body_html),
-       body_cached=IF(VALUES(body_cached)=1,1,body_cached), updated_at=VALUES(updated_at)`,
+       body_text=IF(body_cached=0 AND VALUES(body_cached)>=1, VALUES(body_text), body_text),
+       body_html=IF(body_cached=0 AND VALUES(body_cached)>=1, VALUES(body_html), body_html),
+       body_cached=IF(VALUES(body_cached)>=1, VALUES(body_cached), body_cached), updated_at=VALUES(updated_at)`,
     [accountId, folder, uid, msgId, apiId, String(m.threadId||'').slice(0,64), String(subject).slice(0,1024),
      from.address.slice(0,512), from.name.slice(0,256), toAddrsFix(toList), msgDate, seen?1:0, atts.length?1:0,
-     bodyText, bodyHtml, bodyText?1:0, labels.slice(0,1024), sqlNow()]);
+     bodyText, bodyHtml, bodyCachedFlag, labels.slice(0,1024), sqlNow()]);
   const isNew = r[0].affectedRows === 1;
   if(isNew) st.added = (st.added||0)+1; else st.updated = (st.updated||0)+1;
   st.done = (st.done||0)+1;
   st.realBodies = (st.realBodies||0) + (bodyText && !bodyText.startsWith('[') ? 1 : 0);
-  // 附件：小附件 inline 取，大附件跳过记元数据
-  for(const a of atts.slice(0,10)){
+  // 附件：记录全部（不截断），>50MB 只记元数据
+  // skipAttachments：只写元数据+gmail_att_id，二进制由后续附件回填补
+  for(const a of atts){
     try{
-      if((Number(a.size)||0) > 50*1024*1024) continue;
+      if((Number(a.size)||0) > 50*1024*1024){
+        await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path, gmail_att_id) VALUES (?,?,?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), gmail_att_id=VALUES(gmail_att_id)`,
+          [accountId, folder, uid, safeFileName(a.filename), Number(a.size)||0, String(a.mime||'').slice(0,128), '', String(a.attachmentId||'').slice(0,128)]).catch(()=>{});
+        continue
+      }
+      if(opts.skipAttachments){
+        await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path, gmail_att_id) VALUES (?,?,?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), gmail_att_id=VALUES(gmail_att_id)`,
+          [accountId, folder, uid, safeFileName(a.filename), Number(a.size)||0, String(a.mime||'').slice(0,128), '', String(a.attachmentId||'').slice(0,128)]).catch(()=>{});
+        continue
+      }
       const ad = await gmailCall(()=> gmail.users.messages.attachments.get({ userId:'me', messageId: apiId, id: a.attachmentId }), st, 'attachments.get');
       const buf = b64urlToBuf(ad.data && ad.data.data);
       if(!buf) continue;
       const sv = await saveAttachment(accountId, folder, uid, { filename: a.filename, content: buf, size: buf.length, contentType: a.mime });
       if(sv.saved){
-        await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path)`,
-          [accountId, folder, uid, safeFileName(a.filename), sv.size || 0, String(a.mime||'').slice(0,128), sv.path || '']);
+        await pool.query(`INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path, gmail_att_id) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), path=VALUES(path), gmail_att_id=VALUES(gmail_att_id)`,
+          [accountId, folder, uid, safeFileName(a.filename), sv.size || 0, String(a.mime||'').slice(0,128), sv.path || '', String(a.attachmentId||'').slice(0,128)]);
       }
     }catch{}
   }
@@ -1107,7 +1132,7 @@ async function gmailApiFullSync(gmail, accountId, username, folder, st, haveMap,
       const reuseUid = midMap.get(midRaw.toLowerCase());
       const uid = reuseUid || getCounter();
       await pool.query(
-        `INSERT INTO mail_messages (accountId, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
+        `INSERT INTO mail_messages (account_id, folder, uid, message_id, gmail_msgid, gmail_threadid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_text, body_cached, labels, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE is_read=VALUES(is_read), labels=VALUES(labels), gmail_msgid=VALUES(gmail_msgid), message_id=VALUES(message_id), updated_at=VALUES(updated_at)`,
         [accountId, folder, uid, midRaw, apiId, String(mm.threadId||'').slice(0,64),
@@ -1117,41 +1142,205 @@ async function gmailApiFullSync(gmail, accountId, username, folder, st, haveMap,
       if(reuseUid) st.updated = (st.updated||0)+1;
       st.done = (st.done||0)+1;
     });
+    if(typeof st.refreshStoreCounts === 'function') await st.refreshStoreCounts();
     await new Promise(r=>setImmediate(r));
   }
   // Phase B：正文（FULL，并发 4，沿用停滞熔断语义）
+  st.phase = 'full-body';
   await gmailApiBackfillBodies(gmail, accountId, username, folder, st);
 }
 // 正文回填：body_cached=0 的倒序补 FULL（新邮件优先），整轮零产出记停滞
-async function gmailApiBackfillBodies(gmail, accountId, username, folder, st){
+// 老 IMAP 行 gmail_msgid 常为空：用 rfc822msgid 反查 API id 再拉正文
+// 提速：并行反查 + 高并发 FULL；批量回填跳过附件（附件打开时再下）
+const GMAIL_BODY_CONCURRENCY = Math.max(4, Math.min(16, Number(process.env.GMAIL_BODY_CONCURRENCY) || 8))
+const GMAIL_RESOLVE_CONCURRENCY = Math.max(4, Math.min(16, Number(process.env.GMAIL_RESOLVE_CONCURRENCY) || 6))
+const GMAIL_ATT_CONCURRENCY = Math.max(2, Math.min(8, Number(process.env.GMAIL_ATT_CONCURRENCY) || 4))
+async function gmailApiBackfillBodies(gmail, accountId, username, folder, st, opts = {}){
+  const resolveByMessageId = async (uid, midRaw) => {
+    const mid = String(midRaw||'').trim().replace(/^</,'').replace(/>$/,'')
+    if(!mid) return { gid:null, permanent:true }
+    try{
+      const res = await gmailCall(()=> gmail.users.messages.list({ userId:'me', q: `rfc822msgid:${mid}`, maxResults: 1 }), st, 'list-rfc822')
+      const gid = res?.data?.messages?.[0]?.id || ''
+      if(!gid) return { gid:null, permanent:true } // 查到了但云端没有
+      await pool.query('UPDATE mail_messages SET gmail_msgid=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',
+        [gid, sqlNow(), accountId, folder, uid]).catch(()=>{})
+      return { gid, permanent:false }
+    }catch(e){
+      // 配额/网络失败：不要标成「云端无此邮件」，留给下一轮
+      const msg = String(e.message||e)
+      const transient = /配额|quota|429|403|超时|timeout|network|失败/i.test(msg)
+      return { gid:null, permanent: !transient }
+    }
+  }
   for(;;){
     if(st.cancelled) throw new Error('cancelled');
-    const [todoRows] = await pool.query('SELECT gmail_msgid AS gid FROM mail_messages WHERE account_id=? AND folder=? AND body_cached=0 AND gmail_msgid<>"" ORDER BY msg_date DESC LIMIT 400',[accountId, folder]).catch(()=> [[]]);
-    const todo = (todoRows||[]).map(r=>String(r.gid)).filter(Boolean);
+    // ① 已有 gmail_msgid 的待补正文（优先，免反查）
+    let [todoRows] = await pool.query(
+      `SELECT uid, gmail_msgid AS gid FROM mail_messages
+       WHERE account_id=? AND folder=? AND body_cached=0 AND gmail_msgid<>""
+       ORDER BY msg_date DESC LIMIT 300`,[accountId, folder]).catch(()=> [[]]);
+    let todo = (todoRows||[]).filter(r=>r.gid).map(r=>({ gid:String(r.gid), uid:Number(r.uid) }));
+    // ② 无 gmail_msgid 的老 IMAP 行：并行按 Message-ID 反查
+    const resolveBudget = 80
+    if(todo.length < resolveBudget){
+      const [orphans] = await pool.query(
+        `SELECT uid, message_id AS mid FROM mail_messages
+         WHERE account_id=? AND folder=? AND body_cached=0 AND gmail_msgid="" AND message_id<>""
+         ORDER BY msg_date DESC LIMIT ${resolveBudget - todo.length}`,[accountId, folder]).catch(()=> [[]]);
+      let transientFails = 0
+      const resolved = await pmap(orphans||[], GMAIL_RESOLVE_CONCURRENCY, async (o)=>{
+        if(st.cancelled) return null
+        const { gid, permanent } = await resolveByMessageId(Number(o.uid), o.mid)
+        if(gid) return { gid, uid:Number(o.uid) }
+        if(!permanent){ transientFails++; return null }
+        await pool.query(
+          `UPDATE mail_messages SET body_text='[云端无对应邮件，正文未入库]', body_cached=2, updated_at=?
+           WHERE account_id=? AND folder=? AND uid=? AND body_cached=0`,
+          [sqlNow(), accountId, folder, Number(o.uid)]).catch(()=>{})
+        return null
+      })
+      for(const r of resolved){ if(r) todo.push(r) }
+      // 反查大面积瞬时失败：本轮直接结束，等配额恢复，避免 stall 误杀
+      if(!todo.length && transientFails >= Math.ceil((orphans||[]).length * 0.6) && (orphans||[]).length > 0){
+        st.phase = 'quota-wait'
+        await new Promise(r=>setTimeout(r, 60000))
+        continue
+      }
+    }
     if(!todo.length) break;
     const roundBefore = st.realBodies || 0;
-    const [urows] = await pool.query('SELECT gmail_msgid, uid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[]]);
-    const uidOf = new Map((urows||[]).map(r=>[String(r.gmail_msgid), Number(r.uid)]));
-    await pmap(todo, 4, async (apiId)=>{
+    await pmap(todo, GMAIL_BODY_CONCURRENCY, async (item)=>{
       if(st.cancelled) throw new Error('cancelled');
-      const uid = uidOf.get(apiId);
-      if(!uid) return;
       try{
-        await ingestGmailFull(gmail, accountId, username, folder, uid, apiId, st);
+        // skipAttachments=true：正文优先；附件元数据仍写，二进制打开时再拉
+        await ingestGmailFull(gmail, accountId, username, folder, item.uid, item.gid, st, { skipAttachments:true });
       }catch(e){
         st.chunkFails = st.chunkFails || {};
-        const k = 'api:' + apiId.slice(-8);
+        const k = 'api:' + String(item.gid).slice(-8);
         st.chunkFails[k] = (st.chunkFails[k] || 0) + 1;
         if(st.chunkFails[k] >= 3 && (st.realBodies||0) > 0){
-          await pool.query(`UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=? AND body_cached=0`,
-            [sqlNow(), accountId, folder, uid]).catch(()=>{});
+          await pool.query(`UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=2, updated_at=? WHERE account_id=? AND folder=? AND uid=? AND body_cached=0`,
+            [sqlNow(), accountId, folder, item.uid]).catch(()=>{});
         }
       }
     });
     if((st.realBodies||0) === roundBefore){
       st.stallRounds = (st.stallRounds||0)+1;
-      if(st.stallRounds >= 3) throw new Error('no-progress: continuous fetch failures, likely throttled');
+      // 配额期很容易整轮 0 产出：多等几轮，且优先等而不是直接失败
+      if(st.stallRounds >= 6){
+        st.phase = 'quota-wait'
+        await new Promise(r=>setTimeout(r, 90000))
+        st.stallRounds = 0
+        // 连续两段等待仍无进展才退出，让 auto-tick 下次重开
+        st.quotaWaits = (st.quotaWaits||0)+1
+        if(st.quotaWaits >= 3) throw new Error('no-progress: throttled, will retry on next tick')
+      }
     } else st.stallRounds = 0;
+    // 附件独立并行任务时，正文循环不再插附件
+    if(!opts.skipInterleavedAtt){
+      try{
+        st.phase = 'body+att'
+        await gmailApiBackfillAttachments(gmail, accountId, username, folder, st, { maxBatches: 1 })
+      }catch(e){
+        if(String(e.message||'').includes('cancelled')) throw e
+      }
+    }
+    if(typeof st.refreshStoreCounts === 'function') await st.refreshStoreCounts();
+  }
+}
+// 附件二进制回填：始终 messages.get(FULL) 取新鲜 attachmentId 再下载
+// （库存 attId 可能被截断/过期，直接用会 400 Invalid attachment token）
+async function gmailApiBackfillAttachments(gmail, accountId, username, folder, st, opts = {}){
+  const maxBatches = opts.maxBatches || Infinity
+  let batches = 0
+  const downloadOne = async (messageId, attId, uid, filename, mime, size) => {
+    if((Number(size)||0) > 50*1024*1024) return false
+    if(!attId) return false
+    const ad = await gmailCall(()=> gmail.users.messages.attachments.get({ userId:'me', messageId, id: attId }), st, 'att.get')
+    const buf = b64urlToBuf(ad.data && ad.data.data)
+    if(!buf) return false
+    const sv = await saveAttachment(accountId, folder, uid, { filename, content: buf, size: buf.length, contentType: mime })
+    if(!sv.saved) return false
+    await pool.query(
+      `UPDATE mail_attachments SET path=?, size=GREATEST(size, ?), gmail_att_id=?
+       WHERE account_id=? AND folder=? AND uid=? AND filename=?`,
+      [sv.path || '', sv.size || 0, String(attId).slice(0,1024), accountId, folder, uid, safeFileName(filename)]).catch(()=>{})
+    st.attDone = (st.attDone||0)+1
+    return true
+  }
+  // 按邮件处理：取 FULL → 拿全部附件 → 下载 path 仍空的
+  const processMessage = async (uid, gid) => {
+    const full = await gmailCall(()=> gmail.users.messages.get({ userId:'me', id: String(gid), format:'FULL' }), st, 'att-full')
+    const atts = extractGmailAttachments(full.data?.payload || {})
+    for(const a of atts){
+      if(st.cancelled) return
+      const fname = safeFileName(a.filename)
+      // upsert 元数据 + 新鲜 attId
+      await pool.query(
+        `INSERT INTO mail_attachments (account_id, folder, uid, filename, size, mime, path, gmail_att_id) VALUES (?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE size=VALUES(size), mime=VALUES(mime), gmail_att_id=VALUES(gmail_att_id)`,
+        [accountId, folder, Number(uid), fname, Number(a.size)||0, String(a.mime||'').slice(0,128), '', String(a.attachmentId||'').slice(0,1024)]).catch(()=>{})
+      // 已有 path 的跳过
+      const [has] = await pool.query(
+        `SELECT path FROM mail_attachments WHERE account_id=? AND folder=? AND uid=? AND filename=?`,
+        [accountId, folder, Number(uid), fname]).catch(()=> [[]])
+      if(has?.[0]?.path) continue
+      try{
+        await downloadOne(String(gid), String(a.attachmentId), Number(uid), a.filename, a.mime, a.size)
+      }catch(e){
+        st.attFails = (st.attFails||0)+1
+        if((st.attFails||0) <= 8) console.log('[att-fail]', String(e.message||e).slice(0,140), 'uid', uid, a.filename)
+      }
+    }
+  }
+  for(;;){
+    if(st.cancelled) throw new Error('cancelled')
+    if(batches >= maxBatches) break
+    batches++
+    if(!opts.maxBatches) st.phase = 'attachments'
+    const metaLimit = opts.maxBatches ? 8 : 20
+    // 有待下载附件的邮件（按邮件聚合，避免对同一封反复 get）
+    // 注意：only_full_group_by 下不能 DISTINCT+ORDER BY 非选择列
+    const [needMsg] = await pool.query(
+      `SELECT m.uid, m.gmail_msgid AS gid, MAX(m.msg_date) AS md
+       FROM mail_attachments ma
+       JOIN mail_messages m ON m.account_id=ma.account_id AND m.folder=ma.folder AND m.uid=ma.uid
+       WHERE ma.account_id=? AND ma.folder=? AND (ma.path IS NULL OR ma.path='')
+         AND m.gmail_msgid<>'' AND ma.size<=${50*1024*1024}
+       GROUP BY m.uid, m.gmail_msgid
+       ORDER BY md DESC
+       LIMIT ${metaLimit}`,[accountId, folder]).catch((e)=>{ console.log('[att-q1]', e.message); return [[]] })
+    // has_attachment=1 但还没有附件行
+    const [needMeta] = await pool.query(
+      `SELECT m.uid, m.gmail_msgid AS gid FROM mail_messages m
+       WHERE m.account_id=? AND m.folder=? AND m.has_attachment=1 AND m.body_cached>=1 AND m.gmail_msgid<>""
+         AND NOT EXISTS (SELECT 1 FROM mail_attachments a WHERE a.account_id=m.account_id AND a.folder=m.folder AND a.uid=m.uid)
+       ORDER BY m.msg_date DESC LIMIT ${metaLimit}`,[accountId, folder]).catch((e)=>{ console.log('[att-q2]', e.message); return [[]] })
+    if(!needMsg.length && !needMeta.length) break
+    const work = [...(needMsg||[]), ...(needMeta||[])]
+    // 按邮件串行处理（每封一次 FULL + 若干 att.get），邮件间有限并发
+    await pmap(work, Math.min(3, GMAIL_ATT_CONCURRENCY), async (row)=>{
+      if(st.cancelled) return
+      try{ await processMessage(Number(row.uid), String(row.gid)) }
+      catch(e){
+        st.attFails = (st.attFails||0)+1
+        if((st.attFails||0) <= 8) console.log('[att-msg-fail]', String(e.message||e).slice(0,140), 'uid', row.uid)
+      }
+    })
+    if(typeof st.refreshStoreCounts === 'function') await st.refreshStoreCounts()
+    const doneDelta = (st.attDone||0) - (st._attDoneLast||0)
+    if(doneDelta <= 0){
+      st._attStall = (st._attStall||0)+1
+    } else {
+      st._attStall = 0
+      st._attDoneLast = st.attDone||0
+    }
+    if(st._attStall >= 10){
+      console.log('[att] stall exit, attDone=', st.attDone, 'attFails=', st.attFails)
+      break
+    }
+    if((st.attDone||0) === 0 && (st.attFails||0) > 30) throw new Error('attachment-backfill: too many failures')
   }
 }
 // Gmail API 增量：history.list → added/deleted/labels
@@ -1211,6 +1400,7 @@ async function gmailApiIncremental(gmail, accountId, username, folder, st, start
       await pool.query('DELETE FROM mail_messages WHERE account_id=? AND gmail_msgid=?',[accountId, gid]);
     }catch{}
   }
+  if(typeof st.refreshStoreCounts === 'function') await st.refreshStoreCounts();
   // 标签变化：MINIMAL 重读已读状态
   for(const gid of [...new Set(toCheckMin)]){
     try{
@@ -1224,13 +1414,58 @@ async function gmailApiIncremental(gmail, accountId, username, folder, st, start
   await rebuildGmailThreads(accountId, folder);
   return latestHid;
 }
+// job 序列化：去掉函数/大 Map，只保留 UI 需要的进度字段
+function sanitizeJob(job){
+  if(!job) return null
+  return {
+    running: !!job.running,
+    engine: job.engine || (job.mode === 'gmail' ? 'gmail-api' : 'imap'),
+    mode: job.mode || '',
+    phase: job.phase || '',
+    folder: job.folder || '',
+    done: Number(job.done)||0,
+    total: Number(job.total)||0,
+    added: Number(job.added)||0,
+    updated: Number(job.updated)||0,
+    realBodies: Number(job.realBodies)||0,
+    apiCalls: Number(job.apiCalls)||0,
+    historyId: job.historyId || '',
+    dbCount: Number(job.dbCount)||0,
+    bodyCount: Number(job.bodyCount)||0,
+    placeholderCount: Number(job.placeholderCount)||0,
+    pendingBodies: Number(job.pendingBodies)||0,
+    attDone: Number(job.attDone)||0,
+    attFails: Number(job.attFails)||0,
+    startedAt: job.startedAt || '',
+    error: job.error || '',
+    cancelled: !!job.cancelled
+  }
+}
 // 主入口：POST /email/gsync/:accountId {mode?: auto|full|incremental}
+// body_cached: 0=待补, 1=已缓存, 2=占位（多次失败跳过）
 async function runGmailApiSync(accountId, username, opts = {}){
   const folder = GMAIL_API_FOLDER;
   let st = ingestJobs.get(accountId);
   if(st && st.running) throw new Error('已有同步任务进行中');
-  st = { running:true, mode:'gmail', folder, done:0, total:0, added:0, updated:0, startedAt:new Date().toISOString(), error:'', apiCalls:0, historyId:'' };
+  st = { running:true, engine:'gmail-api', mode:'gmail', folder, done:0, total:0, added:0, updated:0,
+    startedAt:new Date().toISOString(), error:'', apiCalls:0, historyId:'', phase:'init',
+    dbCount:0, bodyCount:0, placeholderCount:0, pendingBodies:0 };
   ingestJobs.set(accountId, st);
+  const refreshStoreCounts = async ()=>{
+    try{
+      const [c] = await pool.query(
+        `SELECT COUNT(*) AS c,
+           SUM(CASE WHEN body_cached=1 THEN 1 ELSE 0 END) AS bodies,
+           SUM(CASE WHEN body_cached=2 THEN 1 ELSE 0 END) AS ph,
+           SUM(CASE WHEN body_cached=0 THEN 1 ELSE 0 END) AS pend
+         FROM mail_messages WHERE account_id=? AND folder=?`, [accountId, folder]);
+      st.dbCount = Number(c[0]?.c)||0;
+      st.bodyCount = Number(c[0]?.bodies)||0;
+      st.placeholderCount = Number(c[0]?.ph)||0;
+      st.pendingBodies = Number(c[0]?.pend)||0;
+    }catch{}
+  };
+  st.refreshStoreCounts = refreshStoreCounts;
   const acc = await loadMailAccount(accountId, username);
   if(!acc) { st.running = false; throw new Error('账号不存在或数据库未就绪') }
   let gmail;
@@ -1242,11 +1477,14 @@ async function runGmailApiSync(accountId, username, opts = {}){
     gmail = google.gmail({ version:'v1', auth:o });
   }catch(e){ st.running = false; st.error = String(e.message||e).slice(0,200); throw e }
   try{
+    await refreshStoreCounts();
     let mode = opts.mode || 'auto';
     let hid = await readSyncHistoryId(accountId, folder);
     if(mode === 'auto') mode = hid ? 'incremental' : 'full';
+    st.mode = mode;
     if(mode === 'incremental' && hid){
       try{
+        st.phase = 'incremental';
         const latest = await gmailApiIncremental(gmail, accountId, username, folder, st, hid);
         await writeSyncHistoryId(accountId, folder, latest, true);
         st.historyId = latest;
@@ -1256,6 +1494,7 @@ async function runGmailApiSync(accountId, username, opts = {}){
       }
     }
     if(mode === 'full'){
+      st.phase = 'full-envelope';
       // 预载去重表 + 计数器
       const [haveRows] = await pool.query('SELECT gmail_msgid, uid FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder]).catch(()=> [[]]);
       const haveMap = new Map((haveRows||[]).map(r=>[String(r.gmail_msgid), Number(r.uid)]).filter(([k])=>k));
@@ -1271,11 +1510,36 @@ async function runGmailApiSync(accountId, username, opts = {}){
       }catch{}
       await rebuildGmailThreads(accountId, folder);
     }
+    // 无论 incremental 还是 full：正文与附件并行回填，互不阻塞
+    await refreshStoreCounts();
+    if(!st.cancelled){
+      st.phase = 'body+att'
+      st.attDone = st.attDone||0; st.attFails = st.attFails||0
+      const jobs = []
+      if((st.pendingBodies||0) > 0){
+        jobs.push(gmailApiBackfillBodies(gmail, accountId, username, folder, st, { skipInterleavedAtt:true }))
+      }
+      jobs.push(gmailApiBackfillAttachments(gmail, accountId, username, folder, st))
+      const results = await Promise.allSettled(jobs)
+      for(const r of results){
+        if(r.status === 'rejected'){
+          const msg = String(r.reason?.message||r.reason||'')
+          if(msg.includes('cancelled')) throw new Error('cancelled')
+          // 正文停滞不应拖死附件；附件失败也不应清掉正文进度
+          if(!st.error) st.error = msg.slice(0,200)
+        }
+      }
+      if(st.cancelled) throw new Error('cancelled')
+    }
+    st.phase = 'done';
+    await refreshStoreCounts();
   }catch(e){
     st.error = String(e.message||e).slice(0,200);
+    st.phase = 'error';
     throw e;
   }finally{
     st.running = false;
+    await refreshStoreCounts();
   }
   return st;
 }
@@ -1284,12 +1548,12 @@ app.post('/email/gsync/:accountId', auth, wrap(async (req,res)=>{
   const acc = await loadMailAccount(accountId, req.user);
   if(!acc) return res.status(404).json({ error:'账号不存在' });
   const cur = ingestJobs.get(accountId);
-  if(cur && cur.running) return res.status(409).json({ error:'已有任务进行中', job:cur });
+  if(cur && cur.running) return res.status(409).json({ error:'已有任务进行中', job: sanitizeJob(cur) });
   const mode = ['full','incremental','auto'].includes(req.body?.mode) ? req.body.mode : 'auto';
   runGmailApiSync(accountId, req.user, { mode }).catch(()=>{});
   // 稍等片刻让任务启动，回最新状态
   await new Promise(r=>setTimeout(r, 800));
-  res.json({ ok:true, mode, job: ingestJobs.get(accountId) });
+  res.json({ ok:true, mode, job: sanitizeJob(ingestJobs.get(accountId)) });
 }));
 
 // ---------- 真实邮件 IMAP ----------
@@ -1703,7 +1967,7 @@ async function runMailIngest(accountId, username, opts = {}){
               })(), 2*60*1000, 'size-batch')
             }catch(e){ console.log('[ingest] size batch skip:', String(e.message||e).slice(0,60)) }
             for(const u of batch.filter(u=> (sizes.get(u)||0) > BODY_MAX)){
-              await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
+              await pool.query(`UPDATE mail_messages SET body_text='[超大邮件（>15MB），正文未入库，请在线查看]', body_cached=2, updated_at=? WHERE account_id=? AND folder=? AND uid=?`,
                 [sqlNow(), accountId, folder, u]).catch(()=>{})
               st.done++
             }
@@ -1759,7 +2023,7 @@ async function runMailIngest(accountId, username, opts = {}){
                 for(let i=0;i<batch.length;i+=200){
                   const ch = batch.slice(i,i+200)
                   await pool.query(
-                    `UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=1, updated_at=? WHERE account_id=? AND folder=? AND body_cached=0 AND uid IN (${ch.map(()=> '?').join(',')})`,
+                    `UPDATE mail_messages SET body_text='[多次拉取超时已跳过，点开邮件时在线查看]', body_cached=2, updated_at=? WHERE account_id=? AND folder=? AND body_cached=0 AND uid IN (${ch.map(()=> '?').join(',')})`,
                     [sqlNow(), accountId, folder, ...ch]).catch(()=>{})
                 }
                 delete st.chunkFails[key]
@@ -1894,17 +2158,22 @@ app.post('/email/ingest/:accountId', auth, wrap(async (req,res)=>{
     const mode = ['full','incremental','auto'].includes(req.body?.mode) ? req.body.mode : 'auto'
     runGmailApiSync(accountId, req.user, { mode }).catch(()=>{})
     await new Promise(r=>setTimeout(r, 800))
-    return res.json({ ok:true, mode, engine:'gmail-api', job: ingestJobs.get(accountId) })
+    return res.json({ ok:true, mode, engine:'gmail-api', job: sanitizeJob(ingestJobs.get(accountId)) })
   }
   const mode = req.body?.mode === 'incremental' ? 'incremental' : 'full'
   const folders = Array.isArray(req.body?.folders) && req.body.folders.length ? req.body.folders.map(String) : undefined
   runMailIngest(accountId, req.user, { mode, folders }).catch(()=>{})
-  res.json({ ok:true, mode, engine:'imap', job: ingestJobs.get(accountId) })
+  res.json({ ok:true, mode, engine:'imap', job: sanitizeJob(ingestJobs.get(accountId)) })
 }))
 
-// 入库进度：GET /email/ingest-status/:accountId
+// 入库进度：GET /email/ingest-status/:accountId（前端 2s 轮询，实时数量）
 app.get('/email/ingest-status/:accountId', auth, wrap(async (req,res)=>{
-  res.json({ job: ingestJobs.get(req.params.accountId) || null })
+  const raw = ingestJobs.get(req.params.accountId) || null
+  // 运行中且是 Gmail 引擎时，实时刷库计数（轻量单行 COUNT）
+  if(raw && raw.running && typeof raw.refreshStoreCounts === 'function'){
+    try{ await raw.refreshStoreCounts() }catch{}
+  }
+  res.json({ job: raw ? sanitizeJob(raw) : null })
 }))
 
 // 取消入库任务：POST /email/ingest-stop/:accountId
@@ -1932,25 +2201,41 @@ app.get('/email/watch-pause', auth, wrap(async (req,res)=>{
 }))
 
 // 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步；light=1 跳过 IMAP 探测，零连接）
+// OAuth Gmail 账号：永不探 IMAP，用 historyId + 库计数
 app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const light = String(req.query.light||'') === '1'
+  const oauthMode = await usesGmailApi(acc)
   const folders = Array.isArray(req.query.folders) ? req.query.folders : (req.query.folder ? [String(req.query.folder)] : ['[Gmail]/All Mail'])
   const out = []
-  const pass = decAuth(acc.auth_enc)
+  const pass = oauthMode ? '' : decAuth(acc.auth_enc)
   for(const folder of folders){
     const [srows] = await pool.query('SELECT * FROM mail_sync_state WHERE account_id=? AND folder=?',[accountId, folder])
-    const [crows] = await pool.query('SELECT COUNT(*) AS c, MAX(uid) AS maxUid, SUM(body_cached) AS bodies FROM mail_messages WHERE account_id=? AND folder=?',[accountId, folder])
+    // body_cached: 1=真实正文, 2=占位；只把 1 计入 bodyCount
+    const [crows] = await pool.query(
+      `SELECT COUNT(*) AS c, MAX(uid) AS maxUid,
+         SUM(CASE WHEN body_cached=1 THEN 1 ELSE 0 END) AS bodies,
+         SUM(CASE WHEN body_cached=2 THEN 1 ELSE 0 END) AS placeholders,
+         SUM(CASE WHEN body_cached=0 THEN 1 ELSE 0 END) AS pendingBodies
+       FROM mail_messages WHERE account_id=? AND folder=?`,[accountId, folder])
     const dbCount = Number(crows[0]?.c)||0
     const bodyCount = Number(crows[0]?.bodies)||0
+    const placeholderCount = Number(crows[0]?.placeholders)||0
+    const pendingBodies = Number(crows[0]?.pendingBodies)||0
     const cachedUidnext = Number(srows[0]?.uidnext)||0
     const cachedLastUid = Number(srows[0]?.last_uid ?? crows[0]?.maxUid ?? 0)||0
+    const historyId = String(srows[0]?.history_id || '')
     let imapTotal = 0, uidnext = 0, uidvalidity = 0, live = true
-    if(light){
-      // 轻量模式：不碰 IMAP，直接用库内游标
+    if(oauthMode){
+      // Gmail API 模式：不碰 IMAP，pending 按待补正文 + 无 total 语义
+      live = true
+      imapTotal = dbCount
+      uidnext = cachedUidnext
+      uidvalidity = 0
+    } else if(light){
       live = false
       imapTotal = cachedUidnext || cachedLastUid || dbCount
       uidnext = cachedUidnext
@@ -1966,19 +2251,63 @@ app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
         uidvalidity = Number(client.mailbox.uidValidity || 0)
       }finally{ lock.release() }
     }catch{ live = false }finally{ await client.logout().catch(()=>{}) }
-    } // end else (非 light 模式才探 IMAP)
-    // 探测失败（限流/断网）时用库里游标兜底，不再显示 /0
-    if(!live){ imapTotal = cachedUidnext || cachedLastUid || dbCount; uidnext = cachedUidnext; uidvalidity = Number(srows[0]?.uidvalidity)||0 }
+    }
+    if(!live && !oauthMode){ imapTotal = cachedUidnext || cachedLastUid || dbCount; uidnext = cachedUidnext; uidvalidity = Number(srows[0]?.uidvalidity)||0 }
     const lastUid = cachedLastUid
-    out.push({ folder, dbCount, bodyCount, imapTotal, lastUid, uidnext, uidvalidity, live,
-      fullSyncDone: !!srows[0]?.full_sync_done,
+    const job = ingestJobs.get(accountId) || null
+    out.push({
+      folder, dbCount, bodyCount, placeholderCount, pendingBodies,
+      imapTotal, lastUid, uidnext, uidvalidity, live,
+      engine: oauthMode ? 'gmail-api' : 'imap',
+      historyIdReady: !!historyId,
+      fullSyncDone: oauthMode ? !!historyId : !!srows[0]?.full_sync_done,
       lastSyncAt: srows[0]?.last_sync_at || null,
-      pending: Math.max(0, (uidnext || imapTotal) - lastUid), // 新增待入库估算
-      job: ingestJobs.get(accountId) || null })
+      pending: oauthMode ? pendingBodies : Math.max(0, (uidnext || imapTotal) - lastUid),
+      job: job ? sanitizeJob(job) : null
+    })
   }
   res.json({ folders: out })
 }))
 
+// 库内检索：邮箱类查询走 LIKE 精确匹配（ngram 会把地址拆词导致误命中）；普通词先短语后全文
+async function searchMailRows(pool, accountIdOrNull, q, cols, limit){
+  const like = `%${q.replace(/[%_\\]/g, m=>'\\'+m)}%`
+  const accFilter = accountIdOrNull ? 'account_id=? AND ' : ''
+  const accParams = accountIdOrNull ? [accountIdOrNull] : []
+  // ① 含 @ 或像邮箱：优先地址精确 LIKE
+  if(q.includes('@') || /^[a-z0-9._%+-]+@/i.test(q)){
+    const [r] = await pool.query(
+      `SELECT ${cols}, body_text, 100 AS relevance FROM mail_messages
+       WHERE ${accFilter}(from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR message_id LIKE ? ESCAPE '\\\\')
+       ORDER BY msg_date DESC LIMIT ?`,
+      [...accParams, like, like, like, limit])
+    if(r.length) return { rows:r, mode:'email-like' }
+    // 地址没中再搜主题/正文
+    const [r2] = await pool.query(
+      `SELECT ${cols}, body_text, 10 AS relevance FROM mail_messages
+       WHERE ${accFilter}(subject LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
+       ORDER BY msg_date DESC LIMIT ?`,
+      [...accParams, like, like, limit])
+    return { rows:r2, mode:'email-like-body' }
+  }
+  // ② 普通关键词：BOOLEAN 短语（高精度）
+  const phrase = `"${q.replace(/"/g,' ')}"`
+  try{
+    const [r] = await pool.query(
+      `SELECT ${cols}, body_text, MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN BOOLEAN MODE) AS relevance
+       FROM mail_messages WHERE ${accFilter}MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN BOOLEAN MODE)
+       ORDER BY relevance DESC, msg_date DESC LIMIT ?`,
+      [...accParams, phrase, phrase, limit])
+    if(r.length) return { rows:r, mode:'boolean' }
+  }catch{}
+  // ③ 兜底：LIKE
+  const [r3] = await pool.query(
+    `SELECT ${cols}, body_text FROM mail_messages
+     WHERE ${accFilter}(subject LIKE ? ESCAPE '\\\\' OR from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
+     ORDER BY msg_date DESC LIMIT ?`,
+    [...accParams, like, like, like, like, limit])
+  return { rows:r3, mode:'like' }
+}
 // 库内全文搜索：GET /email/db-search/:accountId?q=&limit=50
 app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
@@ -1992,24 +2321,8 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
     const [rows] = await pool.query(`SELECT ${cols}, body_text FROM mail_messages WHERE account_id=? ORDER BY msg_date DESC LIMIT ?`,[accountId, limit])
     return res.json({ emails: rows, total: rows.length, mode:'latest' })
   }
-  let rows = []
-  try{
-    const [r] = await pool.query(
-      `SELECT ${cols}, body_text, MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS relevance
-       FROM mail_messages WHERE account_id=? AND MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE)
-       ORDER BY relevance DESC, msg_date DESC LIMIT ?`,[q, accountId, q, limit])
-    rows = r
-  }catch{}
-  if(!rows.length && q.length >= 2){
-    // 全文无命中时回退 LIKE，保证“搜得到”（SQL 里 ESCAPE 需要双反斜杠）
-    const like = `%${q.replace(/[%_\\]/g, m=>'\\'+m)}%`
-    const [r] = await pool.query(
-      `SELECT ${cols}, body_text FROM mail_messages
-       WHERE account_id=? AND (subject LIKE ? ESCAPE '\\\\' OR from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
-       ORDER BY msg_date DESC LIMIT ?`,[accountId, like, like, like, like, limit])
-    rows = r
-  }
-  res.json({ emails: rows, total: rows.length, mode:'db' })
+  const { rows, mode } = await searchMailRows(pool, accountId, q, cols, limit)
+  res.json({ emails: rows, total: rows.length, mode })
 }))
 
 // 客户往来线程：GET /email/customer-mails/:accountId?email=xxx&page=0
@@ -2082,7 +2395,7 @@ app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
   res.json({
     subject: e.subject, from: e.from_name ? `${e.from_name} <${e.from_addr}>` : e.from_addr,
     to: e.to_addr, date: e.msg_date, isRead: !!e.is_read, hasAttachment: !!e.has_attachment,
-    text: e.body_text || '', html: e.body_html || '', cached: !!e.body_cached,
+    text: e.body_text || '', html: e.body_html || '', cached: e.body_cached === 1,
     folder: e.folder, uid: Number(e.uid), gmailMsgId: e.gmail_msgid || '',
   })
 }))
@@ -2161,6 +2474,38 @@ async function startAllMailWatchers(){
     const [rows] = await pool.query('SELECT id, username FROM email_accounts')
     for(const r of rows) startMailWatcher(r.id, r.username)
   }catch{}
+}
+
+// Gmail API 账号自动增量：OAuth 账号跳过 IDLE，用定时轮询 history.list
+// 间隔默认 8 分钟；有 running job 则跳过
+const GMAIL_AUTO_INTERVAL_MS = Number(process.env.GMAIL_AUTO_SYNC_MS) || 8 * 60 * 1000
+let gmailAutoTimer = null
+async function gmailAutoIncrementalTick(){
+  if(!dbReady) return
+  try{
+    const [rows] = await pool.query(
+      `SELECT ea.id, ea.username FROM email_accounts ea
+       INNER JOIN gmail_oauth go ON go.account_id = ea.id`)
+    for(const r of (rows||[])){
+      const cur = ingestJobs.get(r.id)
+      if(cur && cur.running) continue
+      try{
+        // 每轮最多 2 个账号，避免打爆配额
+        runGmailApiSync(r.id, r.username, { mode:'incremental' }).catch(()=>{})
+        await new Promise(res=>setTimeout(res, 2000))
+      }catch{}
+    }
+  }catch(e){ console.log('[gmail-auto]', String(e.message||e).slice(0,80)) }
+}
+function startGmailAutoSync(){
+  if(gmailAutoTimer) return
+  gmailAutoTimer = setInterval(()=>{ gmailAutoIncrementalTick().catch(()=>{}) }, GMAIL_AUTO_INTERVAL_MS)
+  // 启动后 20s 先跑一轮，方便开机自动续
+  setTimeout(()=>{ gmailAutoIncrementalTick().catch(()=>{}) }, 20000)
+  console.log(`[gmail-auto] 已启动，间隔 ${Math.round(GMAIL_AUTO_INTERVAL_MS/1000)}s`)
+}
+function stopGmailAutoSync(){
+  if(gmailAutoTimer){ clearInterval(gmailAutoTimer); gmailAutoTimer = null }
 }
 
 // 监听状态：GET /email/watch-status/:accountId
@@ -2317,30 +2662,45 @@ app.get('/email/db-search-all', auth, wrap(async (req,res)=>{
   const q = String(req.query.q || '').trim().slice(0, 100)
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
   const cols = 'account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 600) AS snippet, body_html'
-  let rows = []
   if(!q){
     const [r] = await pool.query(`SELECT ${cols}, body_text FROM mail_messages WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?) ORDER BY msg_date DESC LIMIT ?`,[req.user, limit])
-    rows = r
+    return res.json({ emails: r, total: r.length, mode:'latest' })
+  }
+  // 复用精确检索：把范围限制在当前用户名下账号
+  const like = `%${q.replace(/[%_\\]/g, m=>'\\'+m)}%`
+  const scope = 'account_id IN (SELECT id FROM email_accounts WHERE username=?) '
+  let rows = [], mode = 'like'
+  if(q.includes('@')){
+    const [r] = await pool.query(
+      `SELECT ${cols}, body_text, 100 AS relevance FROM mail_messages
+       WHERE ${scope}AND (from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR message_id LIKE ? ESCAPE '\\\\')
+       ORDER BY msg_date DESC LIMIT ?`,[req.user, like, like, like, limit])
+    rows = r; mode = 'email-like'
+    if(!rows.length){
+      const [r2] = await pool.query(
+        `SELECT ${cols}, body_text FROM mail_messages
+         WHERE ${scope}AND (subject LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
+         ORDER BY msg_date DESC LIMIT ?`,[req.user, like, like, limit])
+      rows = r2; mode = 'email-like-body'
+    }
   } else {
+    const phrase = `"${q.replace(/"/g,' ')}"`
     try{
       const [r] = await pool.query(
-        `SELECT ${cols}, body_text, MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS relevance
-         FROM mail_messages WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
-           AND MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN NATURAL LANGUAGE MODE)
-         ORDER BY relevance DESC, msg_date DESC LIMIT ?`,[q, req.user, q, limit])
-      rows = r
+        `SELECT ${cols}, body_text, MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN BOOLEAN MODE) AS relevance
+         FROM mail_messages WHERE ${scope}AND MATCH(subject, from_addr, to_addr, body_text) AGAINST (? IN BOOLEAN MODE)
+         ORDER BY relevance DESC, msg_date DESC LIMIT ?`,[req.user, phrase, phrase, limit])
+      if(r.length){ rows = r; mode = 'boolean' }
     }catch{}
-    if(!rows.length && q.length >= 2){
-      const like = `%${q.replace(/[%_\\\\]/g, m=>'\\\\'+m)}%`
+    if(!rows.length){
       const [r] = await pool.query(
         `SELECT ${cols}, body_text FROM mail_messages
-         WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
-           AND (subject LIKE ? OR from_addr LIKE ? OR to_addr LIKE ? OR body_text LIKE ?)
+         WHERE ${scope}AND (subject LIKE ? ESCAPE '\\\\' OR from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\' OR body_text LIKE ? ESCAPE '\\\\')
          ORDER BY msg_date DESC LIMIT ?`,[req.user, like, like, like, like, limit])
-      rows = r
+      rows = r; mode = 'like'
     }
   }
-  res.json({ emails: rows, total: rows.length, mode: q ? 'db' : 'latest' })
+  res.json({ emails: rows, total: rows.length, mode })
 }))
 
 // 按需加载单封邮件全文：GET /email/full/:accountId/:uid
@@ -2532,6 +2892,42 @@ app.get('/email/attachments/:accountId/:uid', auth, wrap(async (req,res)=>{
     filename: r.filename, size: Number(r.size)||0, mime: r.mime||'',
     url: `/email/attachment/${accountId}/${uidNum}/${encodeURIComponent(r.filename)}`
   })) })
+}))
+
+// 附件库搜索：GET /email/attachment-search?q=&type=image|all&limit=
+app.get('/email/attachment-search', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const q = String(req.query.q||'').trim().slice(0,100)
+  const type = String(req.query.type||'image') === 'all' ? 'all' : 'image'
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit)||60))
+  const like = `%${q.replace(/[%_\\]/g, m=>'\\'+m)}%`
+  const imgCond = type==='image'
+    ? `AND (LOWER(ma.mime) LIKE 'image/%' OR LOWER(ma.filename) REGEXP '\\\\.(png|jpe?g|gif|webp|bmp)$')`
+    : ''
+  const nameCond = q ? `AND ma.filename LIKE ? ESCAPE '\\\\'` : ''
+  const params = [req.user]
+  if(q) params.push(like)
+  params.push(limit)
+  const [rows] = await pool.query(
+    `SELECT ma.account_id, ma.uid, ma.filename, ma.size, ma.mime, ma.path,
+            m.subject, m.from_addr, m.from_name, m.msg_date, m.folder
+     FROM mail_attachments ma
+     JOIN mail_messages m ON m.account_id=ma.account_id AND m.folder=ma.folder AND m.uid=ma.uid
+     WHERE ma.account_id IN (SELECT id FROM email_accounts WHERE username=?)
+       AND (ma.path IS NOT NULL AND ma.path<>'')
+       ${imgCond} ${nameCond}
+     ORDER BY m.msg_date DESC
+     LIMIT ?`, params)
+  res.json({
+    total: rows.length,
+    items: rows.map(r=>({
+      accountId: r.account_id, uid: Number(r.uid), filename: r.filename,
+      size: Number(r.size)||0, mime: r.mime||'',
+      subject: r.subject||'', from: r.from_name ? `${r.from_name} <${r.from_addr}>` : (r.from_addr||''),
+      date: r.msg_date, folder: r.folder,
+      hasFile: !!(r.path && String(r.path).length)
+    }))
+  })
 }))
 
 // 附件下载：GET /email/attachment/:accountId/:uid/:filename
@@ -3023,5 +3419,6 @@ init().then(() => {
     const secretMode = process.env.SECRET ? '环境变量' : 'secret.key'
     console.log(`[sync-server] listening on :${PORT} | 数据库: ${dbMode} | 密钥: ${secretMode}`)
     startAllMailWatchers() // 启动所有账号常驻监听
+    startGmailAutoSync()   // Gmail API 账号自动增量
   })
 })

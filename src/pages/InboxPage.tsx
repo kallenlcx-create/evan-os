@@ -18,6 +18,81 @@ const INTENT_COLOR: Record<string,string> = {
 }
 const LEVEL_STAR: Record<string,string> = { 'A+':'⭐️⭐️⭐️','A':'⭐️⭐️','B':'⭐️','C':'','D':'' }
 
+// ====== Gmail 式会话：对方邮箱 + 规范主题 ======
+const SELF_ADDRS = ['evan@maxemblem.com']
+function extractAddr(raw: string){
+  return String(raw||'').match(/<([^<>@\s]+@[^<>\s]+)>/)?.[1] || String(raw||'').match(/([^\s<>,;]+@[^\s<>,;]+)/)?.[1] || ''
+}
+function counterpartOf(m: EmailMessage){
+  const from = extractAddr(m.from).toLowerCase()
+  const to = extractAddr(m.to||'').toLowerCase()
+  // 收件：对方是 from；已发送：对方是 to 里非自己的地址
+  if(from && !SELF_ADDRS.includes(from)) return from
+  const tos = String(m.to||'').split(',').map(s=> extractAddr(s).toLowerCase()).filter(Boolean)
+  const other = tos.find(a=> a && !SELF_ADDRS.includes(a))
+  return other || from || to || 'unknown'
+}
+function normSubject(s: string){
+  return String(s||'').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/i,'').trim().toLowerCase()
+}
+function threadKeyOf(m: EmailMessage){
+  return `${m.accountId||''}|${counterpartOf(m)}|${normSubject(m.subject)}`
+}
+function displayNameOf(m: EmailMessage){
+  const name = String(m.from||'').split('<')[0].trim()
+  if(name && !name.includes('@')) return name
+  if(m.folder==='sent'){
+    const tname = String(m.to||'').split('<')[0].trim()
+    if(tname && !tname.includes('@')) return tname
+  }
+  const c = counterpartOf(m)
+  return c.split('@')[0] || c
+}
+type ThreadRow = {
+  key: string
+  title: string
+  subject: string
+  latest: EmailMessage
+  count: number
+  hasUnread: boolean
+  date: string
+  intent: string
+  hasAttachment: boolean
+}
+function groupThreads(list: EmailMessage[]): ThreadRow[] {
+  const map = new Map<string, EmailMessage[]>()
+  for(const m of list){
+    const k = threadKeyOf(m)
+    const arr = map.get(k)
+    if(arr) arr.push(m)
+    else map.set(k, [m])
+  }
+  const ts = (d: string) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0 }
+  const rows: ThreadRow[] = []
+  for(const [key, msgs] of map){
+    const sorted = [...msgs].sort((a,b)=> ts(a.date)-ts(b.date))
+    const latest = sorted[sorted.length-1]
+    rows.push({
+      key,
+      title: displayNameOf(latest),
+      subject: latest.subject || '(无主题)',
+      latest,
+      count: sorted.length,
+      hasUnread: sorted.some(m=> !m.isRead),
+      date: latest.date,
+      intent: latest.intent||'其他',
+      hasAttachment: sorted.some(m=> m.hasAttachment),
+    })
+  }
+  rows.sort((a,b)=> ts(b.date)-ts(a.date))
+  return rows
+}
+function isImageAtt(a: {filename:string;mime?:string}){
+  const mime = String(a.mime||'').toLowerCase()
+  if(mime.startsWith('image/')) return true
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.filename||'')
+}
+
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
@@ -439,13 +514,41 @@ export default function InboxPage(){
     })
   },[emails, folder, filter, q, keepReadIds])
 
+  // Gmail 式会话列表：1 行 = 1 条会话
+  const threadRows = useMemo(()=>{
+    const src = searchMode ? searchResults : filtered
+    return groupThreads(src).slice(0, searchMode ? 50 : 200)
+  },[searchMode, searchResults, filtered])
+  const [selectedThreadId, setSelectedThreadId] = useState<string|null>(null)
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const openThread = useCallback(async (row: ThreadRow)=>{
+    setSelectedThreadId(row.key)
+    // 默认只展开最新一封
+    setExpandedIds(new Set([row.latest.id]))
+    await openMail(row.latest, true)
+  },[openMail])
+  const toggleExpand = useCallback((id: string)=>{
+    setExpandedIds(prev=>{
+      const n = new Set(prev)
+      if(n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  },[])
+
   // ====== 中栏：当前选中邮件的往来线程（仅该客户的对话） ======
+  // 合并本地 emails + 服务端搜索结果，避免搜到的会话在内存里不全
+  const threadPool = useMemo(()=>{
+    const m = new Map<string, EmailMessage>()
+    emails.forEach(e=> m.set(e.id, e))
+    searchResults.forEach(e=> { if(!m.has(e.id)) m.set(e.id, e) })
+    return [...m.values()]
+  },[emails, searchResults])
   const thread = useMemo(()=>{
     if(!selected) return []
     const selectedAddr = (selected.from.match(/<(.+?)>/)?.[1]||selected.from).toLowerCase()
     const selectedSubj = selected.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
     const ts = (d: string) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0 }
-    return emails.filter(e=>{
+    return threadPool.filter(e=>{
       const eAddr = (e.from.match(/<(.+?)>/)?.[1]||e.from).toLowerCase()
       const eTo = (e.to||'').toLowerCase()
       const eSubj = e.subject.replace(/^Re:\s*/i,'').replace(/^Fwd:\s*/i,'').trim().toLowerCase()
@@ -453,13 +556,30 @@ export default function InboxPage(){
       return (eAddr===selectedAddr || eTo.includes(selectedAddr)) && eSubj===selectedSubj
       // Gmail 式：从上至下按时间正序，最新的沉底
     }).sort((a,b)=> ts(a.date)-ts(b.date))
-  },[emails, selected])
+  },[threadPool, selected])
+  // 会话内任一封的正文（展开旧邮件时懒加载）
+  const [threadBodies, setThreadBodies] = useState<Record<string, EmailMessage>>({})
+  const ensureBody = useCallback(async (m: EmailMessage)=>{
+    if(m.text || m.html){
+      setThreadBodies(prev=> prev[m.id] ? prev : { ...prev, [m.id]: m })
+      return m
+    }
+    try{
+      const full = await loadMailBody(m)
+      setEmails(prev=> prev.map(x=> x.id===full.id ? full : x))
+      setThreadBodies(prev=> ({ ...prev, [m.id]: full }))
+      return full
+    }catch{
+      setThreadBodies(prev=> ({ ...prev, [m.id]: m }))
+      return m
+    }
+  },[])
   // 线程打开/变化时自动滚到底（最新邮件处，和 Gmail 一致）
   const threadBoxRef = useRef<HTMLDivElement>(null)
   useEffect(()=>{
     const el = threadBoxRef.current
     if(el) el.scrollTop = el.scrollHeight
-  },[thread.length, selected?.id])
+  },[thread.length, selected?.id, expandedIds.size])
 
   // ====== 搜索模式：优先服务端邮件库全文检索 ======
   const [searching, setSearching] = useState(false)
@@ -513,6 +633,12 @@ export default function InboxPage(){
     }catch{}
   },[accounts])
   useEffect(()=>{ void refreshDbStatus() },[refreshDbStatus])
+  // 后台轻量轮询：捕获服务端自动增量（Gmail API tick）并刷新库计数
+  useEffect(()=>{
+    const t = setInterval(()=>{ void refreshDbStatus() }, 10000)
+    return ()=> clearInterval(t)
+  },[refreshDbStatus])
+  // 实时同步：运行中每 2s 拉 job（含 dbCount/bodyCount/added/apiCalls）
   useEffect(()=>{
     if(!ingestJob?.running) return
     const t = setInterval(async()=>{
@@ -521,9 +647,16 @@ export default function InboxPage(){
         if(!accs.length) return
         const job = await mailIngestStatus(accs[0].id)
         setIngestJob(job)
-        if(!job?.running) setDbFolders(await dbMailStatus(accs[0].id))
+        // 同步中也轻量刷库计数（服务端 COUNT 单行，不重载邮件列表）
+        if(job?.running || job?.dbCount){
+          try{ setDbFolders(await dbMailStatus(accs[0].id, true)) }catch{}
+        }
+        if(!job?.running){
+          setDbFolders(await dbMailStatus(accs[0].id))
+          void refresh()
+        }
       }catch{}
-    }, 5000)
+    }, 2000)
     return ()=> clearInterval(t)
   },[ingestJob?.running])
   const handleIngest = useCallback(async(mode: 'full'|'incremental')=>{
@@ -559,7 +692,11 @@ export default function InboxPage(){
             📤 发件箱{outboxList.filter(o=> o.status==='failed').length>0 ? ` · ${outboxList.filter(o=> o.status==='failed').length}失败` : ''}
           </button>
           <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
-            {ingestJob?.running ? `入库中 ${ingestJob.done}/${ingestJob.total}` : '🗄️ 入库'}
+            {ingestJob?.running
+              ? (ingestJob.engine === 'gmail-api' || ingestJob.mode === 'gmail'
+                  ? `${ingestJob.phase === 'full-body' ? '补正文' : ingestJob.phase === 'incremental' ? '增量' : '入库'} ${ingestJob.dbCount || ingestJob.done || 0}${ingestJob.total ? '/'+ingestJob.total : ''}`
+                  : `入库中 ${ingestJob.done}/${ingestJob.total}`)
+              : '🗄️ 入库'}
           </button>
           <button onClick={async()=>{
             try{
@@ -569,9 +706,16 @@ export default function InboxPage(){
           }} className={`px-3 py-1.5 rounded-lg text-xs border ${watchOff ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-gray-500'}`} title="入库优先时暂停实时监听，入库完成后再恢复">
             {watchOff ? '▶ 恢复监听' : '⏸ 暂停监听'}
           </button>
-          {dbFolders.length>0 && dbFolders[0] && (
-            <span className="text-[10px] text-gray-400 hidden lg:inline" title="服务端邮件库/正文已补（离线时为库内快照）">
-              库 {dbFolders[0].dbCount}{dbFolders[0].live ? `/${dbFolders[0].imapTotal}` : ''}{dbFolders[0].live?'':'·离线'} · 正文 {dbFolders[0].bodyCount||0}{dbFolders[0].live && dbFolders[0].pending>0 ? ` · +${dbFolders[0].pending}` : ''}
+          {(dbFolders.length>0 && dbFolders[0] || ingestJob?.running) && (
+            <span className="text-[10px] text-gray-400 hidden lg:inline flex items-center gap-1" title="服务端邮件库实时数量（正文占位不计入已缓存）">
+              {ingestJob?.running && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />}
+              库 {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0}
+              {(dbFolders[0]?.engine === 'gmail-api' || ingestJob?.engine === 'gmail-api') ? ' · API' : (dbFolders[0]?.live ? `/${dbFolders[0]?.imapTotal}` : '·离线')}
+              {' · 正文 '}{(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0}
+              {!!((ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount)) && ` · 占位 ${ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount}`}
+              {(ingestJob?.running && (ingestJob.added>0 || ingestJob.updated>0)) && ` · 本次+${ingestJob.added}/~${ingestJob.updated}`}
+              {(!ingestJob?.running && dbFolders[0]?.live && dbFolders[0]?.pending>0) && ` · +${dbFolders[0].pending}`}
+              {ingestJob?.running && ingestJob.apiCalls>0 && ` · API ${ingestJob.apiCalls}`}
             </span>
           )}
           <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
@@ -668,7 +812,9 @@ export default function InboxPage(){
             </div>
           </div>
           <div className="px-2 py-1 border-b text-xs text-gray-400">
-            {searching ? '服务端检索中…' : searchMode ? `搜索结果 ${searchResults.length} 封${searchHint ? ` · ${searchHint}` : ''}` : `${filtered.length} 封`}
+            {searching ? '服务端检索中…' : searchMode
+              ? `搜索结果 ${threadRows.length} 个会话${searchHint ? ` · ${searchHint}` : ''}`
+              : `${threadRows.length} 个会话 · ${filtered.length} 封`}
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}
@@ -706,43 +852,31 @@ export default function InboxPage(){
                 ))}
               </>
             )}
-            {searchMode ? searchResults.map(m=>(
-              <button key={m.id} onClick={async()=>{ await openMail(m) }} className="w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
-                  <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
-                  <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
-                </div>
-                <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
-                <div className="text-[10px] text-gray-400">{new Date(m.date).toLocaleDateString()}</div>
-              </button>
-            )) : (
-              /* 正常模式：按文件夹显示邮件列表（只渲染前200封防崩溃，其余走服务端搜索） */
-              filtered.slice(0, 200).map(m=>{
-                const isSel = selected?.id===m.id
-                return (
-                  <button key={m.id} onClick={()=> openMail(m)} className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <span className={`w-1.5 h-1.5 rounded-full ${m.isRead?'bg-gray-200':'bg-blue-500'}`}/>
-                      <span className="font-medium text-gray-700 truncate">{m.from.split('<')[0].trim()}</span>
-                      {m.isRead && keepReadIds.has(m.id) && <span className="text-[9px] text-gray-300">刚读过</span>}
-                      <span className={`ml-auto text-[9px] px-1 py-0.5 rounded ${INTENT_COLOR[m.intent||'其他']||'bg-gray-100'}`}>{m.intent||'其他'}</span>
-                    </div>
-                    <div className="text-xs text-gray-800 truncate mt-1">{m.subject}</div>
-                    <div className="text-xs text-gray-400 truncate">{m.text.slice(0,60)}</div>
-                    <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-400">
-                      <span>{m.hasAttachment?'📎':''} {m.product||'Coin'}</span>
-                      <span className="ml-auto">{new Date(m.date).toLocaleDateString()}</span>
-                    </div>
-                  </button>
-                )
-              })
-            )}
-            {((!searchMode && filtered.length===0) || (searchMode && searchResults.length===0)) && (
+            {folder!=='drafts' && threadRows.map(row=>{
+              const m = row.latest
+              const isSel = selectedThreadId===row.key || selected?.id===m.id
+              return (
+                <button key={row.key} onClick={()=> void openThread(row)}
+                  className={`w-full text-left p-3 border-b border-gray-50 hover:bg-blue-50/50 ${isSel?'bg-blue-50 border-l-2 border-l-blue-500':''}`}>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className={`w-1.5 h-1.5 rounded-full ${row.hasUnread?'bg-blue-500':'bg-gray-200'}`}/>
+                    <span className={`truncate ${row.hasUnread?'font-semibold text-gray-900':'font-medium text-gray-700'}`}>{row.title}</span>
+                    <span className={`ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium`} title={`会话共 ${row.count} 封`}>{row.count}</span>
+                    <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${INTENT_COLOR[row.intent]||'bg-gray-100'}`}>{row.intent}</span>
+                  </div>
+                  <div className={`text-xs truncate mt-1 ${row.hasUnread?'text-gray-900 font-medium':'text-gray-800'}`}>{row.subject}</div>
+                  <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-400">
+                    <span>{row.hasAttachment?'📎':''} {(m.text||'').slice(0,50) || '（打开查看正文）'}</span>
+                    <span className="ml-auto shrink-0">{new Date(row.date).toLocaleDateString()}</span>
+                  </div>
+                </button>
+              )
+            })}
+            {folder!=='drafts' && threadRows.length===0 && (
               <div className="p-8 text-center text-xs text-gray-300">{searchMode?'无搜索结果':'暂无邮件'}</div>
             )}
-            {!searchMode && filtered.length>200 && (
-              <div className="p-3 text-center text-[11px] text-gray-400 border-t">仅显示前 200 封（共 {filtered.length} 封），更多请用上方搜索（走服务端全库检索）</div>
+            {!searchMode && threadRows.length>=200 && (
+              <div className="p-3 text-center text-[11px] text-gray-400 border-t">仅显示前 200 个会话，更多请用上方搜索（走服务端全库检索）</div>
             )}
           </div>
         </div>
@@ -762,6 +896,11 @@ export default function InboxPage(){
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-semibold text-gray-800 flex items-center gap-2 truncate">
                     {selected.subject}
+                    {thread.length>1 && (
+                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100" title="会话内邮件数">
+                        {thread.length} 封
+                      </span>
+                    )}
                     <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-0.5 bg-white border rounded text-xs flex items-center gap-1 shrink-0"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
                     <button onClick={()=> setAllowRemoteImg(v=>!v)} title="外部图片可能泄露已读回执" className="px-2 py-0.5 bg-white border rounded text-xs shrink-0">{allowRemoteImg?'🖼️':'🚫🖼️'}</button>
                   </div>
@@ -769,67 +908,92 @@ export default function InboxPage(){
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {/* 当前邮件正文 */}
-                {showTrans ? (
-                  <div className="text-sm text-gray-600 whitespace-pre-wrap bg-white rounded-lg p-3 border">{translated || '翻译中...'}</div>
-                ) : bodyLoading ? (
-                  <div className="text-sm text-gray-500 border rounded-lg p-3 bg-white flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/> 正文加载中…
-                  </div>
-                ) : selected.html ? (
-                  <MailHtml html={selected.html} allowRemote={allowRemoteImg} height={420} />
-                ) : (
-                  <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-3 bg-white">
-                    {(selected.text||'').slice(0,20000) || bodyError || '(无正文)'}
-                    {bodyError && (
-                      <button onClick={()=> openMail(selected, false)} className="ml-2 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
-                    )}
-                  </div>
-                )}
-                {attachments.length>0 && (
-                  <div className="rounded-lg border p-2 bg-white">
-                    <div className="text-[11px] text-gray-500 mb-1">附件 {attachments.length}</div>
-                    <div className="flex flex-wrap gap-2">
-                      {attachments.map(a=>(
-                        <a key={a.filename} href={a.url} target="_blank" rel="noreferrer" className="text-[11px] px-2 py-1 border rounded-lg bg-gray-50 hover:bg-blue-50 text-blue-600">
-                          📎 {a.filename} <span className="text-gray-400">({Math.round((a.size||0)/1024)}KB)</span>
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 邮件往来：仅搜索邮箱后展示（普通点开只看正文），Gmail 式从上至下按时间排，最新沉底 */}
-                {searchMode && (
-                <div className="rounded-xl border overflow-hidden">
-                  <div className="px-3 py-2 bg-gray-50 border-b text-xs font-semibold text-gray-600 flex items-center gap-2">
-                    <span>邮件往来</span>
-                    <span className="text-[10px] text-gray-400">共 {thread.length} 封 · {thread.length > 0 ? `${new Date(thread[0].date).toLocaleDateString()} → ${new Date(thread[thread.length-1].date).toLocaleDateString()}` : ''}</span>
-                  </div>
-                  <div ref={threadBoxRef} className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
-                    {thread.map((m)=>(
-                      <div key={m.id} className={`p-3 ${m.id===selected.id?'bg-blue-50/30':''}`}>
-                        <div className="flex items-center gap-2 text-xs mb-1">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发件':'收件'}</span>
-                          <span className="font-medium text-gray-800 truncate">{m.from.split('<')[0].trim()}</span>
-                          <span className="ml-auto text-[11px] text-gray-400">{new Date(m.date).toLocaleString()}</span>
-                        </div>
-                        <div className="text-xs font-medium text-gray-700 mb-1">{m.subject}</div>
-                        {m.html ? (
-                          <MailHtml html={m.html} allowRemote={allowRemoteImg} height={220} />
-                        ) : (
-                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed border rounded-lg p-2 bg-white">{(m.text||'').slice(0,2000) || '(内容加载中...)'}</div>
+              <div ref={threadBoxRef} className="flex-1 overflow-y-auto p-4 space-y-2">
+                {/* Gmail 式会话：旧邮件默认折叠，最新/点开的展开 */}
+                {(thread.length ? thread : [selected]).map((m, idx, arr)=>{
+                  const isLatest = idx === arr.length-1
+                  const isFocus = m.id === selected.id
+                  const expanded = expandedIds.has(m.id) || (isLatest && expandedIds.size===0) || isFocus
+                  const bodyM = threadBodies[m.id] || m
+                  return (
+                    <div key={m.id} className={`rounded-xl border overflow-hidden bg-white ${isFocus?'border-blue-200 shadow-sm':'border-gray-100'}`}>
+                      {/* 折叠头：始终可见 */}
+                      <button
+                        onClick={async()=>{
+                          if(expanded && !isLatest && !isFocus){ toggleExpand(m.id); return }
+                          if(!expanded){
+                            toggleExpand(m.id)
+                            setSelected(m)
+                            await ensureBody(m)
+                            if(m.uid!=null) listAttachments(m.accountId, m.uid).then(setAttachments).catch(()=>{})
+                            return
+                          }
+                          if(isLatest || isFocus) return
+                          toggleExpand(m.id)
+                        }}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-gray-50">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] shrink-0 ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发':'收'}</span>
+                        <span className="text-xs font-medium text-gray-800 truncate">{m.from.split('<')[0].trim() || counterpartOf(m)}</span>
+                        {!expanded && (
+                          <span className="text-[11px] text-gray-400 truncate flex-1 min-w-0">
+                            {(bodyM.text||'').replace(/\s+/g,' ').slice(0,80) || bodyM.subject}
+                          </span>
                         )}
-                      </div>
-                    ))}
-                    {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
-                  </div>
-                </div>
-                )}
+                        {expanded && <span className="text-[11px] text-gray-400 truncate flex-1 min-w-0">{m.subject}</span>}
+                        <span className="text-[10px] text-gray-400 shrink-0 ml-auto">{new Date(m.date).toLocaleString()}</span>
+                        <span className="text-[10px] text-gray-300 shrink-0">{expanded?'▾':'▸'}</span>
+                      </button>
+                      {/* 展开正文 */}
+                      {expanded && (
+                        <div className="px-3 pb-3 border-t border-gray-50 pt-2 space-y-2">
+                          <div className="text-[11px] text-gray-400">{m.from} → {m.to}</div>
+                          {showTrans && isFocus ? (
+                            <div className="text-sm text-gray-600 whitespace-pre-wrap">{translated || '翻译中...'}</div>
+                          ) : bodyLoading && isFocus ? (
+                            <div className="text-sm text-gray-500 flex items-center gap-2 py-2">
+                              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/> 正文加载中…
+                            </div>
+                          ) : bodyM.html ? (
+                            <MailHtml html={bodyM.html} allowRemote={allowRemoteImg} height={isLatest||isFocus?420:240} />
+                          ) : (
+                            <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+                              {(bodyM.text||'').slice(0,20000) || (isFocus && bodyError) || '(无正文)'}
+                              {isFocus && bodyError && (
+                                <button onClick={()=> openMail(m, false)} className="ml-2 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
+                              )}
+                            </div>
+                          )}
+                          {/* 附件 + 正文图片内联 */}
+                          {isFocus && attachments.length>0 && (
+                            <div className="space-y-2">
+                              {attachments.filter(isImageAtt).length>0 && (
+                                <div className="flex flex-wrap gap-2">
+                                  {attachments.filter(isImageAtt).map(a=>(
+                                    <a key={a.filename} href={a.url} target="_blank" rel="noreferrer" className="block">
+                                      <img src={a.url} alt={a.filename} className="max-h-48 max-w-[280px] rounded-lg border object-contain bg-gray-50" loading="lazy"/>
+                                      <div className="text-[10px] text-gray-400 mt-0.5 truncate max-w-[280px]">{a.filename}</div>
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                {attachments.map(a=>(
+                                  <a key={`att-${a.filename}`} href={a.url} target="_blank" rel="noreferrer" className="text-[11px] px-2 py-1 border rounded-lg bg-gray-50 hover:bg-blue-50 text-blue-600">
+                                    {isImageAtt(a)?'🖼️':'📎'} {a.filename} <span className="text-gray-400">({Math.round((a.size||0)/1024)}KB)</span>
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
 
                 {/* 快捷操作 */}
-                <div className="flex gap-1 flex-wrap">
+                <div className="flex gap-1 flex-wrap pt-1">
                   <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>

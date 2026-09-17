@@ -1,4 +1,4 @@
-﻿import { HashRouter, Routes, Route } from 'react-router-dom'
+import { HashRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import HomePage from './pages/Home'
 import GoalsPage from './pages/Goals'
@@ -19,6 +19,7 @@ import AiLabPage from './pages/AiLabPage'
 import SystemPage from './pages/SystemPage'
 import SyncPage from './pages/SyncPage'
 import InboxPage from './pages/InboxPage'
+import AttachmentsPage from './pages/AttachmentsPage'
 import DailyLogPage from './pages/DailyLog'
 import StatsPage from './pages/Stats'
 import AIReviewPage from './pages/AIReview'
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<HomePage />} />
           <Route path="inbox" element={<InboxPage />} />
+          <Route path="attachments" element={<AttachmentsPage />} />
           <Route path="goals" element={<GoalsPage />} />
           <Route path="work" element={<WorkPage />} />
           <Route path="projects" element={<ProjectsPage />} />

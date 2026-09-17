@@ -1,4 +1,4 @@
-﻿import { db } from '../db'
+import { db } from '../db'
 import type { EmailAccount, EmailMessage, EmailIntent } from '../types'
 import { classifyIntent } from '../services/emailAiService'
 import { uid, now } from './result'
@@ -319,6 +319,26 @@ export async function listAttachments(accountId: string, uid: number): Promise<A
   }catch{ return [] }
 }
 
+export type AttachmentSearchItem = {
+  accountId: string; uid: number; filename: string; size: number; mime: string
+  subject: string; from: string; date: string; url: string
+}
+export async function searchAttachments(q = '', type: 'image'|'all' = 'image', limit = 60): Promise<AttachmentSearchItem[]> {
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(
+    `${h.url}/email/attachment-search?q=${encodeURIComponent(q)}&type=${type}&limit=${limit}`,
+    { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error || `附件检索失败 ${r.status}`)
+  return (j.items||[]).map((it:any)=>({
+    accountId: it.accountId, uid: Number(it.uid), filename: it.filename,
+    size: Number(it.size)||0, mime: it.mime||'',
+    subject: it.subject||'', from: it.from||'', date: it.date||'',
+    url: `${h.url}/email/attachment/${it.accountId}/${it.uid}/${encodeURIComponent(it.filename)}?token=${encodeURIComponent(h.token)}`
+  }))
+}
+
 export async function downloadAttachmentBlob(accountId: string, uid: number, filename: string): Promise<Blob|null> {
   const h = await serverHeaders()
   if(!h) return null
@@ -384,10 +404,16 @@ export interface DbMailFolderStatus {
   folder: string; dbCount: number; bodyCount: number; imapTotal: number; lastUid: number
   uidnext: number; uidvalidity: number; fullSyncDone: boolean; live: boolean
   lastSyncAt: string | null; pending: number; job: any
+  // Gmail API / 正文占位
+  engine?: 'gmail-api' | 'imap'
+  historyIdReady?: boolean
+  placeholderCount?: number
+  pendingBodies?: number
 }
 export async function dbMailStatus(accountId: string, light = true): Promise<DbMailFolderStatus[]> {
   const h = await serverHeaders()
   if (!h) throw new Error('请先登录云同步')
+  // OAuth Gmail 账号服务端会自动跳过 IMAP；light 仍传，兼容旧逻辑
   const r = await fetch(`${h.url}/email/db-status/${accountId}${light ? '?light=1' : ''}`, { headers: bypassHeaders(h) })
   const j = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(j.error || `查询失败 ${r.status}`)

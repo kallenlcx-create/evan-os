@@ -1,4 +1,4 @@
-﻿import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   Home, Target, Briefcase, FolderKanban, CalendarCheck,
   GraduationCap, Brain, Heart, Bot, Inbox, Search, Bell,
@@ -15,6 +15,7 @@ import { getSyncConfig } from '../services/cloudSync'
 const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
   '/': { icon: Home, label: '首页', emoji: '🏠' },
   '/inbox': { icon: Inbox, label: '邮件中心', emoji: '📧' },
+  '/attachments': { icon: File, label: '附件库', emoji: '🖼️' },
   '/customers': { icon: Inbox, label: '客户', emoji: '👥' },
   '/followups': { icon: CalendarCheck, label: '跟进', emoji: '⏰' },
   '/graph': { icon: Brain, label: '客户拓扑', emoji: '🕸️' },
@@ -45,7 +46,7 @@ const ITEMS: Record<string, { icon: any; label: string; emoji: string }> = {
 // ====== 分组定义 ======
 const GROUPS: { key: string; label: string; paths: string[] }[] = [
   { key: 'core', label: '概览', paths: ['/', '/goals', '/actions', '/life'] },
-  { key: 'work', label: '工作', paths: ['/work', '/projects', '/inbox', '/customers', '/followups', '/campaigns', '/graph', '/panorama'] },
+  { key: 'work', label: '工作', paths: ['/work', '/projects', '/inbox', '/attachments', '/customers', '/followups', '/campaigns', '/graph', '/panorama'] },
   { key: 'knowledge', label: '知识与成长', paths: ['/knowledge', '/growth', '/review', '/ai-lab'] },
   { key: 'ai', label: 'AI', paths: ['/ai', '/agents', '/workflows', '/memory', '/inspector'] },
   { key: 'system', label: '系统', paths: ['/integrations', '/sync', '/files', '/stats', '/system', '/settings'] },
