@@ -10,6 +10,7 @@ import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing }
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
 import { useAskText } from '../components/PromptModal'
 import MailHtml from '../components/MailHtml'
+import MailTextBody from '../components/MailTextBody'
 import { OAuthBindButton, OAuthBadge, OAuthAppForm } from '../components/GmailOAuth'
 
 const INTENT_COLOR: Record<string,string> = {
@@ -353,9 +354,15 @@ export default function InboxPage(){
     let c = customer
     if(!c && selected){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
     if(!c) return
-    const next = !c.isKey
-    await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
-    setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
+    setMarkKeyBusy(true)
+    try{
+      const next = !c.isKey
+      await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
+      setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
+      showToast(next ? '已标为重点客户' : '已取消重点')
+    }catch(e:any){
+      showToast('标记失败：' + String(e?.message||e).slice(0,80))
+    }finally{ setMarkKeyBusy(false) }
   }
 
   const handleOpenReply = ()=>{
@@ -537,6 +544,14 @@ export default function InboxPage(){
   },[searchMode, searchResults, filtered])
   const [selectedThreadId, setSelectedThreadId] = useState<string|null>(null)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  // P2：轻量 toast
+  const [uiToast, setUiToast] = useState<string>('')
+  const showToast = useCallback((msg: string)=>{
+    setUiToast(msg)
+    window.setTimeout(()=> setUiToast(''), 3200)
+  },[])
+  const [aiBusy, setAiBusy] = useState<'translate'|'summary'|null>(null)
+  const [markKeyBusy, setMarkKeyBusy] = useState(false)
   const openThread = useCallback(async (row: ThreadRow)=>{
     setSelectedThreadId(row.key)
     // 默认只展开最新一封
@@ -687,6 +702,11 @@ export default function InboxPage(){
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6 max-w-none">
       {askModal}
+      {uiToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 text-white text-xs rounded-full shadow-lg">
+          {uiToast}
+        </div>
+      )}
       {/* 顶部配置条 */}
       <div className="px-4 py-2 border-b border-gray-100 bg-white flex items-center gap-2 flex-wrap">
         <Mail size={18} className="text-blue-500"/>
@@ -1023,10 +1043,10 @@ export default function InboxPage(){
                           ) : bodyM.html ? (
                             <MailHtml html={bodyM.html} allowRemote={allowRemoteImg} height={isLatest||isFocus?420:240} />
                           ) : (
-                            <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
-                              {(bodyM.text||'').slice(0,20000) || (isFocus && bodyError) || '(无正文)'}
+                            <div>
+                              <MailTextBody text={bodyM.text||''} />
                               {isFocus && bodyError && (
-                                <button onClick={()=> openMail(m, false)} className="ml-2 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
+                                <button onClick={()=> openMail(m, false)} className="ml-2 mt-1 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
                               )}
                             </div>
                           )}
@@ -1059,18 +1079,51 @@ export default function InboxPage(){
                 </div>
                 {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
 
-                {/* 快捷操作 */}
+                {/* 快捷操作（P2：loading / toast） */}
                 <div className="flex gap-1 flex-wrap p-4 pt-2">
-                  <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
-                  <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
-                  <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
+                  <button
+                    disabled={aiBusy!==null || !selected?.text}
+                    onClick={async()=>{
+                      if(!selected?.text) return showToast('无正文可翻译')
+                      setAiBusy('translate')
+                      try{
+                        const t = await translateEnToZh(selected.text)
+                        if(!t) showToast('翻译失败，请检查 AI 配置或云同步')
+                        else { setTranslated(t); setShowTrans(true); showToast('已切换为中文翻译') }
+                      }catch(e:any){ showToast('翻译失败：'+String(e?.message||e).slice(0,80)) }
+                      finally{ setAiBusy(null) }
+                    }}
+                    className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1 disabled:opacity-50"
+                  ><Languages size={12}/> {aiBusy==='translate'?'翻译中…':'翻译'}</button>
+                  <button
+                    disabled={aiBusy!==null || !selected}
+                    onClick={async()=>{
+                      if(!selected) return
+                      setAiBusy('summary')
+                      try{
+                        const s = await summarizeEmail(selected)
+                        if(!s) showToast('摘要失败，请检查 AI 配置')
+                        else alert(s)
+                      }catch(e:any){ showToast('摘要失败：'+String(e?.message||e).slice(0,80)) }
+                      finally{ setAiBusy(null) }
+                    }}
+                    className="px-2 py-1 bg-white border rounded text-xs disabled:opacity-50"
+                  >{aiBusy==='summary'?'摘要中…':'AI摘要'}</button>
+                  <button
+                    disabled={markKeyBusy}
+                    onClick={handleMarkKey}
+                    className={`px-2 py-1 rounded text-xs flex items-center gap-1 disabled:opacity-50 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}
+                  ><Star size={12}/> {markKeyBusy?'保存中…':(customer?.isKey?'已重点':'标记重点')}</button>
                   <button onClick={handleOpenReply} className="px-2 py-1 bg-blue-50 text-blue-600 border border-blue-200 rounded text-xs flex items-center gap-1"><Send size={10}/> 回复</button>
                   <button onClick={async()=>{
                     if(!selected) return
-                    await markRead(selected.id, false)
-                    setEmails(prev=> prev.map(x=> x.id===selected.id? {...x, isRead:false}:x))
-                    setSelected(s=> s? {...s, isRead:false}:s)
-                    void refreshServerMeta()
+                    try{
+                      await markRead(selected.id, false)
+                      setEmails(prev=> prev.map(x=> x.id===selected.id? {...x, isRead:false}:x))
+                      setSelected(s=> s? {...s, isRead:false}:s)
+                      void refreshServerMeta()
+                      showToast('已标为未读')
+                    }catch(e:any){ showToast('标为未读失败：'+String(e?.message||e).slice(0,80)) }
                   }} className="px-2 py-1 bg-white border rounded text-xs">标为未读</button>
                 </div>
               </div>
