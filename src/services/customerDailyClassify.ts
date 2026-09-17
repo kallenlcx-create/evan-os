@@ -84,6 +84,9 @@ export function levelFromSignals(totalAmount: number, emailCount: number): Custo
 }
 
 const LEVEL_ORDER = ['D','C','B','A','A+'] as const
+/** 由等级/邮箱类型派生，不在「标签」筛选行重复展示 */
+export const SYSTEM_TAGS = ['政府','教育','非盈利','军队','个人','企业','已分类','重点客户','邮件','订单']
+export const SYSTEM_TAG_SET = new Set(SYSTEM_TAGS)
 function levelOnlyUp(old: Customer['level'], next: Customer['level']) {
   const oi = LEVEL_ORDER.indexOf((old||'D') as any)
   const ni = LEVEL_ORDER.indexOf((next||'D') as any)
@@ -138,8 +141,10 @@ export async function runDailyClassify(opts?: { force?: boolean }): Promise<Dail
     level = levelOnlyUp(c.level || 'D', level)
     let isKey = !!c.isKey
     if(level === 'A+' || level === 'A' || amount > 1500 || emailCount >= 5) isKey = true
-    const tags = new Set([...(c.tags||[]), et.label, '已分类'])
-    if(isKey) tags.add('重点客户')
+    // 系统分类写 customerType/level/isKey，不再往 tags 塞「政府/已分类…」
+    // 避免与顶部筛选条（A~D + 邮箱类型）重复
+    const oldTags = (c.tags||[]).map(String).filter(t=> !SYSTEM_TAG_SET.has(t))
+    const tags = new Set(oldTags)
     if(level !== c.level) result.upgraded++
     if(isKey) result.keyCount++
     result.byType[et.label] = (result.byType[et.label]||0)+1

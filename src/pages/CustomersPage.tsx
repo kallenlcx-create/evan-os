@@ -4,7 +4,7 @@ import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
 import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
 import MailHtml from '../components/MailHtml'
-import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, type IntellectConfig } from '../services/customerDailyClassify'
+import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 
@@ -76,11 +76,24 @@ export default function CustomersPage(){
   const [tagFilter, setTagFilter] = useState<string>('all')
   const [showTagMgr, setShowTagMgr] = useState(false)
   const [tagInput, setTagInput] = useState('')
-  // 全部自定义标签（去重计数）
+  // 全部自定义标签（去掉系统派生标签，避免与 A~D/邮箱类型筛选重复）
   const allTags = useMemo(()=>{
     const m = new Map<string, number>()
-    for(const c of list) for(const t of (c.tags || [])) m.set(t, (m.get(t) || 0) + 1)
+    for(const c of list) for(const t of (c.tags || [])){
+      const tag = String(t)
+      if(SYSTEM_TAG_SET.has(tag)) continue
+      m.set(tag, (m.get(tag) || 0) + 1)
+    }
     return [...m.entries()].sort((a,b)=> b[1]-a[1])
+  },[list])
+  const levelCounts = useMemo(()=>{
+    const acc: Record<string, number> = { all: list.length, key: 0 }
+    for(const c of list){
+      const lv = c.level || 'C'
+      acc[lv] = (acc[lv]||0)+1
+      if(c.isKey) acc.key++
+    }
+    return acc
   },[list])
   const saveTags = async (c: Customer, tags: string[]) => {
     const clean = [...new Set(tags.map(t=>t.trim()).filter(Boolean))].slice(0, 20)
@@ -665,7 +678,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 已下单闭环</button>
         <button onClick={()=> setShowCsvOrder(true)} className="px-2 py-1 rounded-full text-xs border bg-white" title="CSV：订单号,邮箱,日期,产品,数量,金额">📥 订单CSV</button>
         <button onClick={()=> setShowIntel(v=>!v)} className="px-2 py-1 rounded-full text-xs border bg-white">⚙️ 智能设置</button>
-        <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
+        <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点 {levelCounts.key||0}</button>
       </div>
       {intelNote && (
         <div className="text-[11px] px-3 py-2 bg-purple-50 text-purple-800 border border-purple-100 rounded-xl flex items-center gap-2">
@@ -727,17 +740,22 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           <button onClick={clearCheck} className="px-2 py-1 text-gray-300">取消</button>
         </div>
       )}
-      <div className="flex gap-1 flex-wrap">
-        {(['all','A+','A','B','C','D'] as const).map(l=> <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l==='all'?'全部':l}</button>)}
+      <div className="flex gap-1 flex-wrap items-center">
+        <button onClick={()=> setFilter('all' as any)} className={`px-3 py-1 rounded-full text-xs border ${filter==='all'?'bg-blue-600 text-white':'bg-white'}`}>全部 {levelCounts.all||0}</button>
+        {(['A+','A','B','C','D'] as const).map(l=> (
+          <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l} {levelCounts[l]||0}</button>
+        ))}
         <span className="text-gray-300 self-center">|</span>
         {([
-          {k:'gov',l:'🏛 政府',c:'bg-red-50 text-red-600'},
-          {k:'edu',l:'🎓 教育',c:'bg-blue-50 text-blue-600'},
-          {k:'org',l:'🤝 非盈利',c:'bg-purple-50 text-purple-600'},
-          {k:'mil',l:'🎖 军队',c:'bg-orange-50 text-orange-600'},
-          {k:'personal',l:'👤 个人',c:'bg-green-50 text-green-600'},
-          {k:'enterprise',l:'🏢 企业',c:'bg-indigo-50 text-indigo-600'},
-        ] as const).map(({k,l,c})=> <button key={k} onClick={()=> setFilter(filter===k?'all':k as any)} className={`px-2 py-1 rounded-full text-[10px] border ${filter===k?c+' ring-1 ring-current':'bg-white text-gray-500'}`}>{l} {emailTypeCounts[k.replace('personal','个人').replace('enterprise','企业')]||''}</button>)}
+          {k:'gov',l:'🏛 政府',c:'bg-red-50 text-red-600', label:'政府'},
+          {k:'edu',l:'🎓 教育',c:'bg-blue-50 text-blue-600', label:'教育'},
+          {k:'org',l:'🤝 非盈利',c:'bg-purple-50 text-purple-600', label:'非盈利'},
+          {k:'mil',l:'🎖 军队',c:'bg-orange-50 text-orange-600', label:'军队'},
+          {k:'personal',l:'👤 个人',c:'bg-green-50 text-green-600', label:'个人'},
+          {k:'enterprise',l:'🏢 企业',c:'bg-indigo-50 text-indigo-600', label:'企业'},
+        ] as const).map(({k,l,c,label})=> (
+          <button key={k} onClick={()=> setFilter(filter===k?'all':k as any)} className={`px-2 py-1 rounded-full text-[10px] border ${filter===k?c+' ring-1 ring-current':'bg-white text-gray-500'}`}>{l} {emailTypeCounts[label]||0}</button>
+        ))}
         <div className="ml-auto relative"><Search size={12} className="absolute left-2 top-2 text-gray-300"/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="pl-6 pr-2 py-1 border rounded-lg text-xs"/></div>
       </div>
       {/* 自定义标签筛选 */}
