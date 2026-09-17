@@ -92,6 +92,20 @@ function isImageAtt(a: {filename:string;mime?:string}){
   if(mime.startsWith('image/')) return true
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.filename||'')
 }
+function avatarColor(seed: string){
+  let h = 0
+  for(let i=0;i<seed.length;i++) h = (h*31 + seed.charCodeAt(i)) >>> 0
+  const hues = [210, 12, 280, 160, 30, 340, 200]
+  const hue = hues[h % hues.length]
+  return `hsl(${hue} 55% 48%)`
+}
+function mailSnippet(m: EmailMessage, max = 90){
+  const raw = String(m.text||'').replace(/\s+/g,' ').trim()
+  if(raw) return raw.slice(0, max)
+  const html = String(m.html||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()
+  if(html) return html.slice(0, max)
+  return ''
+}
 
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
@@ -947,16 +961,21 @@ export default function InboxPage(){
                 </div>
               </div>
 
-              <div ref={threadBoxRef} className="flex-1 overflow-y-auto p-4 space-y-2">
-                {/* Gmail 式会话：旧邮件默认折叠，最新/点开的展开 */}
+              <div ref={threadBoxRef} className="flex-1 overflow-y-auto">
+                {/* Gmail 式会话：头像 + 名字 + 正文摘要；旧邮件默认折叠，最新默认展开 */}
+                <div className="divide-y divide-gray-100">
                 {(thread.length ? thread : [selected]).map((m, idx, arr)=>{
                   const isLatest = idx === arr.length-1
                   const isFocus = m.id === selected.id
                   const expanded = expandedIds.has(m.id) || (isLatest && expandedIds.size===0) || isFocus
                   const bodyM = threadBodies[m.id] || m
+                  const name = displayNameOf(m)
+                  const snippet = mailSnippet(bodyM, 110) || '（打开加载正文）'
+                  const color = avatarColor(counterpartOf(m) || name)
+                  const initial = (name || '?').trim().charAt(0).toUpperCase()
                   return (
-                    <div key={m.id} className={`rounded-xl border overflow-hidden bg-white ${isFocus?'border-blue-200 shadow-sm':'border-gray-100'}`}>
-                      {/* 折叠头：始终可见 */}
+                    <div key={m.id} className={`${isFocus?'bg-blue-50/30':''}`}>
+                      {/* 行头：Gmail 式「头像 + 名字 + 摘要」 */}
                       <button
                         onClick={async()=>{
                           if(expanded && !isLatest && !isFocus){ toggleExpand(m.id); return }
@@ -970,24 +989,33 @@ export default function InboxPage(){
                           if(isLatest || isFocus) return
                           toggleExpand(m.id)
                         }}
-                        className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-gray-50">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] shrink-0 ${m.folder==='sent'?'bg-green-100 text-green-700':'bg-blue-100 text-blue-700'}`}>{m.folder==='sent'?'发':'收'}</span>
-                        <span className="text-xs font-medium text-gray-800 truncate">{m.from.split('<')[0].trim() || counterpartOf(m)}</span>
-                        {!expanded && (
-                          <span className="text-[11px] text-gray-400 truncate flex-1 min-w-0">
-                            {(bodyM.text||'').replace(/\s+/g,' ').slice(0,80) || bodyM.subject}
+                        className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-gray-50/80">
+                        <span
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 mt-0.5"
+                          style={{ background: color }}
+                        >{initial}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-baseline gap-2">
+                            <span className="text-[13px] font-semibold text-gray-900 truncate">{name}</span>
+                            <span className="text-[11px] text-gray-400 shrink-0 ml-auto">
+                              {new Date(m.date).toLocaleString(undefined,{ month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}
+                            </span>
                           </span>
-                        )}
-                        {expanded && <span className="text-[11px] text-gray-400 truncate flex-1 min-w-0">{m.subject}</span>}
-                        <span className="text-[10px] text-gray-400 shrink-0 ml-auto">{new Date(m.date).toLocaleString()}</span>
-                        <span className="text-[10px] text-gray-300 shrink-0">{expanded?'▾':'▸'}</span>
+                          {!expanded ? (
+                            <span className="block text-[12px] text-gray-500 truncate mt-0.5">{snippet}</span>
+                          ) : (
+                            <span className="block text-[11px] text-gray-400 truncate mt-0.5">
+                              {m.folder==='sent'?'发给':'来自'} {m.folder==='sent'? (m.to||'').slice(0,60) : (m.from||'').slice(0,60)}
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[11px] text-gray-300 shrink-0 self-center">{expanded?'▾':'▸'}</span>
                       </button>
                       {/* 展开正文 */}
                       {expanded && (
-                        <div className="px-3 pb-3 border-t border-gray-50 pt-2 space-y-2">
-                          <div className="text-[11px] text-gray-400">{m.from} → {m.to}</div>
+                        <div className="px-4 pb-4 pl-15 space-y-2" style={{ paddingLeft: 52 }}>
                           {showTrans && isFocus ? (
-                            <div className="text-sm text-gray-600 whitespace-pre-wrap">{translated || '翻译中...'}</div>
+                            <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{translated || '翻译中...'}</div>
                           ) : bodyLoading && isFocus ? (
                             <div className="text-sm text-gray-500 flex items-center gap-2 py-2">
                               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/> 正文加载中…
@@ -995,14 +1023,13 @@ export default function InboxPage(){
                           ) : bodyM.html ? (
                             <MailHtml html={bodyM.html} allowRemote={allowRemoteImg} height={isLatest||isFocus?420:240} />
                           ) : (
-                            <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+                            <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
                               {(bodyM.text||'').slice(0,20000) || (isFocus && bodyError) || '(无正文)'}
                               {isFocus && bodyError && (
                                 <button onClick={()=> openMail(m, false)} className="ml-2 px-2 py-0.5 text-[11px] border rounded bg-blue-50 text-blue-600">重试</button>
                               )}
                             </div>
                           )}
-                          {/* 附件 + 正文图片内联 */}
                           {isFocus && attachments.length>0 && (
                             <div className="space-y-2">
                               {attachments.filter(isImageAtt).length>0 && (
@@ -1029,10 +1056,11 @@ export default function InboxPage(){
                     </div>
                   )
                 })}
+                </div>
                 {thread.length===0 && <div className="p-6 text-center text-xs text-gray-300">暂无同主题往来</div>}
 
                 {/* 快捷操作 */}
-                <div className="flex gap-1 flex-wrap pt-1">
+                <div className="flex gap-1 flex-wrap p-4 pt-2">
                   <button onClick={async()=>{ const t=await translateEnToZh(selected.text); setTranslated(t); setShowTrans(true)}} className="px-2 py-1 bg-white border rounded text-xs flex items-center gap-1"><Languages size={12}/> 翻译</button>
                   <button onClick={async()=>{ const s=await summarizeEmail(selected); alert(s) }} className="px-2 py-1 bg-white border rounded text-xs">AI摘要</button>
                   <button onClick={handleMarkKey} className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${customer?.isKey?'bg-yellow-500 text-white':'bg-white border'}`}><Star size={12}/> {customer?.isKey?'已重点':'标记重点'}</button>
