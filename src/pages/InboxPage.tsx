@@ -1453,14 +1453,33 @@ export default function InboxPage(){
       {showOutbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowOutbox(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e=> e.stopPropagation()}>
-            <div className="px-5 py-3 border-b flex items-center justify-between">
-              <div className="text-sm font-semibold">📤 发件箱 <span className="text-xs text-gray-400 font-normal">排队自动发出，失败可重试</span></div>
-              <button onClick={()=> setShowOutbox(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+            <div className="px-5 py-3 border-b flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold">📤 发件箱 <span className="text-xs text-gray-400 font-normal">排队自动发出 · 待发可取消</span></div>
+              <div className="flex items-center gap-2">
+                {outboxList.some(o=> o.status==='queued' || o.status==='failed') && (
+                  <button
+                    onClick={async()=>{
+                      const n = outboxList.filter(o=> o.status==='queued' || o.status==='failed').length
+                      if(!confirm(`取消全部 ${n} 封待发/失败邮件？`)) return
+                      try{
+                        for(const o of outboxList){
+                          if(o.status==='queued' || o.status==='failed') await cancelOutbox(o.id).catch(()=>{})
+                        }
+                        await refreshOutbox()
+                        showToast('已取消全部待发')
+                      }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                    }}
+                    className="px-2 py-1 text-[11px] border border-rose-200 text-rose-600 rounded-lg hover:bg-rose-50"
+                  >取消全部待发</button>
+                )}
+                <button onClick={()=> setShowOutbox(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {outboxList.length===0 && <div className="text-center text-xs text-gray-300 py-8">暂无排队邮件</div>}
               {outboxList.map(o=>{
                 const isBatch = String(o.idempotency_key||'').startsWith('batch-')
+                const canCancel = o.status==='queued' || o.status==='failed'
                 return (
                 <div key={o.id} className="p-3 border rounded-xl text-xs">
                   <div className="flex items-center gap-2">
@@ -1475,16 +1494,21 @@ export default function InboxPage(){
                   </div>
                   <div className="text-gray-400 mt-1 truncate">→ {o.to_list}</div>
                   {o.error && <div className="text-red-400 mt-1 break-all">{o.error}</div>}
-                  <div className="flex gap-2 mt-2">
+                  <div className="flex gap-2 mt-2 flex-wrap items-center">
                     {o.status==='failed' && (
                       <button onClick={async()=>{ await retryOutbox(o.id); await refreshOutbox() }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">重试发送</button>
                     )}
-                    {(o.status==='queued' || o.status==='failed') && (
-                      <button onClick={async()=>{
-                        if(!confirm('取消这封待发/定时邮件？')) return
-                        try{ await cancelOutbox(o.id); await refreshOutbox(); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
-                      }} className="px-3 py-1 border rounded-lg text-[11px] text-gray-500 hover:bg-gray-50">取消发送</button>
+                    {canCancel && (
+                      <button
+                        onClick={async()=>{
+                          if(!confirm('取消这封待发/定时邮件？')) return
+                          try{ await cancelOutbox(o.id); await refreshOutbox(); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                        }}
+                        className="px-3 py-1 border border-rose-200 text-rose-600 rounded-lg text-[11px] hover:bg-rose-50"
+                      >取消发送</button>
                     )}
+                    {o.status==='sent' && <span className="text-[10px] text-gray-300">已发出，无法取消</span>}
+                    {o.status==='sending' && <span className="text-[10px] text-gray-300">发送中，请稍候</span>}
                   </div>
                 </div>
                 )
