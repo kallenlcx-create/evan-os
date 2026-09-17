@@ -107,12 +107,11 @@ function mailSnippet(m: EmailMessage, max = 90){
   if(html) return html.slice(0, max)
   return ''
 }
-/** 我（Evan）固定品牌蓝，与客户彩色头像区分 */
+/** 我（Evan）：仅当「发件人」是自己时才算「我」；to 含 Evan 不能算，否则客户来信也会被标成我 */
 const SELF_COLOR = '#1d4ed8'
 function isSelfMessage(m: EmailMessage){
   const from = extractAddr(m.from).toLowerCase()
-  const to = extractAddr(m.to||'').toLowerCase()
-  return SELF_ADDRS.includes(from) || SELF_ADDRS.includes(to)
+  return SELF_ADDRS.includes(from)
 }
 
 export default function InboxPage(){

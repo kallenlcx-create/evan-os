@@ -49,12 +49,29 @@ export function countBlockedImg(html: string){
 export default function MailHtml({ html, allowRemote = false, height = 320 }: { html: string; allowRemote?: boolean; height?: number }){
   if(!html) return null
   const blocked = !allowRemote ? countBlockedImg(html) : 0
+  const emptyish = !String(html).replace(/<[^>]+>/g,'').trim()
   return (
     <div className="w-full">
       {blocked>0 && <div className="text-[10px] text-gray-400 mb-1">🛡️ 已拦截 {blocked} 张外部图片（防追踪）</div>}
-      {/* P0：去掉 border/rounded，贴近 Gmail 无框正文 */}
-      <iframe sandbox="" title="mail-body" srcDoc={sanitizeMailHtml(html, allowRemote)}
-        className="w-full bg-white" style={{ height, border: 'none' }} />
+      {emptyish ? (
+        <div className="text-sm text-gray-400 py-1">(无正文)</div>
+      ) : (
+        <iframe
+          sandbox=""
+          title="mail-body"
+          srcDoc={sanitizeMailHtml(html, allowRemote)}
+          className="w-full bg-white"
+          style={{ border: 'none', height: 120, minHeight: 80, maxHeight: Math.max(height, 480) }}
+          onLoad={(e)=>{
+            try{
+              const doc = e.currentTarget.contentDocument
+              if(!doc?.body) return
+              const h = Math.min(Math.max(doc.body.scrollHeight + 12, 80), Math.max(height, 480))
+              e.currentTarget.style.height = `${h}px`
+            }catch{}
+          }}
+        />
+      )}
     </div>
   )
 }
