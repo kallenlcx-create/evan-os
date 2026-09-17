@@ -676,50 +676,87 @@ export default function InboxPage(){
         <Mail size={18} className="text-blue-500"/>
         <span className="text-sm font-bold text-gray-800">邮件中心 · 客户经营</span>
         <span className="text-xs text-gray-400">通用 IMAP 全量支持 · 自动翻译/意图/跟进</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <select value={syncCount} onChange={e=>{ setSyncCount(e.target.value); if(e.target.value!=='custom') setEmailSyncConfig({limit: e.target.value==='all'?1000000 as any : e.target.value as any}) }} className="px-2 py-1 border rounded text-xs">
-            <option value="20">20封</option><option value="30">30封</option><option value="50">50封</option><option value="100">100封</option><option value="200">200封</option><option value="500">500封</option><option value="1000000">全部</option>
-          </select>
-          <select value={String(syncInterval)} onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }} className="px-2 py-1 border rounded text-xs">
-            <option value="1">每分钟</option><option value="5">每5分</option><option value="10">每10分</option><option value="30">每30分</option><option value="60">每小时</option><option value="1440">每天</option>
-          </select>
-          <label className="flex items-center gap-1 px-2 py-1 bg-white border rounded text-xs">
-            <input type="checkbox" checked={autoSync} onChange={e=>{ setAutoSync(e.target.checked); setEmailSyncConfig({enabled:e.target.checked}) }}/>
+        <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+          {folder==='inbox' && (
+            <button
+              onClick={()=> setFilter(filter==='unread'?'all':'unread')}
+              className="px-2 py-1 border rounded text-xs bg-white text-gray-600 hover:bg-gray-50"
+              title="切换本地列表范围：全部邮件 / 仅未读"
+            >{filter==='unread'?'未读':'筛选'}</button>
+          )}
+          <label
+            className="flex items-center gap-1 px-2 py-1 bg-white border rounded text-xs text-gray-600 cursor-pointer"
+            title="从服务器库自动刷新到浏览器本地（不碰 Gmail）"
+          >
+            <input
+              type="checkbox"
+              checked={autoSync}
+              onChange={e=>{ setAutoSync(e.target.checked); setEmailSyncConfig({enabled:e.target.checked}) }}
+            />
             自动
+            <select
+              value={String(syncInterval)}
+              onChange={e=>{ const v=Number(e.target.value); setSyncInterval(v); setEmailSyncConfig({intervalMinutes:v}) }}
+              className="border-0 bg-transparent text-[11px] text-gray-500 outline-none cursor-pointer"
+              title="本地镜像间隔"
+            >
+              <option value="1">1分</option><option value="5">5分</option><option value="10">10分</option>
+              <option value="30">30分</option><option value="60">1时</option><option value="1440">1天</option>
+            </select>
           </label>
-          <button onClick={handleSyncSelected} disabled={syncing} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">{syncing?'同步中…':'⟳ 同步'}</button>
-          <button onClick={async()=>{ await refreshOutbox(); setShowOutbox(true) }} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs hover:bg-gray-50" title="排队中/失败的发件">
-            📤 发件箱{outboxList.filter(o=> o.status==='failed').length>0 ? ` · ${outboxList.filter(o=> o.status==='failed').length}失败` : ''}
+          <button
+            onClick={handleSyncSelected}
+            disabled={syncing}
+            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50"
+            title="从服务器库刷新本地邮件列表（镜像，不重新拉 Gmail）"
+          >{syncing?'刷新中…':'⟳ 刷新本地'}</button>
+          <button
+            onClick={async()=>{ await refreshOutbox(); setShowOutbox(true) }}
+            className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs hover:bg-gray-50"
+            title="排队中 / 发送失败的邮件"
+          >
+            📤 待发{outboxList.filter(o=> o.status==='failed').length>0 ? ` · ${outboxList.filter(o=> o.status==='failed').length}失败` : ''}
           </button>
-          <button onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')} disabled={!!ingestJob?.running} className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50" title="绑定后点一次全量入库，之后只同步新增">
+          <button
+            onClick={()=> handleIngest(dbFolders[0]?.fullSyncDone ? 'incremental' : 'full')}
+            disabled={!!ingestJob?.running}
+            className="px-3 py-1.5 bg-teal-600 text-white rounded-lg text-xs hover:bg-teal-700 disabled:opacity-50"
+            title="从 Gmail 拉入服务器邮件库（首次全量，之后增量；含附件补全）"
+          >
             {ingestJob?.running
               ? (ingestJob.engine === 'gmail-api' || ingestJob.mode === 'gmail'
-                  ? `${ingestJob.phase === 'full-body' ? '补正文' : ingestJob.phase === 'incremental' ? '增量' : '入库'} ${ingestJob.dbCount || ingestJob.done || 0}${ingestJob.total ? '/'+ingestJob.total : ''}`
-                  : `入库中 ${ingestJob.done}/${ingestJob.total}`)
-              : '🗄️ 入库'}
+                  ? `${ingestJob.phase?.startsWith('full-body')||ingestJob.phase==='body-backfill' ? '补正文' : ingestJob.phase==='attachments' ? '补附件' : ingestJob.phase === 'incremental' ? '增量' : '拉邮件'} ${ingestJob.dbCount || ingestJob.done || 0}`
+                  : `拉取中 ${ingestJob.done}/${ingestJob.total}`)
+              : '📥 拉邮件'}
           </button>
-          <button onClick={async()=>{
-            try{
-              const r = await setWatchPaused(!watchOff)
-              setWatchOff(r.paused)
-            }catch(e:any){ alert(String(e.message||e).slice(0,150)) }
-          }} className={`px-3 py-1.5 rounded-lg text-xs border ${watchOff ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-gray-500'}`} title="入库优先时暂停实时监听，入库完成后再恢复">
-            {watchOff ? '▶ 恢复监听' : '⏸ 暂停监听'}
-          </button>
+          {accounts.some(a=> (a.provider||'')!=='gmail') && (
+            <button
+              onClick={async()=>{
+                try{
+                  const r = await setWatchPaused(!watchOff)
+                  setWatchOff(r.paused)
+                }catch(e:any){ alert(String(e.message||e).slice(0,150)) }
+              }}
+              className={`px-2 py-1.5 rounded-lg text-xs border ${watchOff ? 'bg-green-50 text-green-600 border-green-200' : 'bg-white text-gray-500'}`}
+              title="IMAP 实时监听开关（Gmail OAuth 账号不使用）"
+            >{watchOff ? '▶ 实时' : '⏸ 监听'}</button>
+          )}
           {(dbFolders.length>0 && dbFolders[0] || ingestJob?.running) && (
-            <span className="text-[10px] text-gray-400 hidden lg:inline flex items-center gap-1" title="服务端邮件库实时数量（正文占位不计入已缓存）">
+            <span
+              className="text-[10px] text-gray-400 hidden lg:inline flex items-center gap-1"
+              title={`服务器库 ${(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封 · 正文 ${(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0} · 占位 ${ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount || 0}${ingestJob?.running && ingestJob.apiCalls>0 ? ` · 本次 API ${ingestJob.apiCalls}` : ''}`}
+            >
               {ingestJob?.running && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />}
-              库 {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0}
-              {(dbFolders[0]?.engine === 'gmail-api' || ingestJob?.engine === 'gmail-api') ? ' · API' : (dbFolders[0]?.live ? `/${dbFolders[0]?.imapTotal}` : '·离线')}
+              {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封
               {' · 正文 '}{(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0}
-              {!!((ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount)) && ` · 占位 ${ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount}`}
-              {(ingestJob?.running && (ingestJob.added>0 || ingestJob.updated>0)) && ` · 本次+${ingestJob.added}/~${ingestJob.updated}`}
-              {(!ingestJob?.running && dbFolders[0]?.live && dbFolders[0]?.pending>0) && ` · +${dbFolders[0].pending}`}
-              {ingestJob?.running && ingestJob.apiCalls>0 && ` · API ${ingestJob.apiCalls}`}
             </span>
           )}
-          <button onClick={handleImportAll} disabled={syncing} className="px-2 py-1 bg-purple-600 text-white rounded-lg text-xs hidden md:block">全部导入</button>
-          <button onClick={handleAiAnalyzeAll} disabled={analyzing} className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block">{analyzing?'分析中…':'AI分析'}</button>
+          <button
+            onClick={handleAiAnalyzeAll}
+            disabled={analyzing}
+            className="px-2 py-1 bg-green-600 text-white rounded-lg text-xs hidden md:block"
+            title="对本地邮件批量跑意图/产品分类"
+          >{analyzing?'分析中…':'AI分析'}</button>
         </div>
         <button onClick={()=> setShowConfig(v=>!v)} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50"><Settings size={12}/> 配置</button>
         <div className="relative">
