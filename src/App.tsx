@@ -29,6 +29,7 @@ import FollowUpsPage from './pages/FollowUpsPage'
 import EmailGraphPage from './pages/EmailGraph'
 import EmailPanoramaPage from './pages/EmailPanorama'
 import CampaignsPage from './pages/CampaignsPage'
+void CampaignsPage
 
 import { useEffect } from 'react'
 import { initEmailSync } from './services/emailSyncService'
@@ -65,9 +66,9 @@ export default function App() {
           <Route path="files" element={<FilesPage />} />
           <Route path="customers" element={<CustomersPage />} />
           <Route path="followups" element={<FollowUpsPage />} />
+          <Route path="campaigns" element={<FollowUpsPage />} />
           <Route path="graph" element={<EmailGraphPage />} />
           <Route path="panorama" element={<EmailPanoramaPage />} />
-          <Route path="campaigns" element={<CampaignsPage />} />
         </Route>
       </Routes>
     </HashRouter>

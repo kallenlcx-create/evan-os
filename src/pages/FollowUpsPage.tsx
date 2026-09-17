@@ -4,9 +4,10 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
+import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount, type IntellectTier } from '../services/customerIntellect'
 
 // ====== 跟进模板库 ======
 const TEMPLATES = [
@@ -35,6 +36,12 @@ export default function FollowUpsPage() {
   const [sendSubject, setSendSubject] = useState('')
   const [sendBody, setSendBody] = useState('')
   const [sending, setSending] = useState(false)
+  // 批量选择 + 智能分类
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [intellectBusy, setIntellectBusy] = useState(false)
+  const [intellectNote, setIntellectNote] = useState('')
+  const [batchSending, setBatchSending] = useState(false)
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, errors: 0 })
 
   // ====== 自动跟进序列 ======
   const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
@@ -100,14 +107,27 @@ export default function FollowUpsPage() {
 
   const today = new Date().toISOString().slice(0, 10)
 
-  // ====== 6分类统计 ======
+  // ====== 6分类统计（优先 aiTier，否则旧规则）======
   const stats = useMemo(() => {
+    const byTier = (t: IntellectTier) => customers.filter(c => (c as any).aiTier === t).length
+    const hasTier = customers.some(c => (c as any).aiTier)
+    if(hasTier){
+      return {
+        high: byTier('high'),
+        today: list.filter(f => f.dueAt === today && f.status === 'pending').length,
+        overdue: list.filter(f => f.dueAt < today && f.status === 'pending').length,
+        pendingDeals: byTier('pending'),
+        repurchase: byTier('repurchase'),
+        marketing: byTier('marketing'),
+      }
+    }
     const high = customers.filter(c => c.isKey && (c.level === 'A+' || c.level === 'A')).length
     const todayCnt = list.filter(f => f.dueAt === today && f.status === 'pending').length
     const overdue = list.filter(f => f.dueAt < today && f.status === 'pending').length
     const pendingDeals = customers.filter(c => c.stage === 'proposal' || c.stage === 'negotiation').length
     const repurchase = customers.filter(c => c.isKey && (c.score || 0) > 70).length
-    const marketing = customers.filter(c => c.isKey).length
+    // 旧营销机会过宽：无 aiTier 时用「>30天未联系」兜底
+    const marketing = customers.filter(c => c.isKey && !c.stage?.match(/won|lost/)).length
     return { high, today: todayCnt, overdue, pendingDeals, repurchase, marketing }
   }, [customers, list, today])
 
@@ -139,10 +159,19 @@ export default function FollowUpsPage() {
     const bList = scored.filter(x => x.c.level === 'B')
     // 卡片点选用：不过滤沉寂天数
     const allKey = withDays(keyCustomers)
-    const allHigh = withDays(customers.filter(c => c.isKey && (c.level === 'A+' || c.level === 'A')))
-    const allRepurchase = withDays(customers.filter(c => c.isKey && (c.score || 0) > 70))
-    const allMarketing = withDays(customers.filter(c => c.isKey))
-    const allPendingDeals = withDays(customers.filter(c => c.stage === 'proposal' || c.stage === 'negotiation'))
+    const tierOf = (c: Customer) => (c as any).aiTier as IntellectTier | undefined
+    const allHigh = withDays(customers.filter(c => tierOf(c)==='high' || (!tierOf(c) && c.isKey && (c.level === 'A+' || c.level === 'A'))))
+    const allRepurchase = withDays(customers.filter(c => tierOf(c)==='repurchase' || (!tierOf(c) && c.isKey && (c.score || 0) > 70)))
+    // 营销机会：aiTier=marketing；无 tier 时用 >30 天未联系
+    const allMarketing = withDays(customers.filter(c => {
+      const t = tierOf(c)
+      if(t==='marketing') return true
+      if(t) return false
+      const last = lastContactOf(c)
+      const d = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 999
+      return d > 30 && c.stage !== 'lost' && c.stage !== 'won' && !!(c.email || (c.extraEmails||[]).length)
+    }))
+    const allPendingDeals = withDays(customers.filter(c => tierOf(c)==='pending' || (!tierOf(c) && (c.stage === 'proposal' || c.stage === 'negotiation'))))
     return { all: scored, aList, bList, allKey, allHigh, allRepurchase, allMarketing, allPendingDeals, lastContactOf }
   }, [customers, emails])
 
@@ -257,6 +286,142 @@ export default function FollowUpsPage() {
     await load()
   }, [load])
 
+  // ====== 智能分类 L1 ======
+  const handleIntellect = useCallback(async () => {
+    setIntellectBusy(true)
+    setIntellectNote('')
+    try{
+      const autoSeqIds = new Set(sequences.filter(s=> s.mode==='auto').map(s=> s.customer_id))
+      const pendFu = new Set(list.filter(f=> f.status==='pending').map(f=> f.customerId))
+      const results = await runIntellectBatch(customers, emails, { autoSeqCustomerIds: autoSeqIds, pendingFuCustomerIds: pendFu })
+      const c = { high:0, marketing:0, repurchase:0, pending:0, follow:0, dormant:0 }
+      for(const r of results) (c as any)[r.tier] = ((c as any)[r.tier]||0)+1
+      setIntellectNote(`智能分类完成：高意向 ${c.high} · 待成交 ${c.pending} · 复购 ${c.repurchase} · 营销 ${c.marketing} · 跟进 ${c.follow} · 沉寂 ${c.dormant}`)
+      setCustomers(await db.customers.toArray() as Customer[])
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+    }catch(e:any){ setIntellectNote('分类失败：'+String(e?.message||e).slice(0,100)) }
+    finally{ setIntellectBusy(false) }
+  }, [customers, emails, sequences, list])
+
+  // 默认排重（静默）
+  useEffect(()=>{
+    let cancelled = false
+    ;(async()=>{
+      try{
+        const all = await db.customers.toArray() as Customer[]
+        if(all.length < 2) return
+        // 仅当存在同邮箱重复时才跑，避免每次空转
+        const emailsSeen = new Map<string, number>()
+        for(const c of all){
+          const ms = [c.email, ...(c.extraEmails||[])].filter(Boolean).map((e:string)=> String(e).toLowerCase())
+          for(const m of ms) emailsSeen.set(m, (emailsSeen.get(m)||0)+1)
+        }
+        const hasDup = [...emailsSeen.values()].some(n=> n>1)
+        if(!hasDup || cancelled) return
+        // 复用 CustomersPage 同类逻辑的轻量版：交给客户页排重太重，这里只打日志
+        // 实际排重在 CustomersPage handleDedupe；此处触发全局事件请求客户页静默排重过重，改为直接跑精简排重
+        const groups = new Map<string, Customer[]>()
+        for(const c of all){
+          const ms = new Set<string>()
+          if(c.email) ms.add(c.email.toLowerCase())
+          for(const e of (c.extraEmails||[])) ms.add(String(e).toLowerCase())
+          for(const m of ms){ if(!groups.has(m)) groups.set(m, []); if(!groups.get(m)!.some(x=>x.id===c.id)) groups.get(m)!.push(c) }
+        }
+        const gone = new Set<string>()
+        let removed = 0
+        for(const [, arr] of groups){
+          const alive = arr.filter(x=> !gone.has(x.id))
+          if(alive.length<2) continue
+          alive.sort((a,b)=> String(b.updatedAt||'') < String(a.updatedAt||'') ? -1 : 1)
+          const keeper = alive[0]
+          const patch:any = {
+            extraEmails: [...new Set([...(keeper.extraEmails||[]), ...alive.slice(1).flatMap(x=>[x.email,...(x.extraEmails||[])].filter(Boolean).map((e:string)=>e.toLowerCase()))].filter(e=> e!==(keeper.email||'').toLowerCase()))],
+            tags: [...new Set([...(keeper.tags||[]), ...alive.slice(1).flatMap(x=>x.tags||[])])],
+            updatedAt: new Date().toISOString(),
+          }
+          for(const d of alive.slice(1)){
+            if((d.repurchaseCount||0)>(keeper.repurchaseCount||0)) patch.repurchaseCount = d.repurchaseCount
+            if(d.isKey) patch.isKey = true
+            if(!keeper.company && d.company) patch.company = d.company
+          }
+          await db.customers.update(keeper.id, patch)
+          for(const d of alive.slice(1)){
+            await db.followUps.where('customerId').equals(d.id).modify({ customerId: keeper.id } as any).catch(()=>{})
+            await db.customers.delete(d.id)
+            gone.add(d.id); removed++
+          }
+        }
+        if(removed>0 && !cancelled){
+          setCustomers(await db.customers.toArray() as Customer[])
+          window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+        }
+      }catch{}
+    })()
+    return ()=>{ cancelled = true }
+  }, [])
+
+  // ====== 多选 ======
+  const toggleSel = (id: string) => setSelectedIds(s => { const n = new Set(s); if(n.has(id)) n.delete(id); else n.add(id); return n })
+  const toggleAllPage = () => {
+    const ids = pageData.map(x=> x.c.id)
+    const allOn = ids.length>0 && ids.every(id=> selectedIds.has(id))
+    setSelectedIds(allOn ? new Set() : new Set(ids))
+  }
+
+  // ====== 批量发跟进（5s/封，日上限 300）======
+  const handleBatchSend = useCallback(async () => {
+    const targets = catFiltered.filter(x=> selectedIds.has(x.c.id) && x.c.email)
+    if(!targets.length) return alert('请先勾选有邮箱的客户')
+    const used = getTodaySendCount()
+    if(used >= BATCH_SEND.dailyLimit) return alert(`今日批量已达上限 ${BATCH_SEND.dailyLimit} 封，请明天再发`)
+    const remain = BATCH_SEND.dailyLimit - used
+    if(targets.length > remain && !confirm(`今日剩余额度 ${remain}，仅发送前 ${remain} 封，继续？`)) return
+    const list2 = targets.slice(0, remain)
+    if(!confirm(`将对 ${list2.length} 位客户批量发送跟进邮件（间隔 5 秒），继续？`)) return
+    const accs = await listAccounts()
+    if(!accs.length) return alert('请先绑定邮箱账号')
+    const acc = accs[0]
+    setBatchSending(true)
+    setBatchProgress({ done: 0, total: list2.length, errors: 0 })
+    let errors = 0
+    for(let i=0;i<list2.length;i++){
+      const c = list2[i].c
+      const product = (c.portrait as any)?.products?.[0] || 'Challenge Coin'
+      const name = (c.contactName || c.title || 'there').split(' ')[0]
+      const subject = `Following up on your ${product} project`
+      const body = `Hi ${name},\n\nJust wanted to check in and see how things are going with your ${product} project.\n\nBest regards,\nEvan`
+      try{
+        await enqueueMail(acc.id, c.email || '', subject, body, `batch-${c.id}-${Date.now()}`)
+        bumpTodaySendCount(1)
+        await db.followUps.put({
+          id: `fu-batch-${Date.now()}-${c.id}`,
+          customerId: c.id,
+          dueAt: new Date().toISOString().slice(0,10),
+          channel: ['批量跟进'],
+          note: '批量跟进邮件已入队',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        } as any)
+      }catch{ errors++ }
+      setBatchProgress({ done: i+1, total: list2.length, errors })
+      if(i < list2.length-1) await new Promise(r=> setTimeout(r, BATCH_SEND.intervalMs))
+    }
+    setBatchSending(false)
+    setSelectedIds(new Set())
+    alert(`批量入队完成：成功约 ${list2.length-errors}，失败 ${errors}`)
+    await load()
+  }, [catFiltered, selectedIds, load])
+
+  const TIER_BADGE: Record<string, {label:string; cls:string}> = {
+    high: { label:'高意向', cls:'bg-red-50 text-red-600' },
+    pending: { label:'待成交', cls:'bg-green-50 text-green-700' },
+    repurchase: { label:'复购', cls:'bg-purple-50 text-purple-600' },
+    marketing: { label:'营销', cls:'bg-pink-50 text-pink-600' },
+    follow: { label:'跟进', cls:'bg-blue-50 text-blue-600' },
+    dormant: { label:'沉寂', cls:'bg-gray-100 text-gray-500' },
+    active: { label:'活跃', cls:'bg-teal-50 text-teal-700' },
+  }
+
   const cats = [
     { key: 'high', label: '高意向客户', icon: Flame, count: stats.high, color: 'text-red-500', bg: 'bg-red-50' },
     { key: 'today', label: '今日跟进', icon: Clock, count: stats.today, color: 'text-blue-500', bg: 'bg-blue-50' },
@@ -298,7 +463,30 @@ export default function FollowUpsPage() {
             <option value="all">全部标签</option>
             {allTags.map(([t,n])=> <option key={t} value={t}>{t} ({n})</option>)}
           </select>
+          <button onClick={()=> void handleIntellect()} disabled={intellectBusy} className="text-xs px-2 py-1 bg-purple-600 text-white rounded-lg disabled:opacity-50" title="规则引擎：高意向/待成交/复购/营销（>30天未联系）等">
+            {intellectBusy ? '分类中…' : '🧠 智能分类'}
+          </button>
           <button onClick={() => load()} className="text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
+        </div>
+        {intellectNote && <div className="mb-2 text-[11px] px-2 py-1.5 bg-purple-50 text-purple-700 rounded-lg">{intellectNote}</div>}
+        <div className="flex items-center gap-2 mb-2 text-xs">
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={pageData.length>0 && pageData.every(x=> selectedIds.has(x.c.id))} onChange={toggleAllPage}/>
+            全选本页
+          </label>
+          <span className="text-gray-400">已选 {selectedIds.size}</span>
+          {selectedIds.size>0 && (
+            <div className="flex items-center gap-1 ml-2">
+              <button onClick={()=> void handleBatchSend()} disabled={batchSending}
+                className="px-3 py-1 bg-pink-600 text-white rounded-lg disabled:opacity-50"
+                title={`间隔 5s/封 · 日上限 ${BATCH_SEND.dailyLimit} · 今日已发 ${getTodaySendCount()}`}>
+                {batchSending ? `批量发送 ${batchProgress.done}/${batchProgress.total}` : `📣 批量发跟进（${selectedIds.size}）`}
+              </button>
+              <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
+              <button onClick={()=> setSelectedIds(new Set())} className="px-2 py-1 text-gray-400">清空</button>
+            </div>
+          )}
+          <span className="ml-auto text-[10px] text-gray-400">日限速 {BATCH_SEND.dailyLimit} · 今日 {getTodaySendCount()}</span>
         </div>
 
         <div className="space-y-2">
@@ -309,12 +497,18 @@ export default function FollowUpsPage() {
           )}
           {pageData.map(({ c, days, stage }) => (
             <div key={c.id} className="flex items-center gap-3 p-3 bg-white border rounded-xl hover:border-blue-200 transition-all">
+              <input type="checkbox" checked={selectedIds.has(c.id)} onChange={()=> toggleSel(c.id)} className="shrink-0"/>
               <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 text-white flex items-center justify-center font-bold text-sm shrink-0">{(c.contactName || c.title || 'J')[0].toUpperCase()}</div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-sm font-semibold truncate">{c.contactName || c.title}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${c.isKey ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-500'}`}>{c.level || 'C'}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{STAGE_LABELS[stage] || stage}</span>
+                  {(c as any).aiTier && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${TIER_BADGE[(c as any).aiTier]?.cls || 'bg-gray-100'}`} title={(c as any).aiReason || ''}>
+                      {TIER_BADGE[(c as any).aiTier]?.label || (c as any).aiTier}
+                    </span>
+                  )}
                   {days >= 7
                     ? <span className="text-[10px] text-red-500">沉寂{days}天</span>
                     : <span className="text-[10px] text-gray-400">近{days}天有动态</span>}
