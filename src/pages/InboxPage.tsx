@@ -109,7 +109,7 @@ function mailSnippet(m: EmailMessage, max = 90){
 }
 /** 我（Evan）：仅当「发件人」是自己时才算「我」；to 含 Evan 不能算，否则客户来信也会被标成我 */
 const SELF_COLOR = '#1d4ed8'
-function isSelfMessage(m: EmailMessage){
+function isSelfSender(m: EmailMessage){
   const from = extractAddr(m.from).toLowerCase()
   return SELF_ADDRS.includes(from)
 }
@@ -1027,7 +1027,7 @@ export default function InboxPage(){
                   const bodyM = threadBodies[m.id] || m
                   const name = displayNameOf(m)
                   const snippet = mailSnippet(bodyM, 110) || '（打开加载正文）'
-                  const self = isSelfMessage(m)
+                  const self = isSelfSender(m)
                   const color = self ? SELF_COLOR : avatarColor(counterpartOf(m) || name)
                   const initial = (name || '?').trim().charAt(0).toUpperCase()
                   return (
@@ -1085,7 +1085,7 @@ export default function InboxPage(){
                               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/> 正文加载中…
                             </div>
                           ) : bodyM.html ? (
-                            <MailHtml html={bodyM.html} allowRemote={allowRemoteImg} height={isLatest||isFocus?420:240} />
+                            <MailHtml html={bodyM.html} allowRemote={allowRemoteImg} />
                           ) : (
                             <div>
                               <MailTextBody text={bodyM.text||''} />
