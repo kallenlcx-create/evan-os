@@ -294,6 +294,7 @@ export default function InboxPage(){
       await refresh()
     }catch(e:any){ alert(String(e.message||e)) }finally{ setSyncing(false) }
   }
+  // 全量本地镜像已并入「刷新本地」（配置 limit=全部）；保留函数供配置抽屉调用
   const handleImportAll = async()=>{
     if(accounts.length===0) return alert('先绑定邮箱')
     if(!confirm('将后台同步全部邮件，是否继续？')) return
@@ -305,6 +306,7 @@ export default function InboxPage(){
       await refresh()
     }finally{ setSyncing(false) }
   }
+  void handleImportAll
   const handleAiAnalyzeAll = async()=>{
     const pending = emails.filter(e=> !e.intent || e.intent==='其他').slice(0, 200)
     if(pending.length===0) return alert('全部已分析')
