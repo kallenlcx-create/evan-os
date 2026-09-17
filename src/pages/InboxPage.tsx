@@ -119,8 +119,10 @@ export default function InboxPage(){
   const [accounts, setAccounts] = useState<EmailAccount[]>([])
   const [emails, setEmails] = useState<EmailMessage[]>([])
   const [selected, setSelected] = useState<EmailMessage|null>(null)
-  const [filter, setFilter] = useState<'all'|'unread'>('unread')
+  const [filter, setFilter] = useState<'all'|'unread'>('all')
   const [folder, setFolder] = useState<'inbox'|'sent'|'drafts'>('inbox')
+  // 会话展开：唯一真相
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [q, setQ] = useState('')
   const [translated, setTranslated] = useState('')
   const [showTrans, setShowTrans] = useState(false)
@@ -196,7 +198,6 @@ export default function InboxPage(){
       if(!m.intent) { m.intent = await classifyIntent(m.text); await db.emails.put(m); fixed++ }
     }
     setEmails(list)
-    setKeepReadIds(new Set())
     fetchServerCounts(accs)
   },[fetchServerCounts])
   useEffect(()=>{ void refresh() },[refresh])
@@ -219,11 +220,12 @@ export default function InboxPage(){
     setAttachments([])
     setShowTrans(false)
     setTranslated('')
+    setExpandedIds(new Set([m.id]))
     if (markAsRead) {
       await markRead(m.id, true)
       setEmails(prev => prev.map(x => x.id === m.id ? { ...x, isRead: true } : x))
-      // 刚读过的留在未读列表里（变灰），不等下次刷新再消失，避免列表跳动
-      setKeepReadIds(prev => { const n = new Set(prev); n.add(m.id); return n })
+      // 未读列表：读完即从列表消失（Gmail 行为）
+      void refreshServerMeta()
     }
     if (!m.text && !m.html) {
       setBodyLoading(true)
@@ -560,18 +562,17 @@ export default function InboxPage(){
   }
 
   // ====== 左栏：邮件列表（按文件夹+搜索过滤） ======
-  // 刚在本屏读过的邮件暂留列表（变灰），切文件夹/搜索/刷新后才消失，防止列表跳动
-  const [keepReadIds, setKeepReadIds] = useState<Set<string>>(new Set())
+  // 未读列表：读完即移出（对齐 Gmail，不再 keepReadIds 粘住）
   const filtered = useMemo(()=>{
     return emails.filter(m=>{
-      if(folder==='inbox' && m.folder!=='inbox') return false
+      if(folder==='inbox' && m.folder!=='inbox' && m.folder!=='sent') return false
       if(folder==='sent' && m.folder!=='sent') return false
       if(folder==='drafts' && m.folder!=='drafts') return false
-      if(folder==='inbox' && filter==='unread' && m.isRead && !keepReadIds.has(m.id)) return false
+      if(folder==='inbox' && filter==='unread' && m.isRead) return false
       if(q && !(`${m.subject} ${m.from} ${m.text} ${m.intent}`).toLowerCase().includes(q.toLowerCase())) return false
       return true
     })
-  },[emails, folder, filter, q, keepReadIds])
+  },[emails, folder, filter, q])
 
   // Gmail 式会话列表：1 行 = 1 条会话
   const threadRows = useMemo(()=>{
@@ -579,7 +580,6 @@ export default function InboxPage(){
     return groupThreads(src).slice(0, searchMode ? 50 : 200)
   },[searchMode, searchResults, filtered])
   const [selectedThreadId, setSelectedThreadId] = useState<string|null>(null)
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   // P2：轻量 toast
   const [uiToast, setUiToast] = useState<string>('')
   const showToast = useCallback((msg: string)=>{
@@ -590,7 +590,6 @@ export default function InboxPage(){
   const [markKeyBusy, setMarkKeyBusy] = useState(false)
   const openThread = useCallback(async (row: ThreadRow)=>{
     setSelectedThreadId(row.key)
-    // 默认只展开最新一封
     setExpandedIds(new Set([row.latest.id]))
     await openMail(row.latest, true)
   },[openMail])
@@ -753,8 +752,8 @@ export default function InboxPage(){
             <button
               onClick={()=> setFilter(filter==='unread'?'all':'unread')}
               className="px-2 py-1 border rounded text-xs bg-white text-gray-600 hover:bg-gray-50"
-              title="切换本地列表范围：全部邮件 / 仅未读"
-            >{filter==='unread'?'未读':'筛选'}</button>
+              title="收件箱内切换：全部 / 仅未读（读完即消失）"
+            >{filter==='unread'?'仅未读':'收件箱'}</button>
           )}
           <label
             className="flex items-center gap-1 px-2 py-1 bg-white border rounded text-xs text-gray-600 cursor-pointer"
@@ -821,6 +820,7 @@ export default function InboxPage(){
               {ingestJob?.running && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />}
               {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封
               {' · 正文 '}{(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0}
+              {ingestJob?.phase==='attachments' && (ingestJob.attDone||0)>0 && ` · 附件+${ingestJob.attDone}`}
             </span>
           )}
           <button
@@ -907,9 +907,20 @@ export default function InboxPage(){
         <div className="w-[240px] shrink-0 bg-white rounded-2xl border flex flex-col overflow-hidden">
           <div className="p-2 border-b space-y-2">
             <div className="flex items-center gap-1">
-              <button onClick={()=>{ setFolder('inbox'); setSearchMode(false); void refreshServerMeta() }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}>未读 {folder==='inbox'?`·${serverUnread ?? emails.filter(e=> e.folder==='inbox' && !e.isRead).length}`:''}</button>
-              <button onClick={()=>{ setFolder('sent'); setSearchMode(false) }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='sent'?'bg-green-600 text-white':'bg-gray-100 text-gray-600'}`}>已发送</button>
-              <button onClick={async()=>{ setFolder('drafts'); setSearchMode(false); try{ setServerDrafts(await getDrafts()) }catch{} }} className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}>草稿{folder==='drafts'&&serverDrafts.length?`·${serverDrafts.length}`:''}</button>
+              <button
+                onClick={()=>{ setFolder('inbox'); setFilter('all'); setSearchMode(false); void refreshServerMeta() }}
+                className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'&&filter==='all'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}
+                title="收件箱 + 已发送，最新在上"
+              >收件箱</button>
+              <button
+                onClick={()=>{ setFolder('inbox'); setFilter('unread'); setSearchMode(false); void refreshServerMeta() }}
+                className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'&&filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}
+                title="仅未读；读完即消失"
+              >未读{serverUnread!=null?` ·${serverUnread}`:''}</button>
+              <button
+                onClick={async()=>{ setFolder('drafts'); setSearchMode(false); try{ setServerDrafts(await getDrafts()) }catch{} }}
+                className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}
+              >草稿{folder==='drafts'&&serverDrafts.length?`·${serverDrafts.length}`:''}</button>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -917,7 +928,6 @@ export default function InboxPage(){
                 <input value={q} onChange={e=> setQ(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleSearch() }} placeholder="搜索邮件（回车检索）" className="w-full pl-7 pr-2 py-1.5 bg-gray-50 border rounded-lg text-xs"/>
               </div>
               {q && <button onClick={()=>{ setQ(''); setSearchMode(false); setSearchHint('') }} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>}
-              {folder==='inbox' && <button onClick={()=> setFilter(filter==='unread'?'all':'unread')} className={`px-2 py-1 rounded-full text-xs shrink-0 ${filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{filter==='unread'?'未读':'全部'}</button>}
             </div>
           </div>
           <div className="px-2 py-1 border-b text-xs text-gray-400">
@@ -1020,10 +1030,10 @@ export default function InboxPage(){
               <div ref={threadBoxRef} className="flex-1 overflow-y-auto">
                 {/* Gmail 式会话：头像 + 名字 + 正文摘要；旧邮件默认折叠，最新默认展开 */}
                 <div className="divide-y divide-gray-100">
-                {(thread.length ? thread : [selected]).map((m, idx, arr)=>{
-                  const isLatest = idx === arr.length-1
+                {(thread.length ? thread : [selected]).map((m)=>{
                   const isFocus = m.id === selected.id
-                  const expanded = expandedIds.has(m.id) || (isLatest && expandedIds.size===0) || isFocus
+                  // 只认 expandedIds；最新/焦点也可手动收起
+                  const expanded = expandedIds.has(m.id)
                   const bodyM = threadBodies[m.id] || m
                   const name = displayNameOf(m)
                   const snippet = mailSnippet(bodyM, 110) || '（打开加载正文）'
@@ -1035,16 +1045,13 @@ export default function InboxPage(){
                       {/* 行头：Gmail 式「头像 + 名字 + 摘要」 */}
                       <button
                         onClick={async()=>{
-                          if(expanded && !isLatest && !isFocus){ toggleExpand(m.id); return }
-                          if(!expanded){
-                            toggleExpand(m.id)
+                          const willOpen = !expanded
+                          toggleExpand(m.id)
+                          if(willOpen){
                             setSelected(m)
                             await ensureBody(m)
                             if(m.uid!=null) listAttachments(m.accountId, m.uid).then(setAttachments).catch(()=>{})
-                            return
                           }
-                          if(isLatest || isFocus) return
-                          toggleExpand(m.id)
                         }}
                         className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-gray-50/80">
                         <span
