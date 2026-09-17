@@ -4,6 +4,9 @@ import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
 import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
 import MailHtml from '../components/MailHtml'
+import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, type IntellectConfig } from '../services/customerDailyClassify'
+import { runOrderScan, importOrdersCsv } from '../services/orderScan'
+import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -51,17 +54,14 @@ function extractAmount(text: string): number {
 function autoClassifyCustomer(c: Customer, emailCount: number, totalAmount: number): { level: Customer['level']; isKey: boolean; customerType: Customer['customerType'] } {
   let level: Customer['level'] = 'C'
   let isKey = c.isKey || false
-  // 1. 订单金额分级
-  if(totalAmount >= 1000) level = 'A'
-  else if(totalAmount >= 500) level = 'B'
+  // 等级阈值：>1500 A+ · >1000 A · >500 B；否则往来次数
+  if(totalAmount > 1500) level = 'A+'
+  else if(totalAmount > 1000) level = 'A'
+  else if(totalAmount > 500) level = 'B'
   else if(emailCount >= 5) level = 'B'
   else if(emailCount >= 3) level = 'C'
   else level = 'D'
-  // 2. 订单次数（邮件往来>=3次 = 重点）
-  if(emailCount >= 3) isKey = true
-  // 3. VIP 金额>=2000
-  if(totalAmount >= 2000) { level = 'A+'; isKey = true }
-  // 4. 邮箱类型
+  if(emailCount >= 3 || totalAmount > 1500 || level === 'A+' || level === 'A') isKey = true
   const emailType = classifyEmailType(c.email)
   const typeMap: Record<string, Customer['customerType']> = {
     '政府':'Government','军队':'Military','教育':'School','非盈利':'Organization','企业':'Company','个人':'End Customer'
@@ -146,6 +146,17 @@ export default function CustomersPage(){
   const [contentError, setContentError] = useState<Record<string, boolean>>({})
   const [allowRemoteImg, setAllowRemoteImg] = useState(false)
   const [threadMode, setThreadMode] = useState<'server'|'local'|''>('')
+  const [intelCfg, setIntelCfg] = useState<IntellectConfig>(()=> loadIntellectConfig())
+  const [showIntel, setShowIntel] = useState(false)
+  const [intelBusy, setIntelBusy] = useState<string>('')
+  const [intelNote, setIntelNote] = useState('')
+  const [showCsvOrder, setShowCsvOrder] = useState(false)
+  const [csvOrderText, setCsvOrderText] = useState('')
+
+  const patchIntelCfg = useCallback((p: Partial<IntellectConfig>)=>{
+    const n = saveIntellectConfig(p)
+    setIntelCfg(n)
+  },[])
 
   // ====== 批量导入客户（CSV粘贴）：等级/重点/阶段/多品类/复购/类型/多邮箱 ======
   const [showImport, setShowImport] = useState(false)
@@ -358,6 +369,72 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[autoClassified])
 
   useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[load])
+
+  // 智能分类 / 订单扫描 / AI 洞察 / 已下单闭环（依赖 load，定义在其后）
+  const handleDailyClassify = useCallback(async ()=>{
+    setIntelBusy('classify'); setIntelNote('')
+    try{
+      const r = await runDailyClassify({ force: true })
+      setIntelNote(formatClassifyResult(r))
+      await load()
+    }catch(e:any){ setIntelNote('分类失败：'+String(e.message||e).slice(0,100)) }
+    finally{ setIntelBusy('') }
+  },[load])
+
+  const handleOrderScan = useCallback(async ()=>{
+    setIntelBusy('scan'); setIntelNote('')
+    try{
+      const r = await runOrderScan()
+      setIntelNote(`近 ${intelCfg.orderScanDays} 天扫描：邮件 ${r.scanned} · 新增订单 ${r.ordersAdded} · 已下单客户 ${r.customersTagged} · 重复合并 ${r.duplicates}${r.pending?` · 未匹配 ${r.pending}`:''}`)
+      await load()
+    }catch(e:any){ setIntelNote('扫描失败：'+String(e.message||e).slice(0,100)) }
+    finally{ setIntelBusy('') }
+  },[load, intelCfg.orderScanDays])
+
+  const handleAiInsight = useCallback(async ()=>{
+    if(!confirm(`对范围「${intelCfg.aiInsightScope.join('/')}」客户跑 AI 洞察（最多 ${intelCfg.aiInsightBatchMax} 人）？`)) return
+    setIntelBusy('insight'); setIntelNote('')
+    try{
+      const r = await runAiInsight({ limit: intelCfg.aiInsightBatchMax })
+      setIntelNote(`AI 洞察完成：成功 ${r.ok} · 失败 ${r.fail}（画像/意向已写回，跟进桶同步${intelCfg.syncTierToFollowUps?'开':'关'}）`)
+      await load()
+    }catch(e:any){ setIntelNote('洞察失败：'+String(e.message||e).slice(0,100)) }
+    finally{ setIntelBusy('') }
+  },[load, intelCfg])
+
+  const handlePurchaseLoop = useCallback(async ()=>{
+    setIntelBusy('loop'); setIntelNote('')
+    try{
+      const n = await runPurchaseLoop()
+      setIntelNote(`已下单闭环：更新 ${n} 位（周期/NBA/潜在复购）`)
+      await load()
+    }catch(e:any){ setIntelNote('闭环失败：'+String(e.message||e).slice(0,100)) }
+    finally{ setIntelBusy('') }
+  },[load])
+
+  // 打开页面：默认自动每日分类 + 近 N 天订单扫描
+  useEffect(()=>{
+    if(!intelCfg.autoDailyClassify && !intelCfg.autoOrderScan) return
+    let cancelled = false
+    ;(async()=>{
+      try{
+        if(intelCfg.autoDailyClassify){
+          const r = await runDailyClassify()
+          if(!cancelled && r.processed) setIntelNote(formatClassifyResult(r))
+        }
+        if(intelCfg.autoOrderScan && !cancelled){
+          const r = await runOrderScan()
+          if(r.ordersAdded || r.customersTagged){
+            setIntelNote(prev=> (prev? prev+' · ':'')+`订单扫描+${r.ordersAdded}`)
+          }
+        }
+        if(intelCfg.syncTierToFollowUps && !cancelled) await syncTiersFromRules()
+        if(!cancelled) await load()
+      }catch{}
+    })()
+    return ()=>{ cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ====== 一键排重：同邮箱多条 → 保留批量导入的，合并后删除其余 ======
   const [deduping, setDeduping] = useState(false)
@@ -582,8 +659,56 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
         <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
+        <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="等级：>1500 A+ · >1000 A · >500 B；邮箱类型+重点自动打标">🏷️ 每日分类</button>
+        <button onClick={()=> void handleOrderScan()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-teal-600 text-white disabled:opacity-50" title="扫描近N天付款/成交邮件，自动打「已下单」并排重">📦 订单扫描</button>
+        <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
+        <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 已下单闭环</button>
+        <button onClick={()=> setShowCsvOrder(true)} className="px-2 py-1 rounded-full text-xs border bg-white" title="CSV：订单号,邮箱,日期,产品,数量,金额">📥 订单CSV</button>
+        <button onClick={()=> setShowIntel(v=>!v)} className="px-2 py-1 rounded-full text-xs border bg-white">⚙️ 智能设置</button>
         <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点</button>
       </div>
+      {intelNote && (
+        <div className="text-[11px] px-3 py-2 bg-purple-50 text-purple-800 border border-purple-100 rounded-xl flex items-center gap-2">
+          <span className="flex-1">{intelBusy ? `处理中（${intelBusy}）…` : intelNote}</span>
+          <button onClick={()=> setIntelNote('')} className="text-purple-400">✕</button>
+        </div>
+      )}
+      {showIntel && (
+        <div className="bg-white rounded-2xl border p-3 text-xs space-y-2">
+          <div className="font-semibold text-sm">⚙️ 智能设置</div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <label className="flex items-center gap-1"><input type="checkbox" checked={intelCfg.autoDailyClassify} onChange={e=> patchIntelCfg({ autoDailyClassify: e.target.checked })}/> 每日自动分类</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={intelCfg.autoOrderScan} onChange={e=> patchIntelCfg({ autoOrderScan: e.target.checked })}/> 自动订单扫描</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={intelCfg.syncTierToFollowUps} onChange={e=> patchIntelCfg({ syncTierToFollowUps: e.target.checked })}/> 跟进桶同步（默认开）</label>
+            <label className="flex items-center gap-1">订单窗口
+              <select value={intelCfg.orderScanDays} onChange={e=> patchIntelCfg({ orderScanDays: Number(e.target.value)||5 })} className="border rounded px-1 py-0.5">
+                {[3,5,7,14].map(d=> <option key={d} value={d}>{d}天</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">AI批量上限
+              <input type="number" min={5} max={100} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||30 })} className="w-14 border rounded px-1"/>
+            </label>
+          </div>
+          <div className="text-[10px] text-gray-400">等级阈值：金额 &gt;1500=A+ · &gt;1000=A · &gt;500=B（只升不降）· AI范围 isKey/A+/A/B/C</div>
+        </div>
+      )}
+      {showCsvOrder && (
+        <div className="bg-white rounded-2xl border p-3 text-xs space-y-2">
+          <div className="font-semibold">📥 CSV 订单导入</div>
+          <div className="text-[10px] text-gray-400">每行：订单号,客户邮箱,日期(YYYY-MM-DD),产品(可/分隔),数量,金额；首行可为表头</div>
+          <textarea value={csvOrderText} onChange={e=> setCsvOrderText(e.target.value)} rows={4} className="w-full border rounded-lg p-2 font-mono" placeholder={'INQC001,customer@gmail.com,2026-09-10,Medal,150,650'}/>
+          <div className="flex gap-2">
+            <button onClick={async()=>{
+              try{
+                const r = await importOrdersCsv(csvOrderText)
+                setIntelNote(`订单CSV：新增 ${r.added} · 跳过重复 ${r.skipped} · 错误 ${r.errors}`)
+                setShowCsvOrder(false); setCsvOrderText(''); await load()
+              }catch(e:any){ alert(String(e.message||e).slice(0,120)) }
+            }} className="px-3 py-1 bg-green-600 text-white rounded-lg">导入</button>
+            <button onClick={()=> setShowCsvOrder(false)} className="px-3 py-1 border rounded-lg">取消</button>
+          </div>
+        </div>
+      )}
       {/* 批量操作条 */}
       {selectMode && (
         <div className="flex items-center gap-2 flex-wrap bg-gray-900 text-white rounded-2xl px-3 py-2 text-xs sticky top-0 z-10">
