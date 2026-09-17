@@ -1089,15 +1089,15 @@ export default function InboxPage(){
               <div className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1"><TrendingUp size={12}/> 往来统计</div>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="bg-blue-50 rounded-lg p-2">
-                  <div className="text-lg font-bold text-blue-600">{emails.filter(e=>(e.from||'').toLowerCase().includes((customer?.email||'').toLowerCase()) || (e.to||'').toLowerCase().includes((customer?.email||'').toLowerCase())).length}</div>
-                  <div className="text-[10px] text-gray-500">总邮件</div>
+                  <div className="text-lg font-bold text-blue-600">{customer?.email ? emails.filter(e=>(e.from||'').toLowerCase().includes(customer.email!.toLowerCase()) || (e.to||'').toLowerCase().includes(customer.email!.toLowerCase())).length : 0}</div>
+                  <div className="text-[10px] text-gray-500">{customer?.email ? '往来' : '往来（未选客户）'}</div>
                 </div>
                 <div className="bg-green-50 rounded-lg p-2">
-                  <div className="text-lg font-bold text-green-600">{emails.filter(e=>e.folder==='sent' && (e.to||'').toLowerCase().includes((customer?.email||'').toLowerCase())).length}</div>
+                  <div className="text-lg font-bold text-green-600">{customer?.email ? emails.filter(e=>e.folder==='sent' && (e.to||'').toLowerCase().includes(customer.email!.toLowerCase())).length : 0}</div>
                   <div className="text-[10px] text-gray-500">已发送</div>
                 </div>
                 <div className="bg-orange-50 rounded-lg p-2">
-                  <div className="text-lg font-bold text-orange-600">{emails.filter(e=>e.folder==='inbox' && (e.from||'').toLowerCase().includes((customer?.email||'').toLowerCase()) && !e.isRead).length}</div>
+                  <div className="text-lg font-bold text-orange-600">{customer?.email ? emails.filter(e=>e.folder==='inbox' && (e.from||'').toLowerCase().includes(customer.email!.toLowerCase()) && !e.isRead).length : 0}</div>
                   <div className="text-[10px] text-gray-500">未读</div>
                 </div>
               </div>
