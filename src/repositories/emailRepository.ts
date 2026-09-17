@@ -556,13 +556,30 @@ export async function deleteDraft(id: string){
   if(!h) return
   try{ await fetch(`${h.url}/email/drafts/${id}`, { method:'DELETE', headers: bypassHeaders(h) }) }catch{}
 }
-export async function enqueueMail(accountId: string, to: string, subject: string, text: string, idempotencyKey?: string, respectWindow = false): Promise<{id:string;status:string}>{
+export async function enqueueMail(
+  accountId: string, to: string, subject: string, text: string,
+  idempotencyKey?: string, respectWindow = false,
+  opts?: { html?: string; sendAt?: string | null }
+): Promise<{id:string;status:string;send_at?:string}>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const r = await fetch(`${h.url}/email/outbox`, { method:'POST', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
-    body: JSON.stringify({ accountId, to, subject, text, idempotencyKey, respectWindow }) })
+    body: JSON.stringify({
+      accountId, to, subject, text,
+      html: opts?.html || undefined,
+      send_at: opts?.sendAt || undefined,
+      idempotencyKey, respectWindow
+    }) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`入队失败 ${r.status}`)
+  return j
+}
+export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:boolean}>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/outbox/${id}/cancel`, { method:'POST', headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`取消失败 ${r.status}`)
   return j
 }
 export async function getOutbox(status = ''): Promise<any[]>{

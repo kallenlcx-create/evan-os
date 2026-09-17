@@ -311,6 +311,8 @@ async function init() {
   await pool.query(`ALTER TABLE followup_config ADD COLUMN send_end INT DEFAULT 20`).catch(()=>{})
   await pool.query(`ALTER TABLE followup_config ADD COLUMN skip_holidays TINYINT DEFAULT 1`).catch(()=>{})
   await pool.query(`ALTER TABLE mail_outbox ADD COLUMN respect_window TINYINT DEFAULT 0`).catch(()=>{})
+  // 定时发送：send_at 为空=立即排队；否则到点才由 outboxTick 发出
+  try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN send_at TIMESTAMP(3) NULL`).catch(()=>{}) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS us_holidays (
       date DATE PRIMARY KEY,
@@ -3039,20 +3041,27 @@ app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// 入队发送：POST /email/outbox {accountId, to, subject, text, html, draftId?, idempotencyKey?, respectWindow?}（秒返回，后台发出）
+// 入队发送：POST /email/outbox {accountId, to, subject, text, html, send_at?, respectWindow?}
 app.post('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
-  const { accountId, to, subject, text, html, idempotencyKey, respectWindow } = req.body || {}
+  const { accountId, to, subject, text, html, idempotencyKey, respectWindow, send_at: sendAtRaw } = req.body || {}
   if(!accountId || !to || !subject) return res.status(400).json({ error:'需要 accountId, to, subject' })
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const id = crypto.randomUUID()
   const idem = idempotencyKey || id
+  let sendAt = null
+  if(sendAtRaw){
+    const t = new Date(sendAtRaw)
+    if(!Number.isFinite(t.getTime())) return res.status(400).json({ error:'send_at 时间无效' })
+    if(t.getTime() < Date.now() - 60000) return res.status(400).json({ error:'send_at 已过期，请选将来时间' })
+    sendAt = sqlDate(t)
+  }
   try{
     await pool.query(
-      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key, respect_window)
-       VALUES (?,?,?,?,?,?,?,'queued',0,?,?)`,
-      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem, respectWindow ? 1 : 0])
+      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key, respect_window, send_at)
+       VALUES (?,?,?,?,?,?,?,'queued',0,?,?,?)`,
+      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem, respectWindow ? 1 : 0, sendAt])
   }catch(e){
     if(e && e.code === 'ER_DUP_ENTRY'){
       const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=?',[idem])
@@ -3060,15 +3069,16 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
     }
     throw e
   }
-  res.json({ ok:true, id, status:'queued' })
+  res.json({ ok:true, id, status:'queued', send_at: sendAt })
 }))
 // 发件箱：GET /email/outbox?status=
 app.get('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const st = String(req.query.status || '')
+  const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at'
   const [rows] = st
-    ? await pool.query('SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at FROM mail_outbox WHERE username=? AND status=? ORDER BY created_at DESC LIMIT 100',[req.user, st])
-    : await pool.query('SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100',[req.user])
+    ? await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? AND status=? ORDER BY created_at DESC LIMIT 100',[req.user, st])
+    : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100`,[req.user])
   res.json({ outbox: rows })
 }))
 // 重发：POST /email/outbox/:id/retry
@@ -3077,13 +3087,27 @@ app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
   await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=?, error='' WHERE id=? AND username=? AND status='failed'`,[sqlNow(), req.params.id, req.user])
   res.json({ ok:true })
 }))
+// 取消定时/排队：POST /email/outbox/:id/cancel
+app.post('/email/outbox/:id/cancel', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const [r] = await pool.query(
+    `UPDATE mail_outbox SET status='cancelled', error='用户取消' WHERE id=? AND username=? AND status IN ('queued','failed')`,
+    [req.params.id, req.user])
+  res.json({ ok:true, cancelled: r.affectedRows > 0 })
+}))
 
-// 发件 worker：每 30 秒扫一次到期任务（respect_window 的遇非窗口顺延 30 分钟）
+// 发件 worker：每 30 秒扫一次到期任务
+// send_at 未到点不发；respect_window 的遇非窗口顺延 30 分钟
 async function outboxTick(){
   if(!dbReady) return
   try{
     const [rows] = await pool.query(
-      `SELECT * FROM mail_outbox WHERE status IN ('queued','failed') AND try_count<3 AND (next_try_at IS NULL OR next_try_at<=NOW()) ORDER BY created_at LIMIT 10`)
+      `SELECT * FROM mail_outbox
+       WHERE status IN ('queued','failed')
+         AND try_count<3
+         AND (send_at IS NULL OR send_at<=NOW())
+         AND (next_try_at IS NULL OR next_try_at<=NOW())
+       ORDER BY created_at LIMIT 10`)
     for(const job of rows){
       try{
         if(Number(job.respect_window)){

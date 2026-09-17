@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -107,6 +107,13 @@ function mailSnippet(m: EmailMessage, max = 90){
   if(html) return html.slice(0, max)
   return ''
 }
+/** 我（Evan）固定品牌蓝，与客户彩色头像区分 */
+const SELF_COLOR = '#1d4ed8'
+function isSelfMessage(m: EmailMessage){
+  const from = extractAddr(m.from).toLowerCase()
+  const to = extractAddr(m.to||'').toLowerCase()
+  return SELF_ADDRS.includes(from) || SELF_ADDRS.includes(to)
+}
 
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
@@ -132,6 +139,24 @@ export default function InboxPage(){
   const [replyTo, setReplyTo] = useState('')
   const [replySubject, setReplySubject] = useState('')
   const [replyBody, setReplyBody] = useState('')
+  const [replyHtml, setReplyHtml] = useState('')
+  const [scheduleAt, setScheduleAt] = useState('')
+  const editorRef = useRef<HTMLDivElement>(null)
+  const syncEditor = useCallback(()=>{
+    const el = editorRef.current
+    if(!el) return
+    const html = el.innerHTML
+    setReplyHtml(html)
+    setReplyBody(el.innerText || '')
+  },[])
+  // 打开回复/恢复草稿时灌入编辑器
+  useEffect(()=>{
+    if(!showReply) return
+    const el = editorRef.current
+    if(!el) return
+    const html = replyHtml || (replyBody ? `<div>${replyBody.replace(/\n/g,'<br/>')}</div>` : '')
+    if(el.innerHTML !== html) el.innerHTML = html
+  },[showReply, replyHtml, replyBody])
   const [sending, setSending] = useState(false)
   const [replyDraftId, setReplyDraftId] = useState('')
   const [draftNote, setDraftNote] = useState('')
@@ -372,6 +397,8 @@ export default function InboxPage(){
     setReplyTo(fromAddr)
     setReplySubject(subj)
     setReplyBody('')
+    setReplyHtml('')
+    setScheduleAt('')
     setReplyDraftId('')
     setDraftNote('')
     setShowReply(true)
@@ -380,6 +407,8 @@ export default function InboxPage(){
       const hit = ds.find((d:any)=> (d.to_addr||'').includes(fromAddr) && (d.subject||'')===subj)
       if(hit){
         setReplyBody(hit.body_text||'')
+        if(hit.body_html && hit.body_html !== hit.body_text) setReplyHtml(hit.body_html)
+        else setReplyHtml(hit.body_text ? `<div>${String(hit.body_text).replace(/\n/g,'<br/>')}</div>` : '')
         setReplyDraftId(hit.id)
         setDraftNote(`已恢复草稿（${new Date(hit.updated_at).toLocaleString()}）`)
       }
@@ -392,7 +421,7 @@ export default function InboxPage(){
     const t = setInterval(async()=>{
       try{
         const acc = accounts.find(a=> a.id === selected?.accountId) || accounts[0]
-        const id = await saveDraft({ id: replyDraftId || undefined, account_id: acc?.id || '', to_addr: replyTo, subject: replySubject, body_text: replyBody, body_html: replyBody })
+        const id = await saveDraft({ id: replyDraftId || undefined, account_id: acc?.id || '', to_addr: replyTo, subject: replySubject, body_text: replyBody, body_html: replyHtml || replyBody })
         setReplyDraftId(id)
         setDraftNote(`草稿已自动保存 ${new Date().toLocaleTimeString()}`)
         void refreshServerMeta()
@@ -407,10 +436,18 @@ export default function InboxPage(){
     if(!acc){ alert('无可用邮箱账号'); return }
     setSending(true)
     try{
-      const r = await enqueueMail(acc.id, replyTo, replySubject, replyBody, replyDraftId ? `draft-${replyDraftId}` : undefined)
+      const sendAt = scheduleAt ? new Date(scheduleAt).toISOString() : null
+      const r = await enqueueMail(
+        acc.id, replyTo, replySubject, replyBody,
+        replyDraftId ? `draft-${replyDraftId}` : undefined,
+        false,
+        { html: replyHtml || undefined, sendAt }
+      )
       if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
-      setReplyDraftId(''); setShowReply(false)
-      alert(r.status==='sent' ? '已发送' : `已入队，后台自动发出（${r.id.slice(0,8)}）`)
+      setReplyDraftId(''); setShowReply(false); setScheduleAt('')
+      alert(sendAt
+        ? `已定时发送：${new Date(sendAt).toLocaleString()}（${r.id.slice(0,8)}）`
+        : (r.status==='sent' ? '已发送' : `已入队，后台自动发出（${r.id.slice(0,8)}）`))
       await refreshOutbox()
     }catch(e:any){ alert('入队失败：' + String(e.message||e).slice(0,200)) }
     finally{ setSending(false) }
@@ -427,7 +464,7 @@ export default function InboxPage(){
       // 找到对应账号
       const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
       if(!acc){ alert('无可用邮箱账号'); return }
-      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody)
+      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody, replyHtml || undefined)
       if(result.ok){
         if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
         setReplyDraftId('')
@@ -436,7 +473,7 @@ export default function InboxPage(){
         await db.emails.put({
           id: uidFn(), accountId: acc.id, folder:'sent',
           from: acc.email, to: replyTo, subject: replySubject,
-          text: replyBody, html: '', date: new Date().toISOString(),
+          text: replyBody, html: replyHtml || '', date: new Date().toISOString(),
           isRead: true, hasAttachment: false,
           customerId: customer?.id, intent: selected.intent, product: selected.product,
         } as any)
@@ -991,7 +1028,8 @@ export default function InboxPage(){
                   const bodyM = threadBodies[m.id] || m
                   const name = displayNameOf(m)
                   const snippet = mailSnippet(bodyM, 110) || '（打开加载正文）'
-                  const color = avatarColor(counterpartOf(m) || name)
+                  const self = isSelfMessage(m)
+                  const color = self ? SELF_COLOR : avatarColor(counterpartOf(m) || name)
                   const initial = (name || '?').trim().charAt(0).toUpperCase()
                   return (
                     <div key={m.id} className={`${isFocus?'bg-blue-50/30':''}`}>
@@ -1011,12 +1049,19 @@ export default function InboxPage(){
                         }}
                         className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-gray-50/80">
                         <span
-                          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 mt-0.5"
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 mt-0.5 relative ${self?'ring-2 ring-blue-200':''}`}
                           style={{ background: color }}
-                        >{initial}</span>
+                          title={self?'我（Evan）':name}
+                        >
+                          {initial}
+                          {self && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-white rounded-full flex items-center justify-center text-[8px]">✓</span>}
+                        </span>
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
-                            <span className="text-[13px] font-semibold text-gray-900 truncate">{name}</span>
+                            <span className="text-[13px] font-semibold text-gray-900 truncate">
+                              {name}
+                              {self && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-blue-50 text-blue-700 align-middle">我</span>}
+                            </span>
                             <span className="text-[11px] text-gray-400 shrink-0 ml-auto">
                               {new Date(m.date).toLocaleString(undefined,{ month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}
                             </span>
@@ -1301,7 +1346,7 @@ export default function InboxPage(){
         </div>
       </div>
 
-      {/* 回复邮件弹窗 */}
+      {/* 回复邮件弹窗：富文本 + 定时发送 */}
       {showReply && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowReply(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
@@ -1318,17 +1363,80 @@ export default function InboxPage(){
                 <span className="text-gray-400">主题</span>
                 <input value={replySubject} onChange={e=> setReplySubject(e.target.value)} className="px-3 py-2 border rounded-lg text-sm"/>
               </div>
-              <div className="text-xs text-gray-400">正文</div>
-              <textarea value={replyBody} onChange={e=> setReplyBody(e.target.value)} placeholder="输入回复内容..." className="w-full h-60 px-4 py-3 border rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"/>
+              {/* 富文本工具栏 */}
+              <div className="flex flex-wrap items-center gap-1 px-1 py-1 border rounded-t-lg bg-gray-50">
+                {([
+                  ['bold','B','加粗'],
+                  ['italic','I','斜体'],
+                  ['underline','U','下划线'],
+                ] as const).map(([cmd, label, tip])=>(
+                  <button key={cmd} type="button" title={tip}
+                    onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                    className={`w-7 h-7 rounded text-xs font-bold border bg-white ${cmd==='italic'?'italic':cmd==='underline'?'underline':''}`}
+                  >{label}</button>
+                ))}
+                <span className="w-px h-5 bg-gray-200 mx-0.5"/>
+                <label className="flex items-center gap-1 text-[10px] text-gray-500 px-1" title="文字颜色">
+                  <span>A</span>
+                  <input type="color" defaultValue="#111827" className="w-6 h-6 border-0 bg-transparent cursor-pointer"
+                    onChange={e=>{ document.execCommand('foreColor', false, e.target.value); syncEditor() }}/>
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-gray-500 px-1" title="背景色">
+                  <span className="px-1 rounded bg-yellow-100">底</span>
+                  <input type="color" defaultValue="#fef08a" className="w-6 h-6 border-0 bg-transparent cursor-pointer"
+                    onChange={e=>{ document.execCommand('hiliteColor', false, e.target.value); syncEditor() }}/>
+                </label>
+                <span className="w-px h-5 bg-gray-200 mx-0.5"/>
+                {([
+                  ['insertUnorderedList','•','无序列表'],
+                  ['insertOrderedList','1.','有序列表'],
+                  ['justifyLeft','☰','左对齐'],
+                  ['justifyCenter','≡','居中'],
+                ] as const).map(([cmd, label, tip])=>(
+                  <button key={cmd} type="button" title={tip}
+                    onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                    className="w-7 h-7 rounded text-xs border bg-white"
+                  >{label}</button>
+                ))}
+                <button type="button" title="插入链接"
+                  onMouseDown={e=>{
+                    e.preventDefault()
+                    const url = prompt('链接地址 https://…')
+                    if(url) { document.execCommand('createLink', false, url); syncEditor() }
+                  }}
+                  className="w-7 h-7 rounded text-xs border bg-white">🔗</button>
+                <button type="button" title="清除格式"
+                  onMouseDown={e=>{ e.preventDefault(); document.execCommand('removeFormat'); syncEditor()}}
+                  className="w-7 h-7 rounded text-xs border bg-white">Tx</button>
+              </div>
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={()=> syncEditor()}
+                data-ph="输入回复内容…（支持加粗、颜色、列表、链接）"
+                className="min-h-[220px] px-4 py-3 border border-t-0 rounded-b-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 empty:before:content-[attr(data-ph)] empty:before:text-gray-300"
+              />
+              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
+                <span className="text-gray-400">定时</span>
+                <div className="flex items-center gap-2">
+                  <input type="datetime-local" value={scheduleAt} onChange={e=> setScheduleAt(e.target.value)}
+                    className="px-3 py-2 border rounded-lg text-sm bg-gray-50"/>
+                  {scheduleAt && (
+                    <button type="button" onClick={()=> setScheduleAt('')} className="text-[11px] text-gray-400 hover:text-gray-600">清除（立即）</button>
+                  )}
+                  <span className="text-[10px] text-gray-400">{scheduleAt ? `到点由服务器发出` : '不填=立即排队发出'}</span>
+                </div>
+              </div>
             </div>
             <div className="px-5 py-3 border-t flex items-center gap-2">
               <button onClick={()=> setShowReply(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
               {draftNote && <span className="text-[10px] text-gray-400">{draftNote}</span>}
               <div className="flex-1"/>
-              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs hover:bg-green-100 disabled:opacity-50" title="网络不稳时用这个，后台队列发出">
-                ⏳ 排队发送
+              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs hover:bg-green-100 disabled:opacity-50" title={scheduleAt?`将在 ${scheduleAt} 发出`:'网络不稳时用这个，后台队列发出'}>
+                {scheduleAt ? '📅 定时发送' : '⏳ 排队发送'}
               </button>
-              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">
+              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo || !!scheduleAt} title={scheduleAt?'已设定时，只能走定时/排队':'立即 SMTP 发送'} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">
                 <Send size={12}/> {sending ? '发送中...' : '发送'}
               </button>
             </div>
@@ -1348,17 +1456,27 @@ export default function InboxPage(){
               {outboxList.map(o=>(
                 <div key={o.id} className="p-3 border rounded-xl text-xs">
                   <div className="flex items-center gap-2">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${o.status==='sent'?'bg-green-100 text-green-700':o.status==='failed'?'bg-red-100 text-red-600':'bg-yellow-100 text-yellow-700'}`}>
-                      {o.status==='sent'?'已发送':o.status==='failed'?'失败':o.status==='sending'?'发送中':'排队中'}
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${o.status==='sent'?'bg-green-100 text-green-700':o.status==='failed'?'bg-red-100 text-red-600':o.status==='cancelled'?'bg-gray-100 text-gray-500':'bg-yellow-100 text-yellow-700'}`}>
+                      {o.status==='sent'?'已发送':o.status==='failed'?'失败':o.status==='cancelled'?'已取消':o.status==='sending'?'发送中':'排队中'}
                     </span>
                     <span className="font-medium truncate">{o.subject}</span>
-                    <span className="ml-auto text-[10px] text-gray-400 shrink-0">{new Date(o.created_at).toLocaleString()}</span>
+                    <span className="ml-auto text-[10px] text-gray-400 shrink-0">
+                      {o.send_at ? `定时 ${new Date(o.send_at).toLocaleString()}` : new Date(o.created_at).toLocaleString()}
+                    </span>
                   </div>
                   <div className="text-gray-400 mt-1 truncate">→ {o.to_list}</div>
                   {o.error && <div className="text-red-400 mt-1 break-all">{o.error}</div>}
-                  {o.status==='failed' && (
-                    <button onClick={async()=>{ await retryOutbox(o.id); await refreshOutbox() }} className="mt-2 px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">重试发送</button>
-                  )}
+                  <div className="flex gap-2 mt-2">
+                    {o.status==='failed' && (
+                      <button onClick={async()=>{ await retryOutbox(o.id); await refreshOutbox() }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">重试发送</button>
+                    )}
+                    {(o.status==='queued' || o.status==='failed') && (
+                      <button onClick={async()=>{
+                        if(!confirm('取消这封待发/定时邮件？')) return
+                        try{ await cancelOutbox(o.id); await refreshOutbox(); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                      }} className="px-3 py-1 border rounded-lg text-[11px] text-gray-500 hover:bg-gray-50">取消发送</button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
