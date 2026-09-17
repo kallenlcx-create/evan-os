@@ -1459,12 +1459,15 @@ export default function InboxPage(){
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {outboxList.length===0 && <div className="text-center text-xs text-gray-300 py-8">暂无排队邮件</div>}
-              {outboxList.map(o=>(
+              {outboxList.map(o=>{
+                const isBatch = String(o.idempotency_key||'').startsWith('batch-')
+                return (
                 <div key={o.id} className="p-3 border rounded-xl text-xs">
                   <div className="flex items-center gap-2">
                     <span className={`px-1.5 py-0.5 rounded text-[10px] ${o.status==='sent'?'bg-green-100 text-green-700':o.status==='failed'?'bg-red-100 text-red-600':o.status==='cancelled'?'bg-gray-100 text-gray-500':'bg-yellow-100 text-yellow-700'}`}>
                       {o.status==='sent'?'已发送':o.status==='failed'?'失败':o.status==='cancelled'?'已取消':o.status==='sending'?'发送中':'排队中'}
                     </span>
+                    {isBatch && <span className="px-1.5 py-0.5 rounded text-[10px] bg-pink-50 text-pink-600">批量跟进</span>}
                     <span className="font-medium truncate">{o.subject}</span>
                     <span className="ml-auto text-[10px] text-gray-400 shrink-0">
                       {o.send_at ? `定时 ${new Date(o.send_at).toLocaleString()}` : new Date(o.created_at).toLocaleString()}
@@ -1484,7 +1487,8 @@ export default function InboxPage(){
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>

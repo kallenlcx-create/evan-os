@@ -3075,7 +3075,7 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
 app.get('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const st = String(req.query.status || '')
-  const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at'
+  const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at, idempotency_key'
   const [rows] = st
     ? await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? AND status=? ORDER BY created_at DESC LIMIT 100`,[req.user, st])
     : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100`,[req.user])

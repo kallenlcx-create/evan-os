@@ -42,6 +42,14 @@ export default function FollowUpsPage() {
   const [intellectNote, setIntellectNote] = useState('')
   const [batchSending, setBatchSending] = useState(false)
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, errors: 0 })
+  // 批量发送弹窗
+  const [showBatchModal, setShowBatchModal] = useState(false)
+  const [batchTargets, setBatchTargets] = useState<Customer[]>([])
+  const [batchTplId, setBatchTplId] = useState(TEMPLATES[0].id)
+  const [batchSubject, setBatchSubject] = useState('')
+  const [batchBody, setBatchBody] = useState('')
+  const [batchAiBusy, setBatchAiBusy] = useState(false)
+  const [batchResult, setBatchResult] = useState<{ok:number;errors:number}|null>(null)
 
   // ====== 自动跟进序列 ======
   const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
@@ -368,28 +376,67 @@ export default function FollowUpsPage() {
     setSelectedIds(allOn ? new Set() : new Set(ids))
   }
 
-  // ====== 批量发跟进（5s/封，日上限 300）======
-  const handleBatchSend = useCallback(async () => {
-    const targets = catFiltered.filter(x=> selectedIds.has(x.c.id) && x.c.email)
+  // ====== 批量发跟进：先弹窗看名单+模板，再入队 ======
+  const applyBatchTpl = useCallback((tplId: string, sample?: Customer) => {
+    const tpl = TEMPLATES.find(t=> t.id===tplId) || TEMPLATES[0]
+    const c = sample || batchTargets[0]
+    const product = ((c?.portrait as any)?.products?.[0]) || 'Challenge Coin'
+    const name = (c?.contactName || c?.title || 'there').split(' ')[0]
+    setBatchTplId(tpl.id)
+    setBatchSubject(tpl.subject.replace(/\{\{product\}\}/g, product))
+    setBatchBody(tpl.body.replace(/\{\{first_name\}\}/g, name).replace(/\{\{product\}\}/g, product))
+  }, [batchTargets])
+
+  const openBatchModal = useCallback(() => {
+    const targets = catFiltered.filter(x=> selectedIds.has(x.c.id) && x.c.email).map(x=> x.c)
     if(!targets.length) return alert('请先勾选有邮箱的客户')
+    setBatchTargets(targets)
+    setBatchResult(null)
+    applyBatchTpl(TEMPLATES[0].id, targets[0])
+    setShowBatchModal(true)
+  }, [catFiltered, selectedIds, applyBatchTpl])
+
+  const handleBatchAiTpl = useCallback(async () => {
+    if(!batchTargets.length) return
+    setBatchAiBusy(true)
+    try{
+      const c = batchTargets[0]
+      const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
+      const prompt = `你是Maxemblem外贸业务员Evan。写一封简短英文跟进邮件主题+正文，适合群发给类似客户。只返回两行：第一行Subject:，第二行Body:。\n客户示例：${c.contactName||c.title}（${product}），阶段${c.stage||'lead'}。\n语气友好，问是否需要报价或样品，落款Evan。`
+      const out = await chatOnce(prompt)
+      const sIdx = out.indexOf('Subject:')
+      const bIdx = out.indexOf('Body:')
+      if(sIdx>=0 && bIdx>sIdx){
+        setBatchSubject(out.slice(sIdx+8, bIdx).trim())
+        setBatchBody(out.slice(bIdx+5).trim())
+      }else{
+        setBatchBody(out.trim())
+      }
+    }catch(e:any){ alert('AI 生成失败：'+String(e.message||e).slice(0,120)) }
+    finally{ setBatchAiBusy(false) }
+  }, [batchTargets])
+
+  const handleBatchSend = useCallback(async () => {
+    if(!batchTargets.length) return
     const used = getTodaySendCount()
     if(used >= BATCH_SEND.dailyLimit) return alert(`今日批量已达上限 ${BATCH_SEND.dailyLimit} 封，请明天再发`)
     const remain = BATCH_SEND.dailyLimit - used
-    if(targets.length > remain && !confirm(`今日剩余额度 ${remain}，仅发送前 ${remain} 封，继续？`)) return
-    const list2 = targets.slice(0, remain)
-    if(!confirm(`将对 ${list2.length} 位客户批量发送跟进邮件（间隔 5 秒），继续？`)) return
+    if(batchTargets.length > remain && !confirm(`今日剩余额度 ${remain}，仅入队前 ${remain} 封，继续？`)) return
+    const list2 = batchTargets.slice(0, remain)
     const accs = await listAccounts()
     if(!accs.length) return alert('请先绑定邮箱账号')
     const acc = accs[0]
+    if(!batchSubject.trim() || !batchBody.trim()) return alert('请填写主题和正文')
     setBatchSending(true)
+    setBatchResult(null)
     setBatchProgress({ done: 0, total: list2.length, errors: 0 })
     let errors = 0
     for(let i=0;i<list2.length;i++){
-      const c = list2[i].c
-      const product = (c.portrait as any)?.products?.[0] || 'Challenge Coin'
+      const c = list2[i]
+      const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
       const name = (c.contactName || c.title || 'there').split(' ')[0]
-      const subject = `Following up on your ${product} project`
-      const body = `Hi ${name},\n\nJust wanted to check in and see how things are going with your ${product} project.\n\nBest regards,\nEvan`
+      const subject = batchSubject.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
+      const body = batchBody.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
       try{
         await enqueueMail(acc.id, c.email || '', subject, body, `batch-${c.id}-${Date.now()}`)
         bumpTodaySendCount(1)
@@ -398,7 +445,7 @@ export default function FollowUpsPage() {
           customerId: c.id,
           dueAt: new Date().toISOString().slice(0,10),
           channel: ['批量跟进'],
-          note: '批量跟进邮件已入队',
+          note: `批量入队：${subject.slice(0,40)}`,
           status: 'pending',
           createdAt: new Date().toISOString(),
         } as any)
@@ -408,9 +455,9 @@ export default function FollowUpsPage() {
     }
     setBatchSending(false)
     setSelectedIds(new Set())
-    alert(`批量入队完成：成功约 ${list2.length-errors}，失败 ${errors}`)
+    setBatchResult({ ok: list2.length-errors, errors })
     await load()
-  }, [catFiltered, selectedIds, load])
+  }, [batchTargets, batchSubject, batchBody, load])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -477,16 +524,16 @@ export default function FollowUpsPage() {
           <span className="text-gray-400">已选 {selectedIds.size}</span>
           {selectedIds.size>0 && (
             <div className="flex items-center gap-1 ml-2">
-              <button onClick={()=> void handleBatchSend()} disabled={batchSending}
+              <button onClick={()=> void openBatchModal()} disabled={batchSending}
                 className="px-3 py-1 bg-pink-600 text-white rounded-lg disabled:opacity-50"
-                title={`间隔 5s/封 · 日上限 ${BATCH_SEND.dailyLimit} · 今日已发 ${getTodaySendCount()}`}>
+                title={`间隔 5s/封 · 今日配额 ${getTodaySendCount()}/${BATCH_SEND.dailyLimit}`}>
                 {batchSending ? `批量发送 ${batchProgress.done}/${batchProgress.total}` : `📣 批量发跟进（${selectedIds.size}）`}
               </button>
               <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
               <button onClick={()=> setSelectedIds(new Set())} className="px-2 py-1 text-gray-400">清空</button>
             </div>
           )}
-          <span className="ml-auto text-[10px] text-gray-400">日限速 {BATCH_SEND.dailyLimit} · 今日 {getTodaySendCount()}</span>
+          <span className="ml-auto text-[10px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit}</span>
         </div>
 
         <div className="space-y-2">
@@ -593,6 +640,67 @@ export default function FollowUpsPage() {
           <div className="mt-2 text-[11px] text-gray-400">在上方雷达客户行点「跟进」发单封；要进7步自动序列，点下面：</div>
         )}
       </div>
+
+      {/* 批量发跟进：名单 + 模板 + AI */}
+      {showBatchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> !batchSending && setShowBatchModal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">📣 批量发跟进 · 将入队 {batchTargets.length} 位客户</div>
+              <button onClick={()=> setShowBatchModal(false)} disabled={batchSending} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              <div className="text-[11px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 间隔 5 秒入队 · 发出由「待发」队列完成</div>
+              <div>
+                <div className="text-xs font-medium text-gray-700 mb-1">入队名单（{batchTargets.length}）</div>
+                <div className="max-h-36 overflow-y-auto border rounded-lg divide-y">
+                  {batchTargets.map(c=>(
+                    <div key={c.id} className="px-2 py-1.5 text-xs flex items-center gap-2">
+                      <span className="font-medium truncate">{c.contactName || c.title}</span>
+                      <span className="text-gray-400 truncate flex-1">{c.email}</span>
+                      <span className="text-gray-300 shrink-0">{c.level||'C'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select value={batchTplId} onChange={e=> applyBatchTpl(e.target.value)} className="px-2 py-1.5 border rounded-lg text-xs">
+                  {TEMPLATES.map(t=> <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <button onClick={()=> void handleBatchAiTpl()} disabled={batchAiBusy} className="px-2 py-1.5 bg-purple-600 text-white rounded-lg text-xs disabled:opacity-50">
+                  {batchAiBusy ? 'AI 生成中…' : '✨ AI 生成模板'}
+                </button>
+                <span className="text-[10px] text-gray-400">可编辑主题/正文；支持 {'{{first_name}}'} {'{{product}}'}</span>
+              </div>
+              <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
+              <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>
+              {batchResult && (
+                <div className="text-xs px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-100">
+                  已入队 {batchResult.ok} 封{batchResult.errors?`，失败 ${batchResult.errors}`:''}。
+                  打开邮件中心 → 顶栏「📤 待发」查看发送进度（状态含「批量跟进」）。
+                </div>
+              )}
+              {batchSending && (
+                <div className="text-xs text-blue-600">入队中 {batchProgress.done}/{batchProgress.total}{batchProgress.errors?` · 失败 ${batchProgress.errors}`:''}…</div>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t flex items-center gap-2">
+              <button onClick={()=> setShowBatchModal(false)} disabled={batchSending} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">关闭</button>
+              <div className="flex-1"/>
+              {batchResult ? (
+                <button onClick={()=>{ setShowBatchModal(false); navigate('/inbox') }} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs">
+                  打开邮件中心 · 待发
+                </button>
+              ) : (
+                <button onClick={()=> void handleBatchSend()} disabled={batchSending || !batchSubject.trim() || !batchBody.trim()}
+                  className="px-4 py-2 bg-pink-600 text-white rounded-lg text-xs disabled:opacity-50">
+                  {batchSending ? '入队中…' : `确认入队 ${batchTargets.length} 封`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 模板+间隔编辑弹窗 */}
       {showTplModal && (

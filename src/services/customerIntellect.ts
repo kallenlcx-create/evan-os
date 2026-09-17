@@ -136,7 +136,7 @@ export function countTiers(results: IntellectResult[]){
 /** 批量发送限速配置 */
 export const BATCH_SEND = {
   intervalMs: 5000,
-  dailyLimit: 300,
+  dailyLimit: 500,
 }
 export function getTodaySendCount(){
   const key = `evan:batchSendCount:${new Date().toISOString().slice(0,10)}`
