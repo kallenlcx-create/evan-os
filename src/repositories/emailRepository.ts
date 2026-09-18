@@ -609,24 +609,6 @@ export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:b
   return j
 }
 
-// ====== 营销：节假日 + 复购池 ======
-export async function getHolidays(year?: number): Promise<{ year: number; holidays: Array<{date:string;name:string}>; source: string }>{
-  const h = await serverHeaders()
-  if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/holidays${year?`?year=${year}`:''}`, { headers: bypassHeaders(h) })
-  const j = await r.json().catch(()=>({}))
-  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
-  return j
-}
-export async function getRepurchasePool(silentDays = 90): Promise<{ silentDays: number; total: number; pool: any[] }>{
-  const h = await serverHeaders()
-  if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/repurchase-pool?silentDays=${silentDays}`, { headers: bypassHeaders(h) })
-  const j = await r.json().catch(()=>({}))
-  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
-  return j
-}
-
 // ====== 自动跟进序列 ======
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()
@@ -739,7 +721,7 @@ export async function fetchCustomerAttachments(email: string, limit = 8): Promis
   }))
 }
 
-/** 查客户最新邮件的会话头（用于 In-Reply-To） */
+/** 查客户最新邮件的会话头（优先服务端库 RFC Message-ID） */
 export async function findLatestThreadHeaders(customerEmail: string): Promise<{
   subject: string
   messageId: string
@@ -747,6 +729,25 @@ export async function findLatestThreadHeaders(customerEmail: string): Promise<{
   found: boolean
 }>{
   const addr = String(customerEmail||'').trim().toLowerCase()
+  // 1) 服务端 MySQL（权威）
+  try{
+    const h = await serverHeaders()
+    if(h){
+      const r = await fetch(`${h.url}/email/thread-headers?email=${encodeURIComponent(addr)}`, {
+        headers: bypassHeaders(h)
+      })
+      const j = await r.json().catch(()=>({}))
+      if(r.ok && j && j.found){
+        return {
+          subject: j.subject||'',
+          messageId: j.messageId||'',
+          references: j.messageId||'',
+          found: !!(j.subject || j.messageId),
+        }
+      }
+    }
+  }catch{}
+  // 2) 本地镜像兜底
   try{
     const { db } = await import('../db')
     const all = await db.emails.toArray()
@@ -759,17 +760,31 @@ export async function findLatestThreadHeaders(customerEmail: string): Promise<{
     hits.sort((a:any,b:any)=> String(b.date||'').localeCompare(String(a.date||'')))
     const latest = hits[0] as any
     const subject = String(latest.subject||'')
-    const mid = String((latest as any).messageId || latest.gmailMsgId || '')
-    // 本地镜像可能无完整 Message-ID；尽量用 gmail 风格
-    const messageId = mid.includes('@') ? (mid.startsWith('<') ? mid : `<${mid}>`) : ''
-    return {
-      subject,
-      messageId,
-      references: messageId,
-      found: !!messageId && !!subject,
+    const midRaw = String((latest as any).messageId || (latest as any).message_id || '')
+    let messageId = ''
+    if(midRaw && String(midRaw).includes('@')){
+      messageId = String(midRaw).startsWith('<') ? String(midRaw) : `<${midRaw}>`
     }
+    return { subject, messageId, references: messageId, found: !!subject }
   }catch{
     return { subject:'', messageId:'', references:'', found:false }
   }
 }
 
+// ====== 营销：节假日 + 复购池 ======
+export async function getHolidays(year?: number): Promise<{ year: number; holidays: Array<{date:string;name:string}>; source: string }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/holidays${year?`?year=${year}`:''}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
+  return j
+}
+export async function getRepurchasePool(silentDays = 90): Promise<{ silentDays: number; total: number; pool: any[] }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/repurchase-pool?silentDays=${silentDays}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`获取失败 ${r.status}`)
+  return j
+}

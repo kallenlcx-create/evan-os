@@ -55,6 +55,7 @@ export default function FollowUpsPage() {
   const [custAtts, setCustAtts] = useState<any[]>([])
   const [pickedAttKeys, setPickedAttKeys] = useState<Set<string>>(new Set())
   const [threadInfo, setThreadInfo] = useState<{ found: boolean; subject: string; messageId: string }>({ found:false, subject:'', messageId:'' })
+  const [threadLoading, setThreadLoading] = useState(false)
   const [useThreadReply, setUseThreadReply] = useState(true)
   const [attachMode, setAttachMode] = useState<'file'|'inline'|'both'>('file')
   const [showPreview, setShowPreview] = useState(false)
@@ -240,6 +241,7 @@ export default function FollowUpsPage() {
       setPickedAttKeys(atts[0] ? new Set([keyOf(atts[0])]) : new Set())
     }catch{ setCustAtts([]); setPickedAttKeys(new Set()) }
     try{
+      setThreadLoading(true)
       const th = await findLatestThreadHeaders(c.email||'')
       setThreadInfo({ found: th.found, subject: th.subject, messageId: th.messageId })
       if(th.found){
@@ -249,6 +251,7 @@ export default function FollowUpsPage() {
         setUseThreadReply(false)
       }
     }catch{ setThreadInfo({ found:false, subject:'', messageId:'' }); setUseThreadReply(false) }
+    finally{ setThreadLoading(false) }
   }, [])
 
   const pickedAttList = useCallback(()=>{
@@ -894,11 +897,16 @@ const handleBatchAiTpl = useCallback(async () => {
               <div><label className="text-xs text-gray-400">正文</label><textarea value={sendBody} onChange={e => setSendBody(e.target.value)} className="w-full h-48 px-3 py-2 border rounded-lg text-sm resize-none" /></div>
               <div className="text-[11px] space-y-2">
                 <div className="flex items-center gap-2 flex-wrap">
-                  {threadInfo.found ? (
+                  {threadLoading ? (
+                    <span className="text-gray-400">正在查询历史会话…</span>
+                  ) : threadInfo.found ? (
                     <>
                       <label className="flex items-center gap-2">
                         <input type="checkbox" checked={useThreadReply} onChange={e=> setUseThreadReply(e.target.checked)}/>
-                        <span>在最新会话中回复 · <b className="truncate max-w-[220px] inline-block align-bottom">{threadInfo.subject}</b></span>
+                        <span>
+                          在最新会话中回复 · <b className="truncate max-w-[220px] inline-block align-bottom">{threadInfo.subject||'(同主题)'}</b>
+                          {!threadInfo.messageId && <span className="text-amber-600 ml-1">（将用 Re: 主题，无 Message-ID）</span>}
+                        </span>
                       </label>
                       {!useThreadReply && <span className="text-orange-600">已改为发送新邮件</span>}
                     </>

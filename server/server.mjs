@@ -2917,6 +2917,36 @@ function classifySmtpError(e){
   return { retry:true, afterMinutes:5, note:'' }
 }
 
+// 会话头查询：GET /email/thread-headers?email=xxx
+app.get('/email/thread-headers', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const email = String(req.query.email||'').trim().toLowerCase()
+  if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
+  const like = `%${email}%`
+  const [rows] = await pool.query(
+    `SELECT subject, message_id, gmail_msgid, msg_date, from_addr, to_addr
+     FROM mail_messages
+     WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
+       AND (from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\')
+     ORDER BY msg_date DESC
+     LIMIT 5`,
+    [req.user, like, like])
+  if(!rows.length) return res.json({ found:false, subject:'', messageId:'', date:'' })
+  // 优先取带 RFC Message-ID 的最近一封
+  const withMid = rows.find(r=> r.message_id && String(r.message_id).includes('@')) || rows[0]
+  let messageId = String(withMid.message_id||'').trim()
+  if(messageId && !messageId.startsWith('<')) messageId = `<${messageId}>`
+  if(!messageId.includes('@')) messageId = ''
+  res.json({
+    found: true,
+    subject: String(withMid.subject||''),
+    messageId,
+    date: withMid.msg_date,
+    from: withMid.from_addr,
+    historyCount: rows.length,
+  })
+}))
+
 // 客户相关附件：GET /email/customer-attachments?email=xxx&limit=
 app.get('/email/customer-attachments', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
