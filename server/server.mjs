@@ -3185,6 +3185,81 @@ app.get('/email/outbox', auth, wrap(async (req,res)=>{
   res.json({ outbox: rows })
 }))
 // 预览单条待发：GET /email/outbox/:id
+// 客户发送时间：GET /email/customer-sent-dates?email=
+app.get('/email/customer-sent-dates', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const email = String(req.query.email||'').trim().toLowerCase()
+  if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
+  const like = `%${email}%`
+  // 我方发送：from 为账号邮箱，to 含客户
+  const [rows] = await pool.query(
+    `SELECT MIN(m.msg_date) AS first_sent, MAX(m.msg_date) AS last_sent
+     FROM mail_messages m
+     JOIN email_accounts a ON a.id = m.account_id
+     WHERE a.username = ?
+       AND LOWER(m.from_addr) = LOWER(a.email)
+       AND m.to_addr LIKE ? ESCAPE '\\\\'`,
+    [req.user, like])
+  const first = rows?.[0]?.first_sent || null
+  const last = rows?.[0]?.last_sent || null
+  res.json({
+    found: !!(first || last),
+    firstSentAt: first,
+    lastSentAt: last,
+  })
+}))
+
+// 批量刷新发送时间：POST /email/refresh-sent-dates  body: { emails?: string[] }
+app.post('/email/refresh-sent-dates', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const emails = Array.isArray(req.body?.emails) ? req.body.emails : null
+  const likeEvans = '%evan@maxemblem.com%'
+  const [rows] = emails && emails.length
+    ? await pool.query(
+        `SELECT LOWER(a.email) AS cemail, MIN(CASE WHEN LOWER(m.from_addr)=LOWER(a.email) THEN m.msg_date END) AS first_sent,
+                MAX(CASE WHEN LOWER(m.from_addr)=LOWER(a.email) THEN m.msg_date END) AS last_sent
+         FROM email_accounts a
+         LEFT JOIN mail_messages m ON m.account_id=a.id AND m.to_addr LIKE CONCAT('%', LOWER(a.email), '%')
+         WHERE a.username=? AND LOWER(a.email) IN (${emails.map(()=>'?').join(',')})
+         GROUP BY a.id, a.email`, [req.user, ...emails.map(e=> String(e).toLowerCase())])
+    : await pool.query(
+        `SELECT LOWER(a.email) AS cemail,
+                MIN(CASE WHEN LOWER(m.from_addr)=LOWER(a.email) THEN m.msg_date END) AS first_sent,
+                MAX(CASE WHEN LOWER(m.from_addr)=LOWER(a.email) THEN m.msg_date END) AS last_sent
+         FROM email_accounts a
+         LEFT JOIN mail_messages m ON m.account_id=a.id
+              AND LOWER(m.from_addr)=LOWER(a.email)
+              AND m.to_addr LIKE CONCAT('%', LOWER(a.email), '%')
+         WHERE a.username=?
+         GROUP BY a.id, a.email`, [req.user])
+  // 按客户邮箱扫 to 含该地址且 from=账号邮箱
+  const [byTo] = await pool.query(
+    `SELECT LOWER(a.email) AS self_email, m.to_addr AS to_addr, MIN(m.msg_date) AS first_sent, MAX(m.msg_date) AS last_sent
+     FROM mail_messages m
+     JOIN email_accounts a ON a.id=m.account_id
+     WHERE a.username=? AND LOWER(m.from_addr)=LOWER(a.email)
+     GROUP BY a.email, m.to_addr`,
+    [req.user])
+  const sentMap = new Map()
+  for(const r of byTo){
+    const tos = String(r.to_addr||'').toLowerCase().split(',').map(s=> s.trim())
+    for(const t of tos){
+      const addr = (t.match(/<([^>]+)>/)?.[1] || t).trim()
+      if(!addr.includes('@')) continue
+      const cur = sentMap.get(addr)
+      if(!cur) sentMap.set(addr, { first: r.first_sent, last: r.last_sent })
+      else {
+        if(r.first_sent && (!cur.first || r.first_sent < cur.first)) cur.first = r.first_sent
+        if(r.last_sent && (!cur.last || r.last_sent > cur.last)) cur.last = r.last_sent
+      }
+    }
+  }
+  res.json({
+    accounts: (rows||[]).length,
+    sentAddressCount: sentMap.size,
+    sample: [...sentMap.entries()].slice(0, 5),
+  })
+}))
 app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const [rows] = await pool.query(

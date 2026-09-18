@@ -8,6 +8,7 @@ import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntell
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets } from '../services/manualBuckets'
+import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -680,6 +681,15 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="分级/重点 + 近N天订单扫描 + 跟进桶同步">🏷️ 自动分类</button>
         <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
         <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
+        <button onClick={async()=>{
+          setIntelBusy('sent'); setIntelNote('正在从邮件库刷新客户发送时间…')
+          try{
+            const r = await refreshSentDatesFromLocal()
+            setIntelNote(`跟进时间已刷新：更新 ${r.updated} 人 · 有发送记录 ${r.customersWithSent}`)
+            await load()
+          }catch(e:any){ setIntelNote('刷新失败：'+String(e.message||e).slice(0,80)) }
+          finally{ setIntelBusy('') }
+        }} disabled={!!intelBusy} className="px-2 py-1 rounded-full text-xs border bg-white disabled:opacity-50">⟳ 刷新跟进时间</button>
         <button onClick={()=> setShowCsvOrder(true)} className="px-2 py-1 rounded-full text-xs border bg-white" title="CSV：订单号,邮箱,日期,产品,数量,金额">📥 订单CSV</button>
         <button onClick={()=> setShowIntel(v=>!v)} className="px-2 py-1 rounded-full text-xs border bg-white">⚙️ 智能设置</button>
         <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点 {levelCounts.key||0}</button>
@@ -863,7 +873,20 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700" title="已生成 AI 画像（点开客户查看）">🤖 画像</span>
                 )}
               </div>
-              <div className="text-[10px] text-gray-400 flex items-center gap-1 mt-1.5"><Calendar size={9}/> 下次 {c.followUpAt||'—'}</div>
+              <div className="text-[10px] text-gray-400 flex items-center gap-1 mt-1.5 flex-wrap">
+                <Calendar size={9}/> 下次 {c.followUpAt||'—'}
+                <span className="mx-1 text-gray-300">|</span>
+                {(()=>{
+                  const sd = sentDatesOf(c)
+                  const d = sd.daysSinceSent
+                  const tone = d==null ? 'text-gray-400' : d<=3 ? 'text-green-600' : d<=7 ? 'text-orange-500' : 'text-rose-600'
+                  return (
+                    <span className={tone} title={sd.lastSentAt?`最近发送 ${new Date(sd.lastSentAt).toLocaleString()}\n首次发送 ${sd.firstSentAt?new Date(sd.firstSentAt).toLocaleString():'—'}`:'尚未发送过邮件'}>
+                      ⏳未跟进 {formatDays(d)}
+                    </span>
+                  )
+                })()}
+              </div>
             </div>
           )
         })}
@@ -965,6 +988,16 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               </button>
               {(() => { const s = emailStats[(selectedCustomer.email||'').toLowerCase()]; return s && s.totalAmount>0 ? <span>💰 累计金额 <b className="text-green-600">${s.totalAmount.toLocaleString()}</b></span> : null })()}
               <span>📅 下次跟进 {selectedCustomer.followUpAt||'未设置'}</span>
+              {(()=>{
+                const sd = sentDatesOf(selectedCustomer)
+                return (
+                  <>
+                    <span title="第一次发送给客户的邮件时间">📤 首次发送 <b className="text-gray-800">{sd.firstSentAt?new Date(sd.firstSentAt).toLocaleDateString():'—'}</b></span>
+                    <span title="最近一次发送给客户的邮件时间">最近跟进 <b className="text-gray-800">{sd.lastSentAt?new Date(sd.lastSentAt).toLocaleDateString():'—'}</b></span>
+                    <span className={sd.daysSinceSent!=null && sd.daysSinceSent>7?'text-rose-600 font-medium':''}>未跟进 <b>{formatDays(sd.daysSinceSent)}</b></span>
+                  </>
+                )
+              })()}
             </div>
             {/* AI 画像（详情内展示，不进列表卡片） */}
             <div className="px-4 py-3 border-b bg-purple-50/40 space-y-2">

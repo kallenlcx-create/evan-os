@@ -475,10 +475,19 @@ export default function FollowUpsPage() {
 
   // ====== 多选 ======
   const toggleSel = (id: string) => setSelectedIds(s => { const n = new Set(s); if(n.has(id)) n.delete(id); else n.add(id); return n })
-  const toggleAllPage = () => {
+    const toggleAllPage = () => {
     const ids = pageData.map(x=> x.c.id)
     const allOn = ids.length>0 && ids.every(id=> selectedIds.has(id))
-    setSelectedIds(allOn ? new Set() : new Set(ids))
+    setSelectedIds(prev=>{
+      const n = new Set(prev)
+      if(allOn){ for(const id of ids) n.delete(id) }
+      else { for(const id of ids) n.add(id) }
+      return n
+    })
+  }
+  /** 跨页全选：选中当前筛选结果中的全部客户 */
+  const selectAllFiltered = () => {
+    setSelectedIds(new Set(catFiltered.map(x=> x.c.id)))
   }
 
   // ====== 批量发跟进：先弹窗看名单+模板，再入队 ======
@@ -673,6 +682,11 @@ const handleBatchAiTpl = useCallback(async () => {
             <input type="checkbox" checked={pageData.length>0 && pageData.every(x=> selectedIds.has(x.c.id))} onChange={toggleAllPage}/>
             全选本页
           </label>
+          <button
+            onClick={selectAllFiltered}
+            className="text-[11px] px-2 py-1 border rounded-lg hover:bg-blue-50 text-blue-600"
+            title="选中当前筛选结果中的全部客户（跨页，翻页不丢）"
+          >全选筛选 {catFiltered.length}</button>
           <span className="text-gray-400">已选 {selectedIds.size}</span>
           {selectedIds.size>0 && (
             <div className="flex items-center gap-1 ml-2">
