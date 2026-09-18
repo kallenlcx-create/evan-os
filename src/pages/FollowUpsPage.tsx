@@ -66,6 +66,7 @@ export default function FollowUpsPage() {
     return ()=> window.removeEventListener('evan-manual-buckets', h)
   },[])
   const [intellectBusy, setIntellectBusy] = useState(false)
+  const [orderAlignBusy, setOrderAlignBusy] = useState(false)
   const [intellectNote, setIntellectNote] = useState('')
   const [batchSending, setBatchSending] = useState(false)
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, errors: 0 })
@@ -186,13 +187,22 @@ export default function FollowUpsPage() {
   const followIndex = useMemo(() => {
     const todaySet = new Set<string>()
     const overdueSet = new Set<string>()
+    const orderedSet = new Set<string>()
+    for (const c of customers) {
+      const tags = (c.tags||[]).map(String)
+      if (tags.includes('已下单') || tags.includes('订单') || c.stage==='won' || (c.repurchaseCount||0)>=1) {
+        orderedSet.add(c.id)
+      }
+    }
     for (const f of list) {
       if (f.status !== 'pending') continue
+      // 已下单客户的 pending 跟进不进「逾期」——业务上应走复购，而不是当线索催
+      if (orderedSet.has(f.customerId)) continue
       if (f.dueAt === today) todaySet.add(f.customerId)
       if (f.dueAt < today) overdueSet.add(f.customerId)
     }
-    return { todaySet, overdueSet }
-  }, [list, today])
+    return { todaySet, overdueSet, orderedSet }
+  }, [list, today, customers])
 
   const daysByCustomer = useMemo(() => {
     const m = new Map<string, number>()
@@ -246,9 +256,16 @@ export default function FollowUpsPage() {
       let hit = false
       if (catFilter === 'high') hit = t === 'high' || inManual(c, 'high')
       else if (catFilter === 'today') hit = followIndex.todaySet.has(c.id) || inManual(c, 'today')
-      else if (catFilter === 'overdue') hit = followIndex.overdueSet.has(c.id) || inManual(c, 'overdue')
+      else if (catFilter === 'overdue') {
+        // 逾期 = 未下单且跟进过期；已下单仅在手动勾选「逾期」时出现
+        const ordered = followIndex.orderedSet.has(c.id)
+        hit = (!ordered && followIndex.overdueSet.has(c.id)) || inManual(c, 'overdue')
+      }
       else if (catFilter === 'pending') hit = t === 'pending' || inManual(c, 'pending')
-      else if (catFilter === 'repurchase') hit = t === 'repurchase' || inManual(c, 'repurchase')
+      else if (catFilter === 'repurchase') {
+        hit = t === 'repurchase' || inManual(c, 'repurchase')
+          || (followIndex.orderedSet.has(c.id) && days >= 30)
+      }
       else if (catFilter === 'marketing') hit = t === 'marketing' || inManual(c, 'marketing')
       else hit = true
       if (!hit) continue
@@ -705,7 +722,7 @@ const handleBatchAiTpl = useCallback(async () => {
           <div className="w-7 h-7 bg-red-100 rounded-lg flex items-center justify-center">🔥</div>
           <div>
             <div className="text-sm font-bold">客户跟进雷达</div>
-            <div className="text-xs text-gray-400">六分区各自可设每页条数 · 当前每页 {perPage} 条</div>
+            <div className="text-xs text-gray-400">未成交客户沉寂预警 · 已下单客户不进逾期（走复购）· 每页可配</div>
           </div>
           <select value={tagFilter} onChange={e=> { setTagFilter(e.target.value); setPage(1) }} className="ml-auto px-2 py-1 border rounded text-xs">
             <option value="all">全部标签</option>
@@ -714,6 +731,23 @@ const handleBatchAiTpl = useCallback(async () => {
           <button onClick={()=> void handleIntellect()} disabled={intellectBusy} className="text-xs px-2 py-1 bg-purple-600 text-white rounded-lg disabled:opacity-50" title="规则引擎：高意向/待成交/复购/营销等">
             {intellectBusy ? '分类中…' : '🧠 智能分类'}
           </button>
+          <button
+            onClick={async()=>{
+              if(!confirm('将已下单/阶段won/有订单记录的客户补上「已下单」标签，并关闭其逾期 pending 跟进？')) return
+              setOrderAlignBusy(true)
+              try{
+                const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
+                const os = await runOrderScan({ rescanAll: true })
+                const r = await syncOrderedCustomersFollowUps()
+                setIntellectNote(`订单对齐：扫描补单+${os.ordersAdded} 标签+${os.customersTagged} · 已下单 ${r.ordered} 人 · 新打标 ${r.newlyTagged} · 关闭跟进 ${r.followUpsClosed} 条`)
+                await load()
+              }catch(e:any){ setIntellectNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
+              finally{ setOrderAlignBusy(false) }
+            }}
+            disabled={orderAlignBusy || intellectBusy}
+            className="text-xs px-2 py-1 bg-orange-600 text-white rounded-lg disabled:opacity-50"
+            title="全量扫邮件订单 + 补「已下单」标签 + 关闭已成交客户的逾期跟进"
+          >{orderAlignBusy ? '对齐中…' : '🧾 订单对齐'}</button>
           <button onClick={()=> setShowManualOnly(v=>!v)} className={`text-xs px-2 py-1 border rounded ${showManualOnly?'bg-indigo-600 text-white border-indigo-600':'bg-white'}`}>仅手动板块</button>
           <button onClick={() => load()} className="text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
         </div>

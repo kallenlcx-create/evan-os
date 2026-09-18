@@ -25,6 +25,10 @@ const STRONG = [
   /we\s*(have\s*)?(placed|confirmed)\s*(the\s*)?order/i,
   /proceed\s*with\s*(the\s*)?order/i,
   /PO\s*(number|#|attached)/i,
+  // 业务主题常见写法（此前漏检导致「人已下单、系统没标签」）
+  /order\s*confirm/i,
+  /confirmation\s*[:\-]?\s*custom/i,
+  /\bINQC\d{6,}/i,
   /已付款|付款成功|已下单|订单号|请查收.*款|汇款/i,
 ]
 function extractAmount(text: string): number | null {
@@ -130,9 +134,86 @@ export type OrderScanResult = {
   pending: number
 }
 
-export async function runOrderScan(opts?: { days?: number }): Promise<OrderScanResult> {
+export function isOrderedCustomer(c: Customer, orders?: PurchaseOrder[]): boolean {
+  const tags = (c.tags||[]).map(String)
+  if (tags.includes('已下单') || tags.includes('订单')) return true
+  if ((c.stage||'') === 'won') return true
+  if ((c.repurchaseCount||0) >= 1) return true
+  if (orders && orders.some(o => o.customer_id === c.id)) return true
+  return false
+}
+
+export async function closePendingFollowUps(customerId: string, note = '已下单，自动关闭逾期跟进'): Promise<number> {
+  try {
+    const rows = await db.followUps.where('customerId').equals(customerId).toArray() as any[]
+    let n = 0
+    const ts = new Date().toISOString()
+    for (const f of rows) {
+      if (f.status !== 'pending') continue
+      await db.followUps.update(f.id, { status: 'done', note: [f.note, note].filter(Boolean).join(' | ').slice(0,200), updatedAt: ts } as any)
+      n++
+    }
+    return n
+  } catch { return 0 }
+}
+
+export async function markCustomerOrdered(c: Customer, _orders?: PurchaseOrder[]): Promise<boolean> {
+  const tags = new Set([...(c.tags||[]).map(String)])
+  const needTag = !tags.has('已下单') || !tags.has('订单')
+  const needStage = (c.stage||'') !== 'won' && (c.stage||'') !== 'lost'
+  if (!needTag && !needStage) {
+    await closePendingFollowUps(c.id)
+    return false
+  }
+  tags.add('已下单'); tags.add('订单')
+  const now = new Date().toISOString()
+  await db.customers.update(c.id, {
+    tags: [...tags],
+    stage: needStage ? 'won' : c.stage,
+    isKey: true,
+    orderTagAt: (c as any).orderTagAt || now,
+    updatedAt: now,
+  } as any)
+  await closePendingFollowUps(c.id)
+  return true
+}
+
+export async function syncOrderedCustomersFollowUps(): Promise<{
+  ordered: number; newlyTagged: number; followUpsClosed: number
+}>{
+  const customers = await db.customers.toArray() as Customer[]
+  const orders = await listPurchaseOrders()
+  const byCust = new Map<string, PurchaseOrder[]>()
+  for (const o of orders) {
+    const arr = byCust.get(o.customer_id) || []
+    arr.push(o); byCust.set(o.customer_id, arr)
+  }
+  let ordered = 0, newlyTagged = 0, followUpsClosed = 0
+  const now = new Date().toISOString()
+  for (const c of customers) {
+    const list = byCust.get(c.id)
+    let cur = c
+    if (list?.length && !(c.tags||[]).map(String).includes('已下单')) {
+      const tags = [...new Set([...(c.tags||[]).map(String), '已下单', '订单'])]
+      const stage = (c.stage==='lost') ? c.stage : 'won'
+      await db.customers.update(c.id, { tags, stage, isKey: true, updatedAt: now } as any)
+      cur = { ...c, tags, stage } as Customer
+      newlyTagged++
+    }
+    if (!isOrderedCustomer(cur, list)) continue
+    ordered++
+    const changed = await markCustomerOrdered(cur, list)
+    if (changed) newlyTagged++
+    followUpsClosed += await closePendingFollowUps(c.id)
+  }
+  if (loadIntellectConfig().syncTierToFollowUps) await syncTiersFromRules()
+  window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  return { ordered, newlyTagged, followUpsClosed }
+}
+
+export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }): Promise<OrderScanResult> {
   const cfg = loadIntellectConfig()
-  const days = opts?.days || cfg.orderScanDays || 5
+  const days = opts?.rescanAll ? 3650 : (opts?.days || Math.max(cfg.orderScanDays || 5, 30))
   const cutoff = Date.now() - days * 86400000
   const emails = (await db.emails.toArray() as EmailMessage[]).filter(e=>{
     const t = new Date(e.date).getTime()
@@ -152,7 +233,7 @@ export async function runOrderScan(opts?: { days?: number }): Promise<OrderScanR
 
   for(const e of emails){
     const text = `${e.subject||''}\n${e.text||''}`
-    const strong = isStrongOrderMail(e.subject||'', e.text||'')
+    const strong = isStrongOrderMail(e.subject||'', e.text||'') || isStrongOrderMail(e.subject||'', '')
     if(!strong){ continue }
     const from = extractAddr(e.from).toLowerCase()
     const toList = String(e.to||'').split(',').map(extractAddr).filter(Boolean).map(s=> s.toLowerCase())
@@ -163,12 +244,17 @@ export async function runOrderScan(opts?: { days?: number }): Promise<OrderScanR
         if(a && !a.includes('maxemblem.com') && byAddr.get(a)){ c = byAddr.get(a); break }
       }
     }
+    if(!c && from.includes('maxemblem.com')){
+      for(const a of toList){
+        if(a && byAddr.get(a)){ c = byAddr.get(a); break }
+      }
+    }
     if(!c) { result.pending++; continue }
     const day = e.date ? new Date(e.date).toISOString().slice(0,10) : now.slice(0,10)
     const amount = extractAmount(text)
     const qty = extractQty(text)
     const products = extractProducts(text)
-    const po = extractPo(text)
+    const po = extractPo(text) || extractPo(e.subject||'')
     const key = extKey(c.id, day, amount, products[0]||'', po, e.id)
     const order: PurchaseOrder = {
       id: `po-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
@@ -188,12 +274,13 @@ export async function runOrderScan(opts?: { days?: number }): Promise<OrderScanR
 
     const tags = new Set([...(c.tags||[]).map(String)])
     if(tags.has('已下单')){
+      await closePendingFollowUps(c.id)
       result.duplicates++
     } else {
       tags.add('已下单')
       tags.add('订单')
-      const stage = c.stage === 'lost' || c.stage === 'lead' || !c.stage ? 'won' : c.stage
-      const rep = (c.repurchaseCount||0) + 1
+      const stage = c.stage === 'lost' ? c.stage : 'won'
+      const rep = Math.max(1, (c.repurchaseCount||0) + 1)
       await db.customers.update(c.id, {
         tags: [...tags],
         stage,
@@ -203,6 +290,7 @@ export async function runOrderScan(opts?: { days?: number }): Promise<OrderScanR
         updatedAt: now,
         marketingSuppressedUntil: new Date(Date.now() + cfgSuppress*86400000).toISOString(),
       } as any)
+      await closePendingFollowUps(c.id)
       tagged.add(c.id)
       result.customersTagged++
     }
@@ -260,6 +348,7 @@ export async function importOrdersCsv(text: string){
         updatedAt: now,
         marketingSuppressedUntil: new Date(Date.now()+ (cfg.marketingSuppressDays||7)*86400000).toISOString(),
       } as any)
+      await closePendingFollowUps(c.id)
     }catch{ errors++ }
   }
   if(cfg.syncTierToFollowUps) await syncTiersFromRules()

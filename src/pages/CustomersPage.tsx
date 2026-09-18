@@ -386,8 +386,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     try{
       const r = await runDailyClassify({ force: true })
       let note = '自动分类：' + formatClassifyResult(r)
-      const os = await runOrderScan()
+      const os = await runOrderScan({ rescanAll: true })
+      const { syncOrderedCustomersFollowUps } = await import('../services/orderScan')
+      const align = await syncOrderedCustomersFollowUps()
       note += ' · 订单+' + os.ordersAdded + ' 已下单' + os.customersTagged + ' 重复' + os.duplicates
+      note += ` · 对齐 已下单${align.ordered}/关跟进${align.followUpsClosed}`
       setIntelNote(note)
       await load()
     }catch(e:any){ setIntelNote('自动分类失败：'+String(e.message||e).slice(0,100)) }
@@ -641,9 +644,13 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   const filtered = list.filter(c=>{
     // 默认藏起已标噪声的客户（可用搜索仍命中）
     if(!q && (c.tags||[]).map(String).includes('噪声') && filter==='all' && tagFilter==='all') return false
+    // 「已下单」标签筛选同时认 stage=won，避免只扫标签时漏人
+    if(tagFilter === '已下单'){
+      const tags = (c.tags||[]).map(String)
+      if(!tags.includes('已下单') && !tags.includes('订单') && c.stage !== 'won') return false
+    } else if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
     if(filter==='key' && !c.isKey) return false
     if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false
-    if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
     if(filter==='gov'||filter==='edu'||filter==='org'||filter==='mil'){
       const emailType = classifyEmailType(c.email)
       const filterMap: Record<string,string> = { gov:'政府', edu:'教育', org:'非盈利', mil:'军队' }
@@ -700,6 +707,23 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         >🚫 标噪声</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
         <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="分级/重点 + 近N天订单扫描 + 跟进桶同步">🏷️ 自动分类</button>
+        <button
+          onClick={async()=>{
+            if(!confirm('全量扫描订单邮件，为已成交客户补「已下单」标签，并关闭其逾期跟进？')) return
+            setIntelBusy('order-align'); setIntelNote('订单对齐中…')
+            try{
+              const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
+              const os = await runOrderScan({ rescanAll: true })
+              const r = await syncOrderedCustomersFollowUps()
+              setIntelNote(`订单对齐：扫描+${os.ordersAdded}单 · 已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关闭跟进 ${r.followUpsClosed}`)
+              await load()
+            }catch(e:any){ setIntelNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
+            finally{ setIntelBusy('') }
+          }}
+          disabled={!!intelBusy}
+          className="px-2 py-1 rounded-full text-xs border bg-white hover:border-orange-400 hover:text-orange-600 disabled:opacity-50"
+          title="修复：已下单却在逾期跟进、客户页搜不到已下单标签"
+        >🧾 订单对齐</button>
         <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
         <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
         <button onClick={async()=>{
