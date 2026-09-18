@@ -24,6 +24,7 @@ export default function FollowUpsPage() {
   const navigate = useNavigate()
   const [customers, setCustomers] = useState<Customer[]>([])
   const [emails, setEmails] = useState<EmailMessage[]>([])
+  const [emailIndex, setEmailIndex] = useState<Map<string, string>>(new Map())
   const [list, setList] = useState<FollowUpRecord[]>([])
   const [catFilter, setCatFilter] = useState<string>('all')
   const [tagFilter, setTagFilter] = useState<string>('all')
@@ -124,64 +125,116 @@ export default function FollowUpsPage() {
 
   const load = useCallback(async () => {
     setCustomers(await db.customers.toArray() as Customer[])
-    setEmails(await db.emails.toArray() as EmailMessage[])
+    // 只建邮箱→最近往来索引，不把 1.6 万封邮件全文塞进 state
+    const mails = await db.emails.toArray() as EmailMessage[]
+    const byEmail = new Map<string, string>()
+    for (const e of mails) {
+      const raw = String(e.from || '')
+      const addr = (raw.match(/<([^<>]+)>/)?.[1] || raw.match(/([^\s<>,;]+@[^\s<>,;]+)/)?.[1] || raw).toLowerCase().trim()
+      if (addr && addr.includes('@')) {
+        const cur = byEmail.get(addr)
+        if (!cur || e.date > cur) byEmail.set(addr, e.date)
+      }
+    }
+    setEmailIndex(byEmail)
+    setEmails([])
     setList(await db.followUps.toArray() as FollowUpRecord[])
   }, [])
 
   useEffect(() => {
     void load()
-    const h = () => void load()
+    let timer: any = null
+    const h = () => {
+      if (timer) return
+      timer = setTimeout(() => { timer = null; void load() }, 800)
+    }
     window.addEventListener(EVENTS.EMAILS_UPDATED, h)
     window.addEventListener(EVENTS.CUSTOMERS_UPDATED, h)
-    return () => { window.removeEventListener(EVENTS.EMAILS_UPDATED, h); window.removeEventListener(EVENTS.CUSTOMERS_UPDATED, h) }
+    window.addEventListener('evan-manual-buckets', h)
+    return () => {
+      window.removeEventListener(EVENTS.EMAILS_UPDATED, h)
+      window.removeEventListener(EVENTS.CUSTOMERS_UPDATED, h)
+      window.removeEventListener('evan-manual-buckets', h)
+      if (timer) clearTimeout(timer)
+    }
   }, [load])
 
   const today = new Date().toISOString().slice(0, 10)
 
-  // ====== 6分类统计：自动/aiTier + 手动板块 ======
-  const stats = useMemo(() => {
-    const manualCount = (b: ManualBucket) =>
-      Object.values(manualMap).filter(v=> (v.buckets||[]).includes(b)).length
-    const todayCnt = list.filter(f => f.dueAt === today && f.status === 'pending').length
-    const overdue = list.filter(f => f.dueAt < today && f.status === 'pending').length
-    return {
-      high: customers.filter(c => (c as any).aiTier === 'high').length + manualCount('high'),
-      today: todayCnt + manualCount('today'),
-      overdue: overdue + manualCount('overdue'),
-      pendingDeals: customers.filter(c => (c as any).aiTier === 'pending').length + manualCount('pending'),
-      repurchase: customers.filter(c => (c as any).aiTier === 'repurchase').length + manualCount('repurchase'),
-      marketing: customers.filter(c => (c as any).aiTier === 'marketing').length + manualCount('marketing'),
+  const followIndex = useMemo(() => {
+    const todaySet = new Set<string>()
+    const overdueSet = new Set<string>()
+    for (const f of list) {
+      if (f.status !== 'pending') continue
+      if (f.dueAt === today) todaySet.add(f.customerId)
+      if (f.dueAt < today) overdueSet.add(f.customerId)
     }
-  }, [customers, list, today, manualMap])
+    return { todaySet, overdueSet }
+  }, [list, today])
 
-const catFiltered = useMemo(() => {
-    const ts = (d: string) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0 }
-    const withDaysAll = customers.map(c => {
+  const daysByCustomer = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of customers) {
+      const addrs = [c.email, ...(c.extraEmails || [])].filter(Boolean).map(e => String(e).toLowerCase())
       let last = c.updatedAt || ''
-      const addr = (c.email||'').toLowerCase()
-      for(const e of emails){
-        const from = (e.from?.match(/<([^<>]+)>/)?.[1]||e.from||'').toLowerCase()
-        if(from === addr || (e.to||'').toLowerCase().includes(addr)){
-          if(e.date > last) last = e.date
-        }
+      for (const a of addrs) {
+        const d = emailIndex.get(a)
+        if (d && (!last || d > last)) last = d
       }
-      const days = last ? Math.floor((Date.now()-new Date(last).getTime())/86400000) : 99
-      return { c, days, stage: c.stage||'lead' }
-    })
+      m.set(c.id, last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 99)
+    }
+    return m
+  }, [customers, emailIndex])
+
+  const stats = useMemo(() => {
+    const manualCount = (b: ManualBucket) => {
+      let n = 0
+      for (const v of Object.values(manualMap)) if ((v.buckets || []).includes(b)) n++
+      return n
+    }
+    let high = 0, pending = 0, repurchase = 0, marketing = 0
+    for (const c of customers) {
+      const t = (c as any).aiTier
+      if (t === 'high') high++
+      else if (t === 'pending') pending++
+      else if (t === 'repurchase') repurchase++
+      else if (t === 'marketing') marketing++
+    }
+    return {
+      high: high + manualCount('high'),
+      today: followIndex.todaySet.size + manualCount('today'),
+      overdue: followIndex.overdueSet.size + manualCount('overdue'),
+      pendingDeals: pending + manualCount('pending'),
+      repurchase: repurchase + manualCount('repurchase'),
+      marketing: marketing + manualCount('marketing'),
+    }
+  }, [customers, followIndex, manualMap])
+
+  const catFiltered = useMemo(() => {
+    const ts = (iso: string) => { const t = new Date(iso).getTime(); return Number.isFinite(t) ? t : 0 }
+    const inManual = (c: Customer, b: ManualBucket) => (manualMap[c.id]?.buckets || []).includes(b)
     const tierOf = (c: Customer) => (c as any).aiTier as string | undefined
-    const inManual = (c: Customer, b: ManualBucket) => (manualMap[c.id]?.buckets||[]).includes(b)
-    let rows: typeof withDaysAll = []
-    if(catFilter === 'high') rows = withDaysAll.filter(x => tierOf(x.c)==='high' || inManual(x.c,'high'))
-    else if(catFilter === 'today') rows = withDaysAll.filter(x => (list.some(f=> f.customerId===x.c.id && f.dueAt===today && f.status==='pending') || inManual(x.c,'today')))
-    else if(catFilter === 'overdue') rows = withDaysAll.filter(x => (list.some(f=> f.customerId===x.c.id && f.dueAt<today && f.status==='pending') || inManual(x.c,'overdue')))
-    else if(catFilter === 'pending') rows = withDaysAll.filter(x => tierOf(x.c)==='pending' || inManual(x.c,'pending'))
-    else if(catFilter === 'repurchase') rows = withDaysAll.filter(x => tierOf(x.c)==='repurchase' || inManual(x.c,'repurchase'))
-    else if(catFilter === 'marketing') rows = withDaysAll.filter(x => tierOf(x.c)==='marketing' || inManual(x.c,'marketing'))
-    else rows = withDaysAll
-    if(showManualOnly) rows = rows.filter(x => Object.values(manualMap[x.c.id]?.buckets||{}).length>0 || (manualMap[x.c.id]?.buckets||[]).length>0)
-    if(tagFilter !== 'all') rows = rows.filter(x => ((x.c.tags||[]) as string[]).includes(tagFilter))
-    return rows.sort((a,b)=> ts(b.c.updatedAt||'') - ts(a.c.updatedAt||''))
-  }, [catFilter, customers, emails, list, today, tagFilter, manualMap, showManualOnly])
+    const out: { c: Customer; days: number; stage: string }[] = []
+    for (const c of customers) {
+      const t = tierOf(c)
+      const days = daysByCustomer.get(c.id) ?? 99
+      const stage = c.stage || 'lead'
+      let hit = false
+      if (catFilter === 'high') hit = t === 'high' || inManual(c, 'high')
+      else if (catFilter === 'today') hit = followIndex.todaySet.has(c.id) || inManual(c, 'today')
+      else if (catFilter === 'overdue') hit = followIndex.overdueSet.has(c.id) || inManual(c, 'overdue')
+      else if (catFilter === 'pending') hit = t === 'pending' || inManual(c, 'pending')
+      else if (catFilter === 'repurchase') hit = t === 'repurchase' || inManual(c, 'repurchase')
+      else if (catFilter === 'marketing') hit = t === 'marketing' || inManual(c, 'marketing')
+      else hit = true
+      if (!hit) continue
+      if (showManualOnly && !(manualMap[c.id]?.buckets || []).length) continue
+      if (tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) continue
+      out.push({ c, days, stage })
+    }
+    out.sort((x, y) => ts(y.c.updatedAt || '') - ts(x.c.updatedAt || ''))
+    return out
+  }, [customers, daysByCustomer, followIndex, catFilter, tagFilter, manualMap, showManualOnly])
 
   // 序列速览：按客户 id 索引 + 今日待发
   const seqMap = useMemo(()=>{
