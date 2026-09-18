@@ -313,6 +313,10 @@ async function init() {
   await pool.query(`ALTER TABLE mail_outbox ADD COLUMN respect_window TINYINT DEFAULT 0`).catch(()=>{})
   // 定时发送：send_at 为空=立即排队；否则到点才由 outboxTick 发出
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN send_at TIMESTAMP(3) NULL`).catch(()=>{}) }catch{}
+  // 会话回复 + 附件
+  try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN in_reply_to VARCHAR(512) DEFAULT ''`).catch(()=>{}) }catch{}
+  try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN references_headers TEXT`).catch(()=>{}) }catch{}
+  try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN attachments_json MEDIUMTEXT`).catch(()=>{}) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS us_holidays (
       date DATE PRIMARY KEY,
@@ -2817,9 +2821,32 @@ app.post('/email/full-batch', auth, wrap(async (req,res)=>{
   res.json({results})
 }))
 
-// 发送邮件：POST /email/send  {accountId, to, subject, text, html, inReplyTo, references}（单封急件直发保留）
+function textToHtmlMail(text){
+  const t = String(text||'')
+  if(!t) return ''
+  if(/<[a-z][\s\S]*>/i.test(t) && /<br|<p|<div/i.test(t)) return t
+  return t.split(/\r?\n\r?\n/).map(p=>{
+    const lines = p.split(/\r?\n/).map(l=> String(l).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')).join('<br>')
+    return `<p style="margin:0 0 12px 0;line-height:1.6">${lines}</p>`
+  }).join('')
+}
+function buildSmtpAttachments(acc, refs){
+  // refs: [{filename, path, contentBase64, contentType}]
+  const out = []
+  for(const a of (refs||[])){
+    try{
+      if(a.path && fs.existsSync(a.path)){
+        out.push({ filename: a.filename||'file', path: a.path, contentType: a.contentType||undefined })
+      } else if(a.contentBase64){
+        out.push({ filename: a.filename||'file', content: Buffer.from(String(a.contentBase64),'base64'), contentType: a.contentType||undefined })
+      }
+    }catch{}
+  }
+  return out
+}
+// 发送邮件：POST /email/send  {accountId, to, subject, text, html, inReplyTo, references, attachments}
 app.post('/email/send', auth, wrap(async (req,res)=>{
-  const { accountId, to, subject, text, html, inReplyTo, references } = req.body||{}
+  const { accountId, to, subject, text, html, inReplyTo, references, attachments } = req.body||{}
   if(!accountId || !to || !subject) return res.status(400).json({error:'需要accountId, to, subject'})
   let acc=null
   if(dbReady){
@@ -2832,7 +2859,6 @@ app.post('/email/send', auth, wrap(async (req,res)=>{
     if(!acc) return res.status(404).json({error:'账号不存在'})
   }
   const pass=decAuth(acc.auth_enc)
-  // 动态导入 nodemailer
   const nodemailer = await import('nodemailer')
   const transporter = nodemailer.default.createTransport({
     host: acc.smtp_host || 'smtp.gmail.com',
@@ -2842,21 +2868,24 @@ app.post('/email/send', auth, wrap(async (req,res)=>{
     connectionTimeout: 15000,
     socketTimeout: 30000,
   })
+  const htmlBody = (html && String(html).trim()) ? String(html) : textToHtmlMail(text)
   const mailOpts = {
     from: acc.email,
     to,
     subject,
-    text: text || '',
-    html: html || text || '',
+    text: text || String(html||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim(),
+    html: htmlBody || text || '',
   }
   if(inReplyTo) mailOpts.inReplyTo = inReplyTo
   if(references) mailOpts.references = references
+  const atts = buildSmtpAttachments(acc, attachments)
+  if(atts.length) mailOpts.attachments = atts
   const info = await transporter.sendMail(mailOpts)
   res.json({ ok:true, messageId: info.messageId })
 }))
 
 // ====== 草稿箱 + 发件队列 ======
-async function sendMailViaSmtp(acc, pass, { to, subject, text, html, inReplyTo, references }){
+async function sendMailViaSmtp(acc, pass, { to, subject, text, html, inReplyTo, references, attachments }){
   const nodemailer = await import('nodemailer')
   const transporter = nodemailer.default.createTransport({
     host: acc.smtp_host || 'smtp.gmail.com',
@@ -2866,9 +2895,18 @@ async function sendMailViaSmtp(acc, pass, { to, subject, text, html, inReplyTo, 
     connectionTimeout: 15000,
     socketTimeout: 60000,
   })
-  const mailOpts = { from: acc.email, to, subject, text: text || '', html: html || text || '' }
+  const htmlBody = (html && String(html).trim()) ? String(html) : textToHtmlMail(text)
+  const mailOpts = {
+    from: acc.email,
+    to,
+    subject,
+    text: text || String(html||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim(),
+    html: htmlBody || text || ''
+  }
   if(inReplyTo) mailOpts.inReplyTo = inReplyTo
   if(references) mailOpts.references = references
+  const atts = buildSmtpAttachments(acc, attachments)
+  if(atts.length) mailOpts.attachments = atts
   return transporter.sendMail(mailOpts)
 }
 function classifySmtpError(e){
@@ -2878,6 +2916,40 @@ function classifySmtpError(e){
   if(/auth|credential|password|username/i.test(msg)) return { retry:false, note:'SMTP 认证失败，检查授权码' }
   return { retry:true, afterMinutes:5, note:'' }
 }
+
+// 客户相关附件：GET /email/customer-attachments?email=xxx&limit=
+app.get('/email/customer-attachments', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const email = String(req.query.email||'').trim().toLowerCase()
+  const limit = Math.min(20, Math.max(1, Number(req.query.limit)||8))
+  if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
+  const like = `%${email}%`
+  const [rows] = await pool.query(
+    `SELECT ma.account_id, ma.uid, ma.filename, ma.size, ma.mime, ma.path,
+            m.subject, m.msg_date
+     FROM mail_attachments ma
+     JOIN mail_messages m ON m.account_id=ma.account_id AND m.folder=ma.folder AND m.uid=ma.uid
+     WHERE ma.account_id IN (SELECT id FROM email_accounts WHERE username=?)
+       AND (m.from_addr LIKE ? ESCAPE '\\\\' OR m.to_addr LIKE ? ESCAPE '\\\\')
+       AND ma.path IS NOT NULL AND ma.path<>''
+       AND ma.size>0 AND ma.size<=${8*1024*1024}
+       AND (LOWER(ma.mime) LIKE 'image/%' OR LOWER(ma.mime) LIKE 'application/pdf'
+            OR LOWER(ma.filename) REGEXP '\\\\.(png|jpe?g|gif|webp|pdf)$')
+     ORDER BY m.msg_date DESC
+     LIMIT ?`, [req.user, like, like, limit])
+  res.json({
+    items: rows.map(r=>({
+      accountId: r.account_id,
+      uid: Number(r.uid),
+      filename: r.filename,
+      size: Number(r.size)||0,
+      mime: r.mime||'',
+      path: r.path,
+      subject: r.subject||'',
+      date: r.msg_date,
+    }))
+  })
+}))
 
 // 附件列表：GET /email/attachments/:accountId/:uid
 app.get('/email/attachments/:accountId/:uid', auth, wrap(async (req,res)=>{
@@ -3041,10 +3113,10 @@ app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
   res.json({ ok:true })
 }))
 
-// 入队发送：POST /email/outbox {accountId, to, subject, text, html, send_at?, respectWindow?}
+// 入队发送：POST /email/outbox {accountId, to, subject, text, html, send_at?, inReplyTo?, references?, attachments?, respectWindow?}
 app.post('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
-  const { accountId, to, subject, text, html, idempotencyKey, respectWindow, send_at: sendAtRaw } = req.body || {}
+  const { accountId, to, subject, text, html, idempotencyKey, respectWindow, send_at: sendAtRaw, inReplyTo, references, attachments } = req.body || {}
   if(!accountId || !to || !subject) return res.status(400).json({ error:'需要 accountId, to, subject' })
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -3057,11 +3129,12 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
     if(t.getTime() < Date.now() - 60000) return res.status(400).json({ error:'send_at 已过期，请选将来时间' })
     sendAt = sqlDate(t)
   }
+  const attJson = attachments && attachments.length ? JSON.stringify(attachments) : null
   try{
     await pool.query(
-      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key, respect_window, send_at)
-       VALUES (?,?,?,?,?,?,?,'queued',0,?,?,?)`,
-      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || text || '', text || '', idem, respectWindow ? 1 : 0, sendAt])
+      `INSERT INTO mail_outbox (id, username, account_id, to_list, subject, body_html, body_text, status, try_count, idempotency_key, respect_window, send_at, in_reply_to, references_headers, attachments_json)
+       VALUES (?,?,?,?,?,?,?,'queued',0,?,?,?,?,?,?)`,
+      [id, req.user, accountId, Array.isArray(to) ? to.join(',') : String(to), subject, html || textToHtmlMail(text) || text || '', text || '', idem, respectWindow ? 1 : 0, sendAt, inReplyTo || '', references || '', attJson])
   }catch(e){
     if(e && e.code === 'ER_DUP_ENTRY'){
       const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=?',[idem])
@@ -3120,7 +3193,15 @@ async function outboxTick(){
         await pool.query(`UPDATE mail_outbox SET status='sending', try_count=try_count+1 WHERE id=?`,[job.id])
         const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[job.account_id, job.username])
         if(!arows.length) throw new Error('账号不存在')
-        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: job.to_list, subject: job.subject, text: job.body_text, html: job.body_html })
+        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), {
+          to: job.to_list,
+          subject: job.subject,
+          text: job.body_text,
+          html: job.body_html,
+          inReplyTo: job.in_reply_to || undefined,
+          references: job.references_headers || undefined,
+          attachments: job.attachments_json ? JSON.parse(job.attachments_json) : undefined,
+        })
         await pool.query(`UPDATE mail_outbox SET status='sent', error='' WHERE id=?`,[job.id])
         console.log(`[outbox] sent ${job.id} -> ${job.to_list} ${info.messageId || ''}`)
       }catch(e){

@@ -4,10 +4,11 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount, type IntellectTier } from '../services/customerIntellect'
+import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 
 // ====== 跟进模板库 ======
 const TEMPLATES = [
@@ -50,6 +51,13 @@ export default function FollowUpsPage() {
   const [batchBody, setBatchBody] = useState('')
   const [batchAiBusy, setBatchAiBusy] = useState(false)
   const [batchResult, setBatchResult] = useState<{ok:number;errors:number}|null>(null)
+  // 附件 + 会话回复
+  const [custAtts, setCustAtts] = useState<any[]>([])
+  const [pickedAtts, setPickedAtts] = useState<Set<string>>(new Set())
+  const [threadInfo, setThreadInfo] = useState<{ found: boolean; subject: string; messageId: string }>({ found:false, subject:'', messageId:'' })
+  const [useThreadReply, setUseThreadReply] = useState(true)
+  const [batchCustAtts, setBatchCustAtts] = useState<Record<string, any[]>>({})
+  const [batchAutoAtt, setBatchAutoAtt] = useState(true)
 
   // ====== 自动跟进序列 ======
   const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
@@ -211,7 +219,7 @@ export default function FollowUpsPage() {
   const pageData = catFiltered.slice((page - 1) * perPage, page * perPage)
 
   // ====== 打开发送弹窗 ======
-  const openSendModal = useCallback((c: Customer) => {
+  const openSendModal = useCallback(async (c: Customer) => {
     setSendTarget(c)
     const product = c.portrait?.products?.[0] || 'Challenge Coin'
     const tpl = TEMPLATES[0]
@@ -219,7 +227,31 @@ export default function FollowUpsPage() {
     setSendSubject(tpl.subject.replace(/\{\{product\}\}/g, product))
     setSendBody(tpl.body.replace(/\{\{first_name\}\}/g, (c.contactName || c.title || 'there').split(' ')[0]).replace(/\{\{product\}\}/g, product))
     setShowSendModal(true)
+    // 客户附件 + 会话头
+    try{
+      const atts = await fetchCustomerAttachments(c.email||'', 8)
+      setCustAtts(atts)
+      setPickedAtts(new Set(atts[0] ? [atts[0].filename] : []))
+    }catch{ setCustAtts([]); setPickedAtts(new Set()) }
+    try{
+      const th = await findLatestThreadHeaders(c.email||'')
+      setThreadInfo({ found: th.found, subject: th.subject, messageId: th.messageId })
+      if(th.found){
+        setUseThreadReply(true)
+        setSendSubject(normalizeReplySubject(th.subject))
+      }else{
+        setUseThreadReply(false)
+      }
+    }catch{ setThreadInfo({ found:false, subject:'', messageId:'' }) }
   }, [])
+
+  const pickedAttList = useCallback(()=>{
+    return custAtts.filter(a=> pickedAtts.has(a.filename)).map(a=>({
+      filename: a.filename,
+      path: a.path,
+      contentType: a.mime,
+    }))
+  },[custAtts, pickedAtts])
 
   // ====== AI 一键生成跟进草稿 ======
   const [aiDrafting, setAiDrafting] = useState(false)
@@ -251,20 +283,32 @@ export default function FollowUpsPage() {
       const accounts = await listAccounts()
       const acc = accounts[0]
       if (!acc) { alert('无可用邮箱账号'); return }
-      const result = await sendEmail(acc.id, sendTarget.email || '', sendSubject, sendBody)
+      const html = textToHtml(sendBody)
+      const atts = pickedAttList()
+      const subject = useThreadReply && threadInfo.found
+        ? normalizeReplySubject(sendSubject || threadInfo.subject)
+        : sendSubject
+      const result = await sendEmail(
+        acc.id,
+        sendTarget.email || '',
+        subject,
+        sendBody,
+        html,
+        useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
+        useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
+        atts
+      )
       if (result.ok) {
         const { uid } = await import('../repositories/result')
-        // 保存到已发送
         await db.emails.put({
           id: uid(), accountId: acc.id, folder: 'sent',
-          from: acc.email, to: sendTarget.email || '', subject: sendSubject,
-          text: sendBody, html: '', date: new Date().toISOString(),
-          isRead: true, hasAttachment: false, customerId: sendTarget.id,
+          from: acc.email, to: sendTarget.email || '', subject,
+          text: sendBody, html, date: new Date().toISOString(),
+          isRead: true, hasAttachment: atts.length>0,
+          customerId: sendTarget.id,
         } as any)
-        // 更新跟进记录状态
         const fu = list.find(f => f.customerId === sendTarget.id && f.status === 'pending')
         if (fu) await db.followUps.update(fu.id, { status: 'sent' } as any)
-        // 更新客户阶段
         const { advanceStage } = await import('../services/customerFactory')
         const newStage = advanceStage(sendTarget.stage || 'lead', '报价回复')
         await db.customers.update(sendTarget.id, {
@@ -273,14 +317,14 @@ export default function FollowUpsPage() {
           lastContactAt: new Date().toISOString(),
         } as any)
         emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: sendTarget.id, action: 'followed_up' })
-        alert('邮件已发送！')
+        alert(threadInfo.found && useThreadReply ? '已在最新会话中回复发出' : '邮件已发送！')
         setShowSendModal(false)
         await load()
       }
     } catch (e: any) {
       alert('发送失败：' + String(e.message || e).slice(0, 200))
     } finally { setSending(false) }
-  }, [sendTarget, sendSubject, sendBody, list, load])
+  }, [sendTarget, sendSubject, sendBody, list, load, useThreadReply, threadInfo, pickedAttList])
 
   // ====== 一键生成跟进并发送 ======
   const handleQuickFollow = useCallback(async (c: Customer) => {
@@ -387,16 +431,25 @@ export default function FollowUpsPage() {
     setBatchBody(tpl.body.replace(/\{\{first_name\}\}/g, name).replace(/\{\{product\}\}/g, product))
   }, [batchTargets])
 
-  const openBatchModal = useCallback(() => {
+  const openBatchModal = useCallback(async () => {
     const targets = catFiltered.filter(x=> selectedIds.has(x.c.id) && x.c.email).map(x=> x.c)
     if(!targets.length) return alert('请先勾选有邮箱的客户')
     setBatchTargets(targets)
     setBatchResult(null)
     applyBatchTpl(TEMPLATES[0].id, targets[0])
     setShowBatchModal(true)
+    // 预加载各客户附件（最多每人 2 个）
+    const attMap: Record<string, any[]> = {}
+    await Promise.all(targets.slice(0, 40).map(async (c)=>{
+      try{
+        const list = await fetchCustomerAttachments(c.email||'', 4)
+        attMap[c.id] = list
+      }catch{ attMap[c.id] = [] }
+    }))
+    setBatchCustAtts(attMap)
   }, [catFiltered, selectedIds, applyBatchTpl])
 
-  const handleBatchAiTpl = useCallback(async () => {
+const handleBatchAiTpl = useCallback(async () => {
     if(!batchTargets.length) return
     setBatchAiBusy(true)
     try{
@@ -438,7 +491,15 @@ export default function FollowUpsPage() {
       const subject = batchSubject.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
       const body = batchBody.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
       try{
-        await enqueueMail(acc.id, c.email || '', subject, body, `batch-${c.id}-${Date.now()}`)
+        const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, subject:'', messageId:'', references:'' } as any))
+        const subj = th.found ? normalizeReplySubject(subject) : subject
+        const autoAtt = batchAutoAtt ? (batchCustAtts[c.id]||[]).slice(0,2) : []
+        await enqueueMail(acc.id, c.email || '', subj, body, `batch-${c.id}-${Date.now()}`, false, {
+          html: textToHtml(body),
+          inReplyTo: th.found ? th.messageId : undefined,
+          references: th.found ? th.references || th.messageId : undefined,
+          attachments: autoAtt.length ? autoAtt.map((a:any)=>({ filename:a.filename, path:a.path, contentType:a.mime })) : undefined,
+        })
         bumpTodaySendCount(1)
         await db.followUps.put({
           id: `fu-batch-${Date.now()}-${c.id}`,
@@ -670,7 +731,11 @@ export default function FollowUpsPage() {
                 <button onClick={()=> void handleBatchAiTpl()} disabled={batchAiBusy} className="px-2 py-1.5 bg-purple-600 text-white rounded-lg text-xs disabled:opacity-50">
                   {batchAiBusy ? 'AI 生成中…' : '✨ AI 生成模板'}
                 </button>
-                <span className="text-[10px] text-gray-400">可编辑主题/正文；支持 {'{{first_name}}'} {'{{product}}'}</span>
+                <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                  <input type="checkbox" checked={batchAutoAtt} onChange={e=> setBatchAutoAtt(e.target.checked)}/>
+                  自动附带客户最新附件（每人≤2）
+                </label>
+                <span className="text-[10px] text-gray-400">支持 {'{{first_name}}'} {'{{product}}'} · 有历史往来将 Re: 回复</span>
               </div>
               <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
               <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>
@@ -767,6 +832,37 @@ export default function FollowUpsPage() {
               <div><label className="text-xs text-gray-400">收件人</label><input value={sendTarget.email || ''} readOnly className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-50" /></div>
               <div><label className="text-xs text-gray-400">主题</label><input value={sendSubject} onChange={e => setSendSubject(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
               <div><label className="text-xs text-gray-400">正文</label><textarea value={sendBody} onChange={e => setSendBody(e.target.value)} className="w-full h-48 px-3 py-2 border rounded-lg text-sm resize-none" /></div>
+              <div className="text-[11px] space-y-1">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={useThreadReply} disabled={!threadInfo.found}
+                    onChange={e=> setUseThreadReply(e.target.checked)}/>
+                  {threadInfo.found
+                    ? <span>在最新会话中回复 · <b>{threadInfo.subject}</b></span>
+                    : <span className="text-gray-400">无历史往来，将发送新邮件</span>}
+                </label>
+                {custAtts.length>0 && (
+                  <div className="border rounded-lg p-2">
+                    <div className="text-gray-500 mb-1">📎 客户历史附件（可选）</div>
+                    <div className="max-h-28 overflow-y-auto space-y-1">
+                      {custAtts.map(a=>(
+                        <label key={a.filename} className="flex items-center gap-2 text-[11px]">
+                          <input type="checkbox" checked={pickedAtts.has(a.filename)}
+                            onChange={e=>{
+                              setPickedAtts(prev=>{
+                                const n=new Set(prev)
+                                if(e.target.checked) n.add(a.filename); else n.delete(a.filename)
+                                return n
+                              })
+                            }}/>
+                          <span className="truncate">{a.filename}</span>
+                          <span className="text-gray-400 shrink-0">{Math.round((a.size||0)/1024)}KB</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {custAtts.length===0 && <div className="text-gray-400">暂无该客户已入库附件</div>}
+              </div>
               <button onClick={handleAiDraft} disabled={aiDrafting} className="w-full py-2 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs hover:bg-purple-100 disabled:opacity-50">
                 ✨ {aiDrafting ? 'AI 生成中...' : 'AI 一键生成跟进草稿'}
               </button>

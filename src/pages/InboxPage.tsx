@@ -11,6 +11,7 @@ import { generateFullAnalysis, type FullAnalysis } from '../services/customerAna
 import { useAskText } from '../components/PromptModal'
 import MailHtml from '../components/MailHtml'
 import MailTextBody from '../components/MailTextBody'
+import { textToHtml } from '../utils/mailHtml'
 import { OAuthBindButton, OAuthBadge, OAuthAppForm } from '../components/GmailOAuth'
 
 const INTENT_COLOR: Record<string,string> = {
@@ -442,7 +443,7 @@ export default function InboxPage(){
         acc.id, replyTo, replySubject, replyBody,
         replyDraftId ? `draft-${replyDraftId}` : undefined,
         false,
-        { html: replyHtml || undefined, sendAt }
+        { html: replyHtml || textToHtml(replyBody), sendAt }
       )
       if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
       setReplyDraftId(''); setShowReply(false); setScheduleAt('')
@@ -465,7 +466,7 @@ export default function InboxPage(){
       // 找到对应账号
       const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
       if(!acc){ alert('无可用邮箱账号'); return }
-      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody, replyHtml || undefined)
+      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody, replyHtml || textToHtml(replyBody))
       if(result.ok){
         if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
         setReplyDraftId('')

@@ -559,7 +559,13 @@ export async function deleteDraft(id: string){
 export async function enqueueMail(
   accountId: string, to: string, subject: string, text: string,
   idempotencyKey?: string, respectWindow = false,
-  opts?: { html?: string; sendAt?: string | null }
+  opts?: {
+    html?: string
+    sendAt?: string | null
+    inReplyTo?: string | null
+    references?: string | null
+    attachments?: Array<{ filename: string; path?: string; contentType?: string }>
+  }
 ): Promise<{id:string;status:string;send_at?:string}>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
@@ -568,18 +574,13 @@ export async function enqueueMail(
       accountId, to, subject, text,
       html: opts?.html || undefined,
       send_at: opts?.sendAt || undefined,
+      inReplyTo: opts?.inReplyTo || undefined,
+      references: opts?.references || undefined,
+      attachments: opts?.attachments?.length ? opts.attachments : undefined,
       idempotencyKey, respectWindow
     }) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`入队失败 ${r.status}`)
-  return j
-}
-export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:boolean}>{
-  const h = await serverHeaders()
-  if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}/email/outbox/${id}/cancel`, { method:'POST', headers: bypassHeaders(h) })
-  const j = await r.json().catch(()=>({}))
-  if(!r.ok) throw new Error(j.error||`取消失败 ${r.status}`)
   return j
 }
 export async function getOutbox(status = ''): Promise<any[]>{
@@ -597,6 +598,14 @@ export async function retryOutbox(id: string){
   const r = await fetch(`${h.url}/email/outbox/${id}/retry`, { method:'POST', headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error||`重试失败 ${r.status}`)
+  return j
+}
+export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:boolean}>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/outbox/${id}/cancel`, { method:'POST', headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`取消失败 ${r.status}`)
   return j
 }
 
@@ -682,15 +691,85 @@ export async function mockSync(accountId:string): Promise<number> {
   return added
 }
 
-export async function sendEmail(accountId: string, to: string, subject: string, text: string, html?: string, inReplyTo?: string, references?: string): Promise<{ok:boolean;messageId?:string}>{
+export async function sendEmail(
+  accountId: string, to: string, subject: string, text: string,
+  html?: string, inReplyTo?: string, references?: string,
+  attachments?: Array<{ filename: string; path?: string; contentType?: string }>
+): Promise<{ok:boolean;messageId?:string}>{
   const h = await serverHeaders()
   if(!h) throw new Error('未登录云同步')
   const r = await fetch(`${h.url}/email/send`,{
     method:'POST',
     headers:{'Content-Type':'application/json', ...bypassHeaders(h)},
-    body: JSON.stringify({ accountId, to, subject, text, html: html||text, inReplyTo, references })
+    body: JSON.stringify({
+      accountId, to, subject, text,
+      html: html||undefined,
+      inReplyTo: inReplyTo||undefined,
+      references: references||undefined,
+      attachments: attachments?.length ? attachments : undefined,
+    })
   })
   if(!r.ok) throw new Error('发送失败: ' + (await r.json().catch(()=>({error:r.statusText}))).error)
   return await r.json()
+}
+
+export type CustomerAttachment = {
+  accountId: string
+  uid: number
+  filename: string
+  size: number
+  mime: string
+  path: string
+  subject: string
+  date: string
+  url?: string
+}
+
+export async function fetchCustomerAttachments(email: string, limit = 8): Promise<CustomerAttachment[]>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/customer-attachments?email=${encodeURIComponent(email)}&limit=${limit}`, {
+    headers: bypassHeaders(h)
+  })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`附件检索失败 ${r.status}`)
+  return (j.items||[]).map((it:any)=>({
+    ...it,
+    url: `${h.url}/email/attachment/${it.accountId}/${it.uid}/${encodeURIComponent(it.filename)}?token=${encodeURIComponent(h.token)}`
+  }))
+}
+
+/** 查客户最新邮件的会话头（用于 In-Reply-To） */
+export async function findLatestThreadHeaders(customerEmail: string): Promise<{
+  subject: string
+  messageId: string
+  references: string
+  found: boolean
+}>{
+  const addr = String(customerEmail||'').trim().toLowerCase()
+  try{
+    const { db } = await import('../db')
+    const all = await db.emails.toArray()
+    const hits = all.filter((e:any)=>{
+      const from = String(e.from||'').toLowerCase()
+      const to = String(e.to||'').toLowerCase()
+      return from.includes(addr) || to.includes(addr)
+    })
+    if(!hits.length) return { subject:'', messageId:'', references:'', found:false }
+    hits.sort((a:any,b:any)=> String(b.date||'').localeCompare(String(a.date||'')))
+    const latest = hits[0] as any
+    const subject = String(latest.subject||'')
+    const mid = String((latest as any).messageId || latest.gmailMsgId || '')
+    // 本地镜像可能无完整 Message-ID；尽量用 gmail 风格
+    const messageId = mid.includes('@') ? (mid.startsWith('<') ? mid : `<${mid}>`) : ''
+    return {
+      subject,
+      messageId,
+      references: messageId,
+      found: !!messageId && !!subject,
+    }
+  }catch{
+    return { subject:'', messageId:'', references:'', found:false }
+  }
 }
 
