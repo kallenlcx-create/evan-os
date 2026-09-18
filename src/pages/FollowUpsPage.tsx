@@ -72,6 +72,12 @@ export default function FollowUpsPage() {
   const [showPreview, setShowPreview] = useState(false)
   const [batchCustAtts, setBatchCustAtts] = useState<Record<string, any[]>>({})
   const [batchAutoAtt, setBatchAutoAtt] = useState(true)
+  /** 批量附件策略：require=无最新附件则跳过该客户；optional=可无附件 */
+  const [batchAttPolicy, setBatchAttPolicy] = useState<'require'|'optional'>('require')
+  /** 定时发送 */
+  const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
+  const [batchScheduleAt, setBatchScheduleAt] = useState('')
+  const [batchSkipped, setBatchSkipped] = useState(0)
 
   const attKey = (a: any) => `${a.accountId||''}|${a.uid||''}|${a.filename}`
 
@@ -527,18 +533,28 @@ const handleBatchAiTpl = useCallback(async () => {
   const handleBatchSend = useCallback(async () => {
     if(!batchTargets.length) return
     const used = getTodaySendCount()
-    if(used >= BATCH_SEND.dailyLimit) return alert(`今日批量已达上限 ${BATCH_SEND.dailyLimit} 封，请明天再发`)
+    if(used >= BATCH_SEND.dailyLimit) return alert('今日批量已达上限 '+BATCH_SEND.dailyLimit+' 封，请明天再发')
     const remain = BATCH_SEND.dailyLimit - used
-    if(batchTargets.length > remain && !confirm(`今日剩余额度 ${remain}，仅入队前 ${remain} 封，继续？`)) return
+    if(batchTargets.length > remain && !confirm('今日剩余额度 '+remain+'，仅入队前 '+remain+' 封，继续？')) return
     const list2 = batchTargets.slice(0, remain)
     const accs = await listAccounts()
     if(!accs.length) return alert('请先绑定邮箱账号')
     const acc = accs[0]
     if(!batchSubject.trim() || !batchBody.trim()) return alert('请填写主题和正文')
+    let sendAt: string | null = null
+    if(batchScheduleMode === 'at'){
+      if(!batchScheduleAt) return alert('请选择定时发送时间')
+      const t = new Date(batchScheduleAt)
+      if(!Number.isFinite(t.getTime())) return alert('定时时间无效')
+      if(t.getTime() < Date.now() + 30000) return alert('定时时间需在约 1 分钟之后')
+      sendAt = t.toISOString()
+    }
     setBatchSending(true)
     setBatchResult(null)
+    setBatchSkipped(0)
     setBatchProgress({ done: 0, total: list2.length, errors: 0 })
     let errors = 0
+    let skipped = 0
     for(let i=0;i<list2.length;i++){
       const c = list2[i]
       const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
@@ -546,22 +562,40 @@ const handleBatchAiTpl = useCallback(async () => {
       const subject = batchSubject.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
       const body = batchBody.replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
       try{
+        const custList = batchCustAtts[c.id] || []
+        const latestAtt = custList[0] || null
+        if(batchAutoAtt && batchAttPolicy === 'require' && !latestAtt){
+          skipped++
+          setBatchProgress({ done: i+1, total: list2.length, errors })
+          if(i < list2.length-1) await new Promise(r=> setTimeout(r, 200))
+          continue
+        }
         const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, subject:'', messageId:'', references:'' } as any))
         const subj = th.found ? normalizeReplySubject(subject) : subject
-        const autoAtt = batchAutoAtt ? (batchCustAtts[c.id]||[]).slice(0,2) : []
-        await enqueueMail(acc.id, c.email || '', subj, body, `batch-${c.id}-${Date.now()}`, false, {
-          html: textToHtml(body),
+        const isImg = !!latestAtt && (String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||''))
+        let html = textToHtml(body)
+        const atts: any[] = []
+        if(batchAutoAtt && latestAtt){
+          const cid = 'att0'
+          atts.push({ filename: latestAtt.filename, path: latestAtt.path, contentType: latestAtt.mime, ...(isImg ? { cid } : {}) })
+          if(isImg){
+            html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+latestAtt.filename+'" style="max-width:360px;border-radius:6px"/></p>'
+          }
+        }
+        await enqueueMail(acc.id, c.email || '', subj, body, 'batch-'+c.id+'-'+Date.now(), false, {
+          html,
+          sendAt,
           inReplyTo: th.found ? th.messageId : undefined,
           references: th.found ? th.references || th.messageId : undefined,
-          attachments: autoAtt.length ? autoAtt.map((a:any)=>({ filename:a.filename, path:a.path, contentType:a.mime })) : undefined,
+          attachments: atts.length ? atts : undefined,
         })
         bumpTodaySendCount(1)
         await db.followUps.put({
-          id: `fu-batch-${Date.now()}-${c.id}`,
+          id: 'fu-batch-'+Date.now()+'-'+c.id,
           customerId: c.id,
           dueAt: new Date().toISOString().slice(0,10),
           channel: ['批量跟进'],
-          note: `批量入队：${subject.slice(0,40)}`,
+          note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '批量入队：') + subject.slice(0,36),
           status: 'pending',
           createdAt: new Date().toISOString(),
         } as any)
@@ -571,9 +605,10 @@ const handleBatchAiTpl = useCallback(async () => {
     }
     setBatchSending(false)
     setSelectedIds(new Set())
-    setBatchResult({ ok: list2.length-errors, errors })
+    setBatchSkipped(skipped)
+    setBatchResult({ ok: list2.length-errors-skipped, errors })
     await load()
-  }, [batchTargets, batchSubject, batchBody, load])
+  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -834,16 +869,39 @@ const handleBatchAiTpl = useCallback(async () => {
                 </button>
                 <label className="flex items-center gap-1 text-[11px] text-gray-600">
                   <input type="checkbox" checked={batchAutoAtt} onChange={e=> setBatchAutoAtt(e.target.checked)}/>
-                  自动附带客户最新附件（每人≤2）
+                  附带最新附件
                 </label>
-                <span className="text-[10px] text-gray-400">支持 {'{{first_name}}'} {'{{product}}'} · 有历史往来将 Re: 回复</span>
+                {batchAutoAtt && (
+                  <>
+                    <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                      <input type="radio" name="attPolicy" checked={batchAttPolicy==='require'} onChange={()=> setBatchAttPolicy('require')}/>
+                      无附件不发
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                      <input type="radio" name="attPolicy" checked={batchAttPolicy==='optional'} onChange={()=> setBatchAttPolicy('optional')}/>
+                      无附件也发
+                    </label>
+                  </>
+                )}
+                <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                  <input type="radio" name="sch" checked={batchScheduleMode==='now'} onChange={()=> setBatchScheduleMode('now')}/>
+                  立即
+                </label>
+                <label className="flex items-center gap-1 text-[11px] text-gray-600">
+                  <input type="radio" name="sch" checked={batchScheduleMode==='at'} onChange={()=> setBatchScheduleMode('at')}/>
+                  定时
+                </label>
+                {batchScheduleMode==='at' && (
+                  <input type="datetime-local" value={batchScheduleAt} onChange={e=> setBatchScheduleAt(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
+                )}
+                <span className="text-[10px] text-gray-400">支持 Hi + 客户名；图片默认用最新附件嵌正文</span>
               </div>
               <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
               <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>
               {batchResult && (
                 <div className="text-xs px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-100">
-                  已入队 {batchResult.ok} 封{batchResult.errors?`，失败 ${batchResult.errors}`:''}。
-                  打开邮件中心 → 顶栏「📤 待发」查看发送进度（状态含「批量跟进」）。
+                  {batchScheduleMode==='at' && batchScheduleAt ? `已定时 ${new Date(batchScheduleAt).toLocaleString()} 入队` : '已入队'} {batchResult.ok} 封{batchResult.errors?`，失败 ${batchResult.errors}`:''}{batchSkipped?`，跳过无附件 ${batchSkipped}`:''}。
+                  打开邮件中心 → 顶栏「📤 待发」查看发送进度（可预览/取消）。
                 </div>
               )}
               {batchSending && (

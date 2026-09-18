@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, getOutboxDetail, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
@@ -165,6 +165,14 @@ export default function InboxPage(){
   const [aiDraftingReply, setAiDraftingReply] = useState(false)
   const [showOutbox, setShowOutbox] = useState(false)
   const [outboxList, setOutboxList] = useState<any[]>([])
+  const [outboxPreview, setOutboxPreview] = useState<any>(null)
+  const [outboxPreviewLoading, setOutboxPreviewLoading] = useState(false)
+  const openOutboxPreview = async (id: string)=>{
+    setOutboxPreviewLoading(true)
+    try{ setOutboxPreview(await getOutboxDetail(id)) }
+    catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+    finally{ setOutboxPreviewLoading(false) }
+  }
   const [bodyLoading, setBodyLoading] = useState(false)
   const [bodyError, setBodyError] = useState('')
   const [attachments, setAttachments] = useState<Array<{filename:string;size:number;mime:string;url:string}>>([])
@@ -1450,6 +1458,50 @@ export default function InboxPage(){
           </div>
         </div>
       )}
+      {/* 待发预览 */}
+      {outboxPreview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={()=> setOutboxPreview(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">👁 待发预览</div>
+              <button onClick={()=> setOutboxPreview(null)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+              {outboxPreviewLoading && <div className="text-gray-400">加载中…</div>}
+              {!outboxPreviewLoading && outboxPreview && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><span className="text-gray-400">状态：</span>{outboxPreview.status}</div>
+                    <div><span className="text-gray-400">发送：</span>{outboxPreview.send_at ? new Date(outboxPreview.send_at).toLocaleString() : '立即/排队'}</div>
+                    <div><span className="text-gray-400">收件人：</span>{outboxPreview.to}</div>
+                    <div><span className="text-gray-400">会话回复：</span>{outboxPreview.has_thread_reply ? '是（Re:）' : '否（新邮件）'}</div>
+                    <div className="col-span-2"><span className="text-gray-400">主题：</span>{outboxPreview.subject}</div>
+                  </div>
+                  <div className="border rounded-lg p-3 bg-gray-50 max-h-72 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                    {outboxPreview.text || '(无纯文本)'}
+                  </div>
+                  <div>
+                    <div className="text-gray-400 mb-1">附件（{(outboxPreview.attachments||[]).length}）</div>
+                    {(outboxPreview.attachments||[]).length===0 && <div className="text-gray-400">无</div>}
+                    {(outboxPreview.attachments||[]).map((a:any)=>(
+                      <div key={a.filename} className="text-[11px]">{a.cid ? '🖼' : '📎'} {a.filename}</div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t flex justify-end gap-2">
+              <button onClick={()=> setOutboxPreview(null)} className="px-4 py-2 border rounded-lg text-xs">关闭</button>
+              {outboxPreview && (outboxPreview.status==='queued'||outboxPreview.status==='failed') && (
+                <button onClick={async()=>{
+                  if(!confirm('取消这封待发邮件？')) return
+                  try{ await cancelOutbox(outboxPreview.id); await refreshOutbox(); setOutboxPreview(null); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                }} className="px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs">取消发送</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {/* 发件箱弹窗 */}
       {showOutbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowOutbox(false)}>
@@ -1496,6 +1548,7 @@ export default function InboxPage(){
                   <div className="text-gray-400 mt-1 truncate">→ {o.to_list}</div>
                   {o.error && <div className="text-red-400 mt-1 break-all">{o.error}</div>}
                   <div className="flex gap-2 mt-2 flex-wrap items-center">
+                    <button onClick={async()=>{ await openOutboxPreview(o.id) }} className="px-3 py-1 border rounded-lg text-[11px] text-gray-600 hover:bg-gray-50">👁 预览</button>
                     {o.status==='failed' && (
                       <button onClick={async()=>{ await retryOutbox(o.id); await refreshOutbox() }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">重试发送</button>
                     )}

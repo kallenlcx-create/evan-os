@@ -609,6 +609,15 @@ export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:b
   return j
 }
 
+export async function getOutboxDetail(id: string): Promise<any>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/outbox/${id}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error||`预览失败 ${r.status}`)
+  return j
+}
+
 // ====== 自动跟进序列 ======
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()

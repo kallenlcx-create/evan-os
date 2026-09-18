@@ -2831,14 +2831,14 @@ function textToHtmlMail(text){
   }).join('')
 }
 function buildSmtpAttachments(acc, refs){
-  // refs: [{filename, path, contentBase64, contentType}]
+  // refs: [{filename, path, contentBase64, contentType, cid}]
   const out = []
   for(const a of (refs||[])){
     try{
       if(a.path && fs.existsSync(a.path)){
-        out.push({ filename: a.filename||'file', path: a.path, contentType: a.contentType||undefined })
+        out.push({ filename: a.filename||'file', path: a.path, contentType: a.contentType||undefined, cid: a.cid||undefined, contentDisposition: a.cid ? 'inline' : undefined })
       } else if(a.contentBase64){
-        out.push({ filename: a.filename||'file', content: Buffer.from(String(a.contentBase64),'base64'), contentType: a.contentType||undefined })
+        out.push({ filename: a.filename||'file', content: Buffer.from(String(a.contentBase64),'base64'), contentType: a.contentType||undefined, cid: a.cid||undefined })
       }
     }catch{}
   }
@@ -3184,6 +3184,36 @@ app.get('/email/outbox', auth, wrap(async (req,res)=>{
     : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100`,[req.user])
   res.json({ outbox: rows })
 }))
+// 预览单条待发：GET /email/outbox/:id
+app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const [rows] = await pool.query(
+    `SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error,
+            created_at, send_at, idempotency_key, body_text, body_html,
+            in_reply_to, references_headers, attachments_json
+     FROM mail_outbox WHERE id=? AND username=? LIMIT 1`,
+    [req.params.id, req.user])
+  if(!rows.length) return res.status(404).json({ error:'不存在' })
+  const r = rows[0]
+  let attachments = []
+  try{ attachments = r.attachments_json ? JSON.parse(r.attachments_json) : [] }catch{ attachments = [] }
+  res.json({
+    id: r.id,
+    to: r.to_list,
+    subject: r.subject,
+    status: r.status,
+    send_at: r.send_at,
+    created_at: r.created_at,
+    try_count: r.try_count,
+    error: r.error,
+    idempotency_key: r.idempotency_key,
+    text: r.body_text || '',
+    html: r.body_html || '',
+    in_reply_to: r.in_reply_to || '',
+    has_thread_reply: !!(r.in_reply_to),
+    attachments,
+  })
+}))
 // 重发：POST /email/outbox/:id/retry
 app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
@@ -3200,7 +3230,7 @@ app.post('/email/outbox/:id/cancel', auth, wrap(async (req,res)=>{
 }))
 
 // 发件 worker：每 30 秒扫一次到期任务
-// send_at 未到点不发；respect_window 的遇非窗口顺延 30 分钟
+// send_at 未到点不发；同一批到期任务串行发出，间隔约 5 秒
 async function outboxTick(){
   if(!dbReady) return
   try{
@@ -3210,8 +3240,9 @@ async function outboxTick(){
          AND try_count<3
          AND (send_at IS NULL OR send_at<=NOW())
          AND (next_try_at IS NULL OR next_try_at<=NOW())
-       ORDER BY created_at LIMIT 10`)
-    for(const job of rows){
+       ORDER BY send_at IS NULL DESC, send_at, created_at LIMIT 5`)
+    for(let i=0;i<rows.length;i++){
+      const job = rows[i]
       try{
         if(Number(job.respect_window)){
           const win = await inSendWindow(job.username)
@@ -3243,6 +3274,7 @@ async function outboxTick(){
           await pool.query(`UPDATE mail_outbox SET status='failed', error=? WHERE id=?`,[`${c.note}: ${String(e.message||e).slice(0,300)}`, job.id])
         }
       }
+      if(i < rows.length-1) await new Promise(r=> setTimeout(r, 5000))
     }
   }catch(e){ console.log('[outbox] tick skip:', String(e.message||e).slice(0,120)) }
 }
