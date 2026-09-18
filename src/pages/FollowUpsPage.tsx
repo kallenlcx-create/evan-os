@@ -53,11 +53,15 @@ export default function FollowUpsPage() {
   const [batchResult, setBatchResult] = useState<{ok:number;errors:number}|null>(null)
   // 附件 + 会话回复
   const [custAtts, setCustAtts] = useState<any[]>([])
-  const [pickedAtts, setPickedAtts] = useState<Set<string>>(new Set())
+  const [pickedAttKeys, setPickedAttKeys] = useState<Set<string>>(new Set())
   const [threadInfo, setThreadInfo] = useState<{ found: boolean; subject: string; messageId: string }>({ found:false, subject:'', messageId:'' })
   const [useThreadReply, setUseThreadReply] = useState(true)
+  const [attachMode, setAttachMode] = useState<'file'|'inline'|'both'>('file')
+  const [showPreview, setShowPreview] = useState(false)
   const [batchCustAtts, setBatchCustAtts] = useState<Record<string, any[]>>({})
   const [batchAutoAtt, setBatchAutoAtt] = useState(true)
+
+  const attKey = (a: any) => `${a.accountId||''}|${a.uid||''}|${a.filename}`
 
   // ====== 自动跟进序列 ======
   const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
@@ -227,12 +231,14 @@ export default function FollowUpsPage() {
     setSendSubject(tpl.subject.replace(/\{\{product\}\}/g, product))
     setSendBody(tpl.body.replace(/\{\{first_name\}\}/g, (c.contactName || c.title || 'there').split(' ')[0]).replace(/\{\{product\}\}/g, product))
     setShowSendModal(true)
-    // 客户附件 + 会话头
+    setAttachMode('file')
     try{
       const atts = await fetchCustomerAttachments(c.email||'', 8)
       setCustAtts(atts)
-      setPickedAtts(new Set(atts[0] ? [atts[0].filename] : []))
-    }catch{ setCustAtts([]); setPickedAtts(new Set()) }
+      // 用唯一 key 勾选，避免同名附件被一起选中
+      const keyOf = (a:any) => `${a.accountId||''}|${a.uid||''}|${a.filename}`
+      setPickedAttKeys(atts[0] ? new Set([keyOf(atts[0])]) : new Set())
+    }catch{ setCustAtts([]); setPickedAttKeys(new Set()) }
     try{
       const th = await findLatestThreadHeaders(c.email||'')
       setThreadInfo({ found: th.found, subject: th.subject, messageId: th.messageId })
@@ -242,16 +248,35 @@ export default function FollowUpsPage() {
       }else{
         setUseThreadReply(false)
       }
-    }catch{ setThreadInfo({ found:false, subject:'', messageId:'' }) }
+    }catch{ setThreadInfo({ found:false, subject:'', messageId:'' }); setUseThreadReply(false) }
   }, [])
 
   const pickedAttList = useCallback(()=>{
-    return custAtts.filter(a=> pickedAtts.has(a.filename)).map(a=>({
+    return custAtts.filter(a=> pickedAttKeys.has(attKey(a))).map(a=>({
       filename: a.filename,
       path: a.path,
       contentType: a.mime,
     }))
-  },[custAtts, pickedAtts])
+  },[custAtts, pickedAttKeys])
+
+  /** 按发送方式组装 HTML（附件作为文件 vs 图片插入正文） */
+  const buildHtmlBody = useCallback((body: string)=>{
+    const picked = custAtts.filter(a=> pickedAttKeys.has(attKey(a)))
+    const isImg = (a:any)=> String(a.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(a.filename||'')
+    const imgs = picked.filter(isImg)
+    let html = textToHtml(body)
+    if(attachMode !== 'file' && imgs.length){
+      html += imgs.map(a=> a.url
+        ? `<p style="margin:8px 0"><img src="${a.url}" alt="${a.filename}" style="max-width:320px;border-radius:6px"/></p>`
+        : `<p style="margin:8px 0;color:#888">[附件图: ${a.filename}]</p>`).join('')
+    }
+    return html
+  },[custAtts, pickedAttKeys, attachMode])
+
+  const previewSubject = threadInfo.found && useThreadReply
+    ? normalizeReplySubject(sendSubject || threadInfo.subject)
+    : sendSubject
+  const previewAttachments = pickedAttList()
 
   // ====== AI 一键生成跟进草稿 ======
   const [aiDrafting, setAiDrafting] = useState(false)
@@ -283,7 +308,7 @@ export default function FollowUpsPage() {
       const accounts = await listAccounts()
       const acc = accounts[0]
       if (!acc) { alert('无可用邮箱账号'); return }
-      const html = textToHtml(sendBody)
+      const html = buildHtmlBody(sendBody)
       const atts = pickedAttList()
       const subject = useThreadReply && threadInfo.found
         ? normalizeReplySubject(sendSubject || threadInfo.subject)
@@ -296,7 +321,7 @@ export default function FollowUpsPage() {
         html,
         useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
         useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
-        atts
+        attachMode === 'inline' ? [] : atts
       )
       if (result.ok) {
         const { uid } = await import('../repositories/result')
@@ -324,7 +349,7 @@ export default function FollowUpsPage() {
     } catch (e: any) {
       alert('发送失败：' + String(e.message || e).slice(0, 200))
     } finally { setSending(false) }
-  }, [sendTarget, sendSubject, sendBody, list, load, useThreadReply, threadInfo, pickedAttList])
+  }, [sendTarget, sendSubject, sendBody, list, load, useThreadReply, threadInfo, pickedAttList, buildHtmlBody, attachMode])
 
   // ====== 一键生成跟进并发送 ======
   const handleQuickFollow = useCallback(async (c: Customer) => {
@@ -702,6 +727,41 @@ const handleBatchAiTpl = useCallback(async () => {
         )}
       </div>
 
+      {/* 发送预览 */}
+      {showPreview && sendTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={()=> setShowPreview(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">👁 邮件预览</div>
+              <button onClick={()=> setShowPreview(false)} className="p-1 hover:bg-gray-100 rounded">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3 text-xs">
+              <div><span className="text-gray-400">收件人：</span>{sendTarget.email}</div>
+              <div><span className="text-gray-400">主题：</span>{previewSubject}</div>
+              <div><span className="text-gray-400">发送方式：</span>{threadInfo.found && useThreadReply ? '会话回复（Re: + In-Reply-To）' : '新邮件'}</div>
+              <div><span className="text-gray-400">附件方式：</span>{attachMode==='file'?'文件附件':attachMode==='inline'?'仅插入正文':'附件+正文图'}</div>
+              <div className="border rounded-lg p-3 bg-gray-50 whitespace-pre-wrap leading-relaxed min-h-[120px]">
+                {sendBody || '(空)'}
+                {attachMode!=='file' && previewAttachments.length>0 && (
+                  <div className="mt-3 text-gray-500">[正文将附带 {previewAttachments.filter(a=> String(a.contentType||'').startsWith('image/')||/\.(png|jpe?g)$/i.test(a.filename)).length} 张图片]</div>
+                )}
+              </div>
+              <div>
+                <div className="text-gray-400 mb-1">附件（{previewAttachments.length}）</div>
+                {previewAttachments.length===0 && <div className="text-gray-400">无</div>}
+                {previewAttachments.map(a=>(
+                  <div key={a.filename+String(a.path||'')} className="text-[11px]">📎 {a.filename}</div>
+                ))}
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t flex justify-end gap-2">
+              <button onClick={()=> setShowPreview(false)} className="px-4 py-2 border rounded-lg text-xs">返回修改</button>
+              <button onClick={async()=>{ setShowPreview(false); /* 发送走 handleSend */ }} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs">关闭预览，点发送</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 批量发跟进：名单 + 模板 + AI */}
       {showBatchModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> !batchSending && setShowBatchModal(false)}>
@@ -832,36 +892,58 @@ const handleBatchAiTpl = useCallback(async () => {
               <div><label className="text-xs text-gray-400">收件人</label><input value={sendTarget.email || ''} readOnly className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-50" /></div>
               <div><label className="text-xs text-gray-400">主题</label><input value={sendSubject} onChange={e => setSendSubject(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
               <div><label className="text-xs text-gray-400">正文</label><textarea value={sendBody} onChange={e => setSendBody(e.target.value)} className="w-full h-48 px-3 py-2 border rounded-lg text-sm resize-none" /></div>
-              <div className="text-[11px] space-y-1">
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={useThreadReply} disabled={!threadInfo.found}
-                    onChange={e=> setUseThreadReply(e.target.checked)}/>
-                  {threadInfo.found
-                    ? <span>在最新会话中回复 · <b>{threadInfo.subject}</b></span>
-                    : <span className="text-gray-400">无历史往来，将发送新邮件</span>}
-                </label>
+              <div className="text-[11px] space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {threadInfo.found ? (
+                    <>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={useThreadReply} onChange={e=> setUseThreadReply(e.target.checked)}/>
+                        <span>在最新会话中回复 · <b className="truncate max-w-[220px] inline-block align-bottom">{threadInfo.subject}</b></span>
+                      </label>
+                      {!useThreadReply && <span className="text-orange-600">已改为发送新邮件</span>}
+                    </>
+                  ) : (
+                    <span className="text-gray-500 bg-gray-50 border rounded px-2 py-1">ℹ️ 无历史往来 · 将发送新邮件</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-gray-500">附件方式：</span>
+                  {([['file','作为附件发送'],['inline','图片插入正文'],['both','附件+正文图']] as const).map(([k,l])=>(
+                    <label key={k} className="flex items-center gap-1">
+                      <input type="radio" name="attMode" checked={attachMode===k} onChange={()=> setAttachMode(k)}/>
+                      {l}
+                    </label>
+                  ))}
+                </div>
                 {custAtts.length>0 && (
                   <div className="border rounded-lg p-2">
-                    <div className="text-gray-500 mb-1">📎 客户历史附件（可选）</div>
-                    <div className="max-h-28 overflow-y-auto space-y-1">
-                      {custAtts.map(a=>(
-                        <label key={a.filename} className="flex items-center gap-2 text-[11px]">
-                          <input type="checkbox" checked={pickedAtts.has(a.filename)}
-                            onChange={e=>{
-                              setPickedAtts(prev=>{
-                                const n=new Set(prev)
-                                if(e.target.checked) n.add(a.filename); else n.delete(a.filename)
-                                return n
-                              })
-                            }}/>
-                          <span className="truncate">{a.filename}</span>
-                          <span className="text-gray-400 shrink-0">{Math.round((a.size||0)/1024)}KB</span>
-                        </label>
-                      ))}
+                    <div className="text-gray-500 mb-1">📎 客户历史附件（可选）· 已勾选 {pickedAttKeys.size}</div>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {custAtts.map((a, idx)=>{
+                        const k = attKey(a)
+                        return (
+                          <label key={k} className="flex items-center gap-2 text-[11px]">
+                            <input type="checkbox" checked={pickedAttKeys.has(k)}
+                              onChange={e=>{
+                                setPickedAttKeys(prev=>{
+                                  const n=new Set(prev)
+                                  if(e.target.checked) n.add(k); else n.delete(k)
+                                  return n
+                                })
+                              }}/>
+                            <span className="truncate flex-1">{a.filename} <span className="text-gray-300">#{idx+1} uid:{a.uid}</span></span>
+                            <span className="text-gray-400 shrink-0">{Math.round((a.size||0)/1024)}KB</span>
+                          </label>
+                        )
+                      })}
                     </div>
+                    <div className="text-[10px] text-gray-400 mt-1">默认以文件附件随邮件发送；选「图片插入正文」时图片还会嵌进正文。</div>
                   </div>
                 )}
                 {custAtts.length===0 && <div className="text-gray-400">暂无该客户已入库附件</div>}
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={()=> setShowPreview(true)} className="px-3 py-1.5 border rounded-lg text-xs text-gray-600 hover:bg-gray-50">👁 预览</button>
               </div>
               <button onClick={handleAiDraft} disabled={aiDrafting} className="w-full py-2 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs hover:bg-purple-100 disabled:opacity-50">
                 ✨ {aiDrafting ? 'AI 生成中...' : 'AI 一键生成跟进草稿'}
