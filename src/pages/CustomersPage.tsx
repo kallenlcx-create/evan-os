@@ -399,11 +399,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[load])
 
   const handleAiInsight = useCallback(async ()=>{
-    if(!confirm('对范围「'+intelCfg.aiInsightScope.join('/')+'」客户跑 AI 洞察（最多 '+intelCfg.aiInsightBatchMax+' 人）？')) return
+    if(!confirm('对范围「'+intelCfg.aiInsightScope.join('/')+'」客户跑 AI 洞察（最多 '+intelCfg.aiInsightBatchMax+' 人，冷却 '+intelCfg.aiInsightCooldownDays+' 天）？')) return
     setIntelBusy('insight'); setIntelNote('')
     try{
       const r = await runAiInsight({ limit: intelCfg.aiInsightBatchMax })
-      setIntelNote('AI 洞察完成：成功 '+r.ok+' · 失败 '+r.fail+'（写回客户并同步跟进桶'+(intelCfg.syncTierToFollowUps?'开':'关')+'）')
+      setIntelNote(r.note || ('AI 洞察：成功 '+r.ok+' · 失败 '+r.fail))
       await load()
     }catch(e:any){ setIntelNote('洞察失败：'+String(e.message||e).slice(0,100)) }
     finally{ setIntelBusy('') }
@@ -412,8 +412,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   const handlePurchaseLoop = useCallback(async ()=>{
     setIntelBusy('loop'); setIntelNote('')
     try{
-      const n = await runPurchaseLoop()
-      setIntelNote('复购开发：更新 '+n+' 位（周期/NBA/潜在复购）')
+      const r = await runPurchaseLoop()
+      setIntelNote(r.note || ('复购开发：更新 '+r.updated+' 位'))
       await load()
     }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,100)) }
     finally{ setIntelBusy('') }
@@ -708,8 +708,34 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <label className="flex items-center gap-1">AI批量上限
               <input type="number" min={5} max={100} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||30 })} className="w-14 border rounded px-1"/>
             </label>
+            <label className="flex items-center gap-1">AI洞察冷却(天)
+              <input type="number" min={0} max={30} value={intelCfg.aiInsightCooldownDays} onChange={e=> patchIntelCfg({ aiInsightCooldownDays: Number(e.target.value)||7 })} className="w-14 border rounded px-1"/>
+            </label>
+            <label className="flex items-center gap-1">复购冷却(天)
+              <input type="number" min={0} max={90} value={intelCfg.purchaseLoopCooldownDays} onChange={e=> patchIntelCfg({ purchaseLoopCooldownDays: Number(e.target.value)||14 })} className="w-14 border rounded px-1"/>
+            </label>
           </div>
-          <div className="text-[10px] text-gray-400">等级阈值：金额 &gt;1500=A+ · &gt;1000=A · &gt;500=B（只升不降）· AI范围 isKey/A+/A/B/C</div>
+          <div className="space-y-1">
+            <div className="text-[11px] text-gray-500">成交/下单关键词（逗号分隔，命中邮件用于自动分类金额）</div>
+            <textarea
+              className="w-full border rounded-lg p-2 text-[11px] font-mono"
+              rows={2}
+              defaultValue={(intelCfg.dealKeywords||[]).join(', ')}
+              onBlur={e=>{
+                const list = e.target.value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean)
+                if(list.length) patchIntelCfg({ dealKeywords: list })
+              }}
+            />
+            <div className="text-[11px] text-gray-500">排除词</div>
+            <input className="w-full border rounded-lg p-2 text-[11px]"
+              defaultValue={(intelCfg.dealExcludeWords||[]).join(', ')}
+              onBlur={e=>{
+                const list = e.target.value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean)
+                patchIntelCfg({ dealExcludeWords: list })
+              }}
+            />
+          </div>
+          <div className="text-[10px] text-gray-400">等级阈值：金额 &gt;1500=A+ · &gt;1000=A · &gt;500=B（只升不降）· 金额取该客户邮件上下文（成交词优先）</div>
         </div>
       )}
       {showCsvOrder && (
@@ -821,7 +847,13 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 {(c.value||0)>0 && <span className="text-[10px] text-green-600">💰${Number(c.value).toLocaleString()}</span>}
                 {stats.totalAmount>0 && <span className="text-[10px] text-green-600">${stats.totalAmount.toLocaleString()}</span>}
               </div>
-              {c.aiSummary && <div className="text-[10px] bg-purple-50 rounded p-1.5 mt-1.5 truncate">{c.aiSummary}</div>}
+              {(c as any).aiProfile && (
+                <div className="text-[10px] bg-purple-50 text-purple-800 rounded p-1.5 mt-1.5 line-clamp-2" title={(c as any).aiProfile}>
+                  🤖 {(c as any).aiProfile}
+                  {(c as any).nextBestAction && <span className="ml-1 text-purple-600">· NBA:{(c as any).nextBestAction}</span>}
+                </div>
+              )}
+              {! (c as any).aiProfile && c.aiSummary && <div className="text-[10px] bg-purple-50 rounded p-1.5 mt-1.5 truncate">{c.aiSummary}</div>}
               <div className="text-[10px] text-gray-400 flex items-center gap-1 mt-1.5"><Calendar size={9}/> 下次 {c.followUpAt||'—'}</div>
             </div>
           )

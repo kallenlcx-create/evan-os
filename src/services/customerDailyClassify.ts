@@ -13,10 +13,25 @@ export type IntellectConfig = {
   aiInsightScope: string[]
   aiInsightBatchMax: number
   marketingSuppressDays: number
+  /** AI 洞察冷却（天） */
+  aiInsightCooldownDays: number
+  /** 复购开发冷却（天） */
+  purchaseLoopCooldownDays: number
+  /** 成交/下单关键词（不区分大小写） */
+  dealKeywords: string[]
+  /** 排除词：命中则不当作成交 */
+  dealExcludeWords: string[]
 }
 
 const CFG_KEY = 'evan:intellectConfig'
 const LAST_CLASSIFY_KEY = 'evan:lastDailyClassifyAt'
+
+export const DEFAULT_DEAL_KEYWORDS = [
+  'paid', 'payment sent', 'payment confirmed', 'remittance', 'wire transfer',
+  'order confirmed', 'we placed the order', 'place order', 'po attached', 'proceed with order',
+  '已付款', '已下单', '订单号', '汇款', '付款成功',
+]
+export const DEFAULT_DEAL_EXCLUDES = ['unpaid', 'not paid', 'pending payment', '未付款']
 
 export function loadIntellectConfig(): IntellectConfig {
   const base: IntellectConfig = {
@@ -29,6 +44,10 @@ export function loadIntellectConfig(): IntellectConfig {
     aiInsightScope: ['isKey', 'A+', 'A', 'B', 'C'],
     aiInsightBatchMax: 30,
     marketingSuppressDays: 7,
+    aiInsightCooldownDays: 7,
+    purchaseLoopCooldownDays: 14,
+    dealKeywords: [...DEFAULT_DEAL_KEYWORDS],
+    dealExcludeWords: [...DEFAULT_DEAL_EXCLUDES],
   }
   try {
     const raw = localStorage.getItem(CFG_KEY)
@@ -93,19 +112,54 @@ function levelOnlyUp(old: Customer['level'], next: Customer['level']) {
   return ni >= oi ? next : old
 }
 
+/** 成交关键词匹配（含排除词） */
+export function matchDealKeywords(text: string, cfg?: { dealKeywords?: string[]; dealExcludeWords?: string[] }){
+  const kw = cfg?.dealKeywords?.length ? cfg.dealKeywords : DEFAULT_DEAL_KEYWORDS
+  const ex = cfg?.dealExcludeWords?.length ? cfg.dealExcludeWords : DEFAULT_DEAL_EXCLUDES
+  const t = String(text||'').toLowerCase()
+  if(!t) return { hit:false, matched:'' }
+  for(const w of ex){
+    if(w && t.includes(String(w).toLowerCase())) return { hit:false, matched:'' }
+  }
+  for(const w of kw){
+    if(w && t.includes(String(w).toLowerCase())) return { hit:true, matched:w }
+  }
+  return { hit:false, matched:'' }
+}
+
+/** 单客户：从往来邮件上下文提取可信金额与成交信号 */
+export function analyzeCustomerMailContext(mails: EmailMessage[], cfg: IntellectConfig){
+  let dealAmount = 0
+  let anyAmount = 0
+  let dealHit = ''
+  for(const e of mails){
+    const text = ((e.subject||'') + '\n' + (e.text||''))
+    const amt = extractAmount(text)
+    if(amt > anyAmount) anyAmount = amt
+    const dm = matchDealKeywords(text, cfg)
+    if(dm.hit){
+      dealHit = dm.matched
+      if(amt > dealAmount) dealAmount = amt
+    }
+  }
+  const levelAmount = dealAmount > 0 ? dealAmount : anyAmount
+  return { dealAmount, anyAmount, levelAmount, dealHit, mailCount: mails.length }
+}
+
 export type DailyClassifyResult = {
   processed: number
   upgraded: number
   keyCount: number
   byType: Record<string, number>
   byLevel: Record<string, number>
+  dealKeywordHits: number
 }
 
 export async function runDailyClassify(opts?: { force?: boolean }): Promise<DailyClassifyResult> {
   const todayKey = new Date().toISOString().slice(0,10)
   const last = localStorage.getItem(LAST_CLASSIFY_KEY)
   if(!opts?.force && last === todayKey){
-    return { processed:0, upgraded:0, keyCount:0, byType:{}, byLevel:{} }
+    return { processed:0, upgraded:0, keyCount:0, byType:{}, byLevel:{}, dealKeywordHits:0 }
   }
   const customers = await db.customers.toArray() as Customer[]
   const emails = await db.emails.toArray() as EmailMessage[]
@@ -126,16 +180,37 @@ export async function runDailyClassify(opts?: { force?: boolean }): Promise<Dail
     }
   }
 
-  const result: DailyClassifyResult = { processed:0, upgraded:0, keyCount:0, byType:{}, byLevel:{} }
+  const result: DailyClassifyResult = { processed:0, upgraded:0, keyCount:0, byType:{}, byLevel:{}, dealKeywordHits:0 }
+  const cfg = loadIntellectConfig()
+  // 按邮箱索引：该客户全部相关邮件（上下文）
+  const mailsByAddr = new Map<string, EmailMessage[]>()
+  for(const e of emails){
+    const addrs = [
+      (e.from.match(/<([^<>]+)>/)?.[1] || e.from || '').toLowerCase(),
+      ...String(e.to||'').split(',').map(s=> s.match(/<([^<>]+)>/)?.[1] || s).map(s=> String(s).trim().toLowerCase()),
+    ].filter(Boolean)
+    for(const a of addrs){
+      if(!a.includes('@')) continue
+      const arr = mailsByAddr.get(a) || []
+      if(arr.length < 40) arr.push(e)
+      mailsByAddr.set(a, arr)
+    }
+  }
   const ts = new Date().toISOString()
   for(const c of customers){
     const mails = [c.email, ...(c.extraEmails||[])].filter(Boolean).map(e=> String(e).toLowerCase())
     let emailCount = 0
-    let amount = Number((c as any).value || 0)
+    // 该客户邮件上下文（最近若干封）→ 可信金额 / 成交关键词
+    const ctxMails: EmailMessage[] = []
     for(const m of mails){
       const st = byEmail.get(m)
-      if(st){ emailCount = Math.max(emailCount, st.count); amount = Math.max(amount, st.amount) }
+      if(st) emailCount = Math.max(emailCount, st.count)
+      const arr = mailsByAddr.get(m)
+      if(arr) for(const e of arr) if(!ctxMails.includes(e)) ctxMails.push(e)
     }
+    const ctx = analyzeCustomerMailContext(ctxMails, cfg)
+    const amount = Math.max(Number((c as any).value || 0), ctx.levelAmount)
+    if(ctx.dealHit) result.dealKeywordHits++
     const et = classifyEmailType(c.email)
     let level = levelFromSignals(amount, emailCount)
     level = levelOnlyUp(c.level || 'D', level)
@@ -156,6 +231,7 @@ export async function runDailyClassify(opts?: { force?: boolean }): Promise<Dail
       tags: [...tags],
       classifiedAt: ts,
       updatedAt: ts,
+      classifyReason: ctx.dealHit ? `邮件成交词「${ctx.dealHit}」金额${ctx.dealAmount||ctx.anyAmount}` : (ctx.anyAmount ? `邮件金额 ${ctx.anyAmount}` : '往来/邮箱类型'),
     }
     if(!c.followUpAt){
       patch.followUpAt = new Date(Date.now() + (isKey ? 3 : 7) * 86400000).toISOString().slice(0,10)
@@ -182,7 +258,7 @@ export async function runDailyClassify(opts?: { force?: boolean }): Promise<Dail
 export function formatClassifyResult(r: DailyClassifyResult){
   const t = Object.entries(r.byType).map(([k,v])=> `${k}${v}`).join(' · ')
   const l = Object.entries(r.byLevel).map(([k,v])=> `${k} ${v}`).join(' · ')
-  return `分类完成 ${r.processed} 人：升级 ${r.upgraded} · 重点 ${r.keyCount}｜${l}${t?`｜${t}`:''}`
+  return `自动分类 ${r.processed} 人：升级 ${r.upgraded} · 重点 ${r.keyCount} · 成交词 ${r.dealKeywordHits||0}｜${l}${t?`｜${t}`:''}`
 }
 
 // ====== 桶同步：规则 L1（与跟进页共用口径）=====
