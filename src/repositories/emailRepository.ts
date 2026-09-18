@@ -737,8 +737,14 @@ export async function findLatestThreadHeaders(customerEmail: string): Promise<{
   messageId: string
   references: string
   found: boolean
+  hasMessageId?: boolean
 }>{
   const addr = String(customerEmail||'').trim().toLowerCase()
+  const wrapMid = (raw: string) => {
+    let m = String(raw||'').trim()
+    if(!m || !m.includes('@')) return ''
+    return m.startsWith('<') ? m : `<${m}>`
+  }
   // 1) 服务端 MySQL（权威）
   try{
     const h = await serverHeaders()
@@ -748,16 +754,18 @@ export async function findLatestThreadHeaders(customerEmail: string): Promise<{
       })
       const j = await r.json().catch(()=>({}))
       if(r.ok && j && j.found){
+        const messageId = wrapMid(j.messageId||'')
         return {
           subject: j.subject||'',
-          messageId: j.messageId||'',
-          references: j.messageId||'',
-          found: !!(j.subject || j.messageId),
+          messageId,
+          references: messageId || wrapMid(j.references||''),
+          found: true,
+          hasMessageId: !!messageId,
         }
       }
     }
   }catch{}
-  // 2) 本地镜像兜底
+  // 2) 本地镜像兜底：优先「有 Message-ID」的最近一封
   try{
     const { db } = await import('../db')
     const all = await db.emails.toArray()
@@ -766,18 +774,15 @@ export async function findLatestThreadHeaders(customerEmail: string): Promise<{
       const to = String(e.to||'').toLowerCase()
       return from.includes(addr) || to.includes(addr)
     })
-    if(!hits.length) return { subject:'', messageId:'', references:'', found:false }
+    if(!hits.length) return { subject:'', messageId:'', references:'', found:false, hasMessageId:false }
     hits.sort((a:any,b:any)=> String(b.date||'').localeCompare(String(a.date||'')))
-    const latest = hits[0] as any
+    const withMid = hits.find((e:any)=> wrapMid(String((e as any).messageId || (e as any).message_id || '')))
+    const latest = (withMid || hits[0]) as any
     const subject = String(latest.subject||'')
-    const midRaw = String((latest as any).messageId || (latest as any).message_id || '')
-    let messageId = ''
-    if(midRaw && String(midRaw).includes('@')){
-      messageId = String(midRaw).startsWith('<') ? String(midRaw) : `<${midRaw}>`
-    }
-    return { subject, messageId, references: messageId, found: !!subject }
+    const messageId = wrapMid(String((latest as any).messageId || (latest as any).message_id || ''))
+    return { subject, messageId, references: messageId, found: !!(subject || messageId), hasMessageId: !!messageId }
   }catch{
-    return { subject:'', messageId:'', references:'', found:false }
+    return { subject:'', messageId:'', references:'', found:false, hasMessageId:false }
   }
 }
 

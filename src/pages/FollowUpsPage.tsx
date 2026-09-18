@@ -76,7 +76,7 @@ export default function FollowUpsPage() {
   const [batchSubject, setBatchSubject] = useState('')
   const [batchBody, setBatchBody] = useState('')
   const [batchAiBusy, setBatchAiBusy] = useState(false)
-  const [batchResult, setBatchResult] = useState<{ok:number;errors:number}|null>(null)
+  const [batchResult, setBatchResult] = useState<{ok:number;errors:number;threaded?:number;subjectOnly?:number;newMail?:number}|null>(null)
   // 附件 + 会话回复
   const [custAtts, setCustAtts] = useState<any[]>([])
   const [pickedAttKeys, setPickedAttKeys] = useState<Set<string>>(new Set())
@@ -365,17 +365,18 @@ export default function FollowUpsPage() {
       if (!acc) { alert('无可用邮箱账号'); return }
       const html = buildHtmlBody(sendBody)
       const atts = pickedAttList()
-      const subject = useThreadReply && threadInfo.found
-        ? normalizeReplySubject(sendSubject || threadInfo.subject)
+      const subject = useThreadReply && threadInfo.found && threadInfo.subject
+        ? normalizeReplySubject(threadInfo.subject) // 有往来：必须用历史主题挂线程，不用模板主题
         : sendSubject
+      const mid = useThreadReply && threadInfo.found && threadInfo.messageId ? threadInfo.messageId : undefined
       const result = await sendEmail(
         acc.id,
         sendTarget.email || '',
         subject,
         sendBody,
         html,
-        useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
-        useThreadReply && threadInfo.found ? threadInfo.messageId : undefined,
+        mid,
+        mid,
         attachMode === 'inline' ? [] : atts
       )
       if (result.ok) {
@@ -397,7 +398,7 @@ export default function FollowUpsPage() {
           lastContactAt: new Date().toISOString(),
         } as any)
         emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: sendTarget.id, action: 'followed_up' })
-        alert(threadInfo.found && useThreadReply ? '已在最新会话中回复发出' : '邮件已发送！')
+        alert(mid ? '已在最新会话中回复发出（含 In-Reply-To）' : (useThreadReply && threadInfo.found && threadInfo.subject ? '已按历史主题发出（库中暂无 Message-ID，可能不入线程）' : '邮件已发送！'))
         setShowSendModal(false)
         await load()
       }
@@ -583,6 +584,9 @@ const handleBatchAiTpl = useCallback(async () => {
     setBatchProgress({ done: 0, total: list2.length, errors: 0 })
     let errors = 0
     let skipped = 0
+    let threaded = 0
+    let subjectOnly = 0
+    let newMail = 0
     for(let i=0;i<list2.length;i++){
       const c = list2[i]
       const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
@@ -598,8 +602,21 @@ const handleBatchAiTpl = useCallback(async () => {
           if(i < list2.length-1) await new Promise(r=> setTimeout(r, 200))
           continue
         }
-        const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, subject:'', messageId:'', references:'' } as any))
-        const subj = th.found ? normalizeReplySubject(subject) : subject
+        // 有往来：必须挂到最新会话（历史主题 + In-Reply-To）；无往来才用模板新发
+        const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, subject:'', messageId:'', references:'', hasMessageId:false } as any))
+        const hasHistory = !!(th.found && (th.subject || th.messageId))
+        const mid = hasHistory && th.messageId ? th.messageId : undefined
+        let subj: string
+        if(hasHistory && th.subject){
+          subj = normalizeReplySubject(th.subject) // Re: 历史主题，禁止 Re: 模板主题
+        } else if(hasHistory && th.messageId){
+          subj = normalizeReplySubject(subject) // 仅有 Message-ID 时用模板主题 + Re:
+        } else {
+          subj = subject
+        }
+        if(hasHistory && mid) threaded++
+        else if(hasHistory) subjectOnly++
+        else newMail++
         const isImg = !!latestAtt && (String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||''))
         let html = textToHtml(body)
         const atts: any[] = []
@@ -613,8 +630,8 @@ const handleBatchAiTpl = useCallback(async () => {
         await enqueueMail(acc.id, c.email || '', subj, body, 'batch-'+c.id+'-'+Date.now(), false, {
           html,
           sendAt,
-          inReplyTo: th.found ? th.messageId : undefined,
-          references: th.found ? th.references || th.messageId : undefined,
+          inReplyTo: mid,
+          references: mid ? (th.references || mid) : undefined,
           attachments: atts.length ? atts : undefined,
         })
         bumpTodaySendCount(1)
@@ -623,7 +640,8 @@ const handleBatchAiTpl = useCallback(async () => {
           customerId: c.id,
           dueAt: new Date().toISOString().slice(0,10),
           channel: ['批量跟进'],
-          note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '批量入队：') + subject.slice(0,36),
+          note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '批量入队：')
+            + (mid ? '会话回复' : hasHistory ? '历史主题(无MID)' : '新邮件') + ' ' + subj.slice(0,36),
           status: 'pending',
           createdAt: new Date().toISOString(),
         } as any)
@@ -634,7 +652,7 @@ const handleBatchAiTpl = useCallback(async () => {
     setBatchSending(false)
     setSelectedIds(new Set())
     setBatchSkipped(skipped)
-    setBatchResult({ ok: list2.length-errors-skipped, errors })
+    setBatchResult({ ok: list2.length-errors-skipped, errors, threaded, subjectOnly, newMail })
     await load()
   }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts])
 
@@ -959,9 +977,14 @@ const handleBatchAiTpl = useCallback(async () => {
               </div>
               <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
               <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>
+              <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">
+                会话规则：客户<strong>有邮件来往</strong>时，主题固定用「Re: 历史最新主题」+ In-Reply-To 挂到会话最下方；
+                <strong>无来往</strong>才用上面的模板主题新发。主题框仅对新客户生效。
+              </div>
               {batchResult && (
                 <div className="text-xs px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-100">
                   {batchScheduleMode==='at' && batchScheduleAt ? `已定时 ${new Date(batchScheduleAt).toLocaleString()} 入队` : '已入队'} {batchResult.ok} 封{batchResult.errors?`，失败 ${batchResult.errors}`:''}{batchSkipped?`，跳过无附件 ${batchSkipped}`:''}。
+                  {' '}挂线程 {batchResult.threaded||0}{batchResult.subjectOnly?` · 仅历史主题 ${batchResult.subjectOnly}`:''}{batchResult.newMail?` · 新邮件 ${batchResult.newMail}`:''}。
                   打开邮件中心 → 顶栏「📤 待发」查看发送进度（可预览/取消）。
                 </div>
               )}

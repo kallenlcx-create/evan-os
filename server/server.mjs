@@ -2918,32 +2918,46 @@ function classifySmtpError(e){
 }
 
 // 会话头查询：GET /email/thread-headers?email=xxx
+// 有往来时必须返回「最近一封的 Message-ID + 该封主题」，供 In-Reply-To / Re: 挂线程
 app.get('/email/thread-headers', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
   const email = String(req.query.email||'').trim().toLowerCase()
   if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
   const like = `%${email}%`
   const [rows] = await pool.query(
-    `SELECT subject, message_id, gmail_msgid, msg_date, from_addr, to_addr
+    `SELECT subject, message_id, gmail_msgid, gmail_threadid, msg_date, from_addr, to_addr
      FROM mail_messages
      WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
        AND (from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\')
      ORDER BY msg_date DESC
-     LIMIT 5`,
+     LIMIT 30`,
     [req.user, like, like])
-  if(!rows.length) return res.json({ found:false, subject:'', messageId:'', date:'' })
-  // 优先取带 RFC Message-ID 的最近一封
-  const withMid = rows.find(r=> r.message_id && String(r.message_id).includes('@')) || rows[0]
-  let messageId = String(withMid.message_id||'').trim()
-  if(messageId && !messageId.startsWith('<')) messageId = `<${messageId}>`
-  if(!messageId.includes('@')) messageId = ''
+  if(!rows.length) return res.json({ found:false, subject:'', messageId:'', hasMessageId:false, date:'' })
+  const normMid = (raw)=>{
+    let m = String(raw||'').trim()
+    if(!m || !m.includes('@')) return ''
+    if(!m.startsWith('<')) m = `<${m}>`
+    return m.slice(0,512)
+  }
+  // 优先：最近一封「有 RFC Message-ID」的（真正能挂线程）
+  const withMid = rows.find(r=> normMid(r.message_id))
+  // 次优：有主题的最近一封（至少能把主题改成 Re: 历史主题）
+  const withSubj = rows.find(r=> String(r.subject||'').trim() && !String(r.subject).includes('无主题'))
+  const pick = withMid || withSubj || rows[0]
+  const messageId = normMid(pick.message_id)
+  const subject = String(pick.subject||'').trim()
+  const found = !!(messageId || subject)
   res.json({
-    found: true,
-    subject: String(withMid.subject||''),
+    found,
+    subject,
     messageId,
-    date: withMid.msg_date,
-    from: withMid.from_addr,
+    hasMessageId: !!messageId,
+    references: messageId,
+    date: pick.msg_date,
+    from: pick.from_addr,
+    gmailThreadId: pick.gmail_threadid || '',
     historyCount: rows.length,
+    withMessageIdCount: rows.filter(r=> normMid(r.message_id)).length,
   })
 }))
 
@@ -3558,7 +3572,31 @@ async function seqTick(){
         }
         const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[s.account_id, s.username])
         if(!arows.length) throw new Error('账号不存在')
-        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: s.email, subject: step.subject, text: step.body, html, inReplyTo: undefined, references: undefined })
+        // 自动序列也必须挂会话：有往来用历史主题 + In-Reply-To
+        let seqMid = ''
+        let seqSubject = step.subject
+        try{
+          const like = `%${String(s.email||'').toLowerCase()}%`
+          const [thRows] = await pool.query(
+            `SELECT subject, message_id FROM mail_messages
+             WHERE account_id IN (SELECT id FROM email_accounts WHERE username=?)
+               AND (from_addr LIKE ? ESCAPE '\\\\' OR to_addr LIKE ? ESCAPE '\\\\')
+             ORDER BY msg_date DESC LIMIT 20`,
+            [username, like, like])
+          const normMid = (raw)=>{
+            let m = String(raw||'').trim()
+            if(!m || !m.includes('@')) return ''
+            return m.startsWith('<') ? m : `<${m}>`
+          }
+          const withMid = (thRows||[]).find(r=> normMid(r.message_id))
+          const withSubj = (thRows||[]).find(r=> String(r.subject||'').trim())
+          const pick = withMid || withSubj
+          if(pick){
+            seqMid = normMid(pick.message_id)
+            if(String(pick.subject||'').trim()) seqSubject = /^re:/i.test(String(pick.subject)) ? String(pick.subject) : `Re: ${pick.subject}`
+          }
+        }catch{}
+        const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), { to: s.email, subject: seqSubject, text: step.body, html, inReplyTo: seqMid || undefined, references: seqMid || undefined })
         // 发件成功：记步、推进，并在云同步 data 表留一条跟进记录（雷达/统计可见）
         step.status = 'sent'; step.sentAt = new Date().toISOString(); step.messageId = info.messageId || ''
         const next = Number(s.current_step) + 1
