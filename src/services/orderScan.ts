@@ -65,25 +65,61 @@ function extKey(customerId: string, dateDay: string, amount: number|null, produc
   return `anon:${customerId}:${dateDay}:${amount||0}:${product||'-'}`
 }
 
+const PO_KIND = 'purchase_order'
+let poMigrated = false
+
+async function loadAllOrders(): Promise<PurchaseOrder[]> {
+  try {
+    const rows = await db.collections.where('kind').equals(PO_KIND).toArray() as any[]
+    const fromDb = rows.map(r => (r.data || r) as PurchaseOrder).filter((o: any) => o && o.ext_key)
+    if (fromDb.length) return fromDb
+    // 旧数据在 appState：迁移一次到 collections（可云同步）
+    const legacy = await db.appState.get('evan:purchaseOrders')
+    const list: PurchaseOrder[] = ((legacy?.data as any) || []) as PurchaseOrder[]
+    if (list.length && !poMigrated) {
+      for (const o of list) {
+        await db.collections.put({
+          id: `po-${o.ext_key}`,
+          kind: PO_KIND,
+          category: o.source || 'email_scan',
+          data: o,
+          createdAt: o.created_at || new Date().toISOString(),
+          updatedAt: o.created_at || new Date().toISOString(),
+        } as any)
+      }
+      poMigrated = true
+    }
+    return list
+  } catch { return [] }
+}
+
 async function upsertOrder(o: PurchaseOrder){
   try{
-    const all = await db.appState.get('evan:purchaseOrders')
-    const list: PurchaseOrder[] = (all?.data as any) || []
+    const list = await loadAllOrders()
     if(list.some(x=> x.ext_key === o.ext_key || (x.customer_id===o.customer_id && x.order_date.slice(0,10)===o.order_date.slice(0,10) && x.amount!=null && o.amount!=null && Math.abs(x.amount-o.amount)<0.01 && x.source===o.source))){
       return false
     }
-    list.push(o)
-    await db.appState.put({ key:'evan:purchaseOrders', data:list } as any)
+    await db.collections.put({
+      id: `po-${o.ext_key}`,
+      kind: PO_KIND,
+      category: o.source || 'email_scan',
+      data: o,
+      createdAt: o.created_at,
+      updatedAt: o.created_at,
+    } as any)
+    // 兼容旧读路径
+    try {
+      const all = await db.appState.get('evan:purchaseOrders')
+      const prev: PurchaseOrder[] = (all?.data as any) || []
+      await db.appState.put({ key:'evan:purchaseOrders', data:[...prev, o] } as any)
+    } catch { /* ignore */ }
     return true
   }catch{
     return false
   }
 }
 export async function listPurchaseOrders(): Promise<PurchaseOrder[]>{
-  try{
-    const all = await db.appState.get('evan:purchaseOrders')
-    return ((all?.data as any) || []) as PurchaseOrder[]
-  }catch{ return [] }
+  return loadAllOrders()
 }
 
 export type OrderScanResult = {

@@ -4,7 +4,7 @@ import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
 import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
 import MailHtml from '../components/MailHtml'
-import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
+import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, levelFromSignals, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets } from '../services/manualBuckets'
@@ -52,18 +52,10 @@ function extractAmount(text: string): number {
   return max
 }
 
-// ====== 自动分类客户等级 ======
+// ====== 自动分类客户等级（与 customerDailyClassify.levelFromSignals 同一口径）=====
 function autoClassifyCustomer(c: Customer, emailCount: number, totalAmount: number): { level: Customer['level']; isKey: boolean; customerType: Customer['customerType'] } {
-  let level: Customer['level'] = 'C'
-  let isKey = c.isKey || false
-  // 等级阈值：>1500 A+ · >1000 A · >500 B；否则往来次数
-  if(totalAmount > 1500) level = 'A+'
-  else if(totalAmount > 1000) level = 'A'
-  else if(totalAmount > 500) level = 'B'
-  else if(emailCount >= 5) level = 'B'
-  else if(emailCount >= 3) level = 'C'
-  else level = 'D'
-  if(emailCount >= 3 || totalAmount > 1500 || level === 'A+' || level === 'A') isKey = true
+  const level = levelFromSignals(totalAmount, emailCount)
+  const isKey = level === 'A+' || level === 'A' || totalAmount > 1500 || emailCount >= 5 || !!c.isKey
   const emailType = classifyEmailType(c.email)
   const typeMap: Record<string, Customer['customerType']> = {
     '政府':'Government','军队':'Military','教育':'School','非盈利':'Organization','企业':'Company','个人':'End Customer'
@@ -115,6 +107,9 @@ export default function CustomersPage(){
   }
 
   const [q,setQ]=useState('')
+  /** 客户卡片分页：避免 700+ 张一次性渲染卡死 */
+  const [page, setPage] = useState(1)
+  const [perPage, setPerPage] = useState(30)
   const [selectMode, setSelectMode] = useState(false)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkLevel, setBulkLevel] = useState('')
@@ -644,6 +639,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[])
 
   const filtered = list.filter(c=>{
+    // 默认藏起已标噪声的客户（可用搜索仍命中）
+    if(!q && (c.tags||[]).map(String).includes('噪声') && filter==='all' && tagFilter==='all') return false
     if(filter==='key' && !c.isKey) return false
     if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false
     if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
@@ -663,6 +660,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     if(q && !`${c.title} ${c.company} ${c.email}`.toLowerCase().includes(q.toLowerCase())) return false
     return true
   })
+  // 筛选变化时回到第 1 页；页码越界自动夹紧
+  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length])
+  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
+  const safePage = Math.min(page, totalPages)
+  const pageData = filtered.slice((safePage - 1) * perPage, safePage * perPage)
 
   const emailTypeCounts = list.reduce((acc, c)=>{
     const t = classifyEmailType(c.email).label
@@ -677,6 +679,25 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <span className="text-xs text-gray-400">{filtered.length} / {list.length}</span>
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
         <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
+        <button
+          onClick={async()=>{
+            if(!confirm('将 noreply/系统退信/订阅源等噪声客户标记为「噪声」并移出跟进？不会物理删除。')) return
+            const { isNoiseEmailAddress } = await import('../utils/emailHelpers')
+            const ts = new Date().toISOString()
+            let n = 0
+            for(const c of list){
+              if(!isNoiseEmailAddress(c.email)) continue
+              const tags = [...new Set([...(c.tags||[]).map(String), '噪声'])]
+              if((c.tags||[]).includes('噪声')) continue
+              await db.customers.update(c.id, { tags, stage: 'lost', updatedAt: ts } as any)
+              n++
+            }
+            setIntelNote(`已标记噪声客户 ${n} 个（标签「噪声」+阶段流失，不再新建同类）`)
+            await load()
+          }}
+          className="px-2 py-1 rounded-full text-xs border bg-white hover:border-rose-300 hover:text-rose-600"
+          title="过滤 noreply/系统邮件/订阅源，避免污染跟进雷达"
+        >🚫 标噪声</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
         <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="分级/重点 + 近N天订单扫描 + 跟进桶同步">🏷️ 自动分类</button>
         <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
@@ -837,8 +858,20 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           )}
         </div>
       </div>
+      <div className="flex items-center gap-2 text-[11px] text-gray-400">
+        <span>共 {filtered.length} 条 · 第 {safePage}/{totalPages} 页</span>
+        <label className="flex items-center gap-1 ml-auto">
+          每页
+          <select value={perPage} onChange={e=> setPerPage(Number(e.target.value)||30)} className="border rounded px-1 py-0.5 text-[11px] bg-white">
+            {[12, 30, 60, 120].map(n=> <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+      </div>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filtered.map(c=>{
+        {pageData.length===0 && (
+          <div className="col-span-full text-center text-sm text-gray-400 py-10">没有匹配的客户</div>
+        )}
+        {pageData.map(c=>{
           const emailType = classifyEmailType(c.email)
           const EmailIcon = emailType.icon
           const stats = emailStats[(c.email||'').toLowerCase()] || { count:0, totalAmount:0 }
@@ -891,6 +924,20 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           )
         })}
       </div>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-1 flex-wrap pt-1 pb-2">
+          <button onClick={()=> setPage(1)} disabled={safePage<=1} className="px-2 py-1 text-[11px] border rounded bg-white disabled:opacity-40">«</button>
+          <button onClick={()=> setPage(p=> Math.max(1, p-1))} disabled={safePage<=1} className="px-2 py-1 text-[11px] border rounded bg-white disabled:opacity-40">上一页</button>
+          {Array.from({ length: Math.min(totalPages, 7) }, (_, i)=>{
+            const start = Math.max(1, Math.min(safePage - 3, totalPages - 6))
+            return start + i
+          }).filter(n=> n>=1 && n<=totalPages).map(n=>(
+            <button key={n} onClick={()=> setPage(n)} className={`w-7 h-7 text-[11px] border rounded ${n===safePage?'bg-blue-600 text-white border-blue-600':'bg-white'}`}>{n}</button>
+          ))}
+          <button onClick={()=> setPage(p=> Math.min(totalPages, p+1))} disabled={safePage>=totalPages} className="px-2 py-1 text-[11px] border rounded bg-white disabled:opacity-40">下一页</button>
+          <button onClick={()=> setPage(totalPages)} disabled={safePage>=totalPages} className="px-2 py-1 text-[11px] border rounded bg-white disabled:opacity-40">»</button>
+        </div>
+      )}
 
       {/* 批量导入弹窗 */}
       {showImport && (

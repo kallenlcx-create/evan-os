@@ -211,15 +211,17 @@ export default function InboxPage(){
   },[fetchServerCounts])
   useEffect(()=>{ void refresh() },[refresh])
 
-  const ensureCustomer = async (emailRaw:string, nameRaw:string): Promise<Customer> =>{
+  const ensureCustomer = async (emailRaw:string, nameRaw:string): Promise<Customer | null> =>{
     const addr = emailRaw.match(/<(.+?)>/)?.[1] || emailRaw
     const clean = addr.trim().toLowerCase()
+    if(!clean || !clean.includes('@')) return null
     let c = await db.customers.filter((cc:any)=> (cc.email||'').toLowerCase()===clean).first() as any
-    if(!c){
-      const { uid } = await import('../repositories/result'); const { now } = await import('../repositories/result')
-      const rec:any = { id: uid(), type:'customer', title: nameRaw.split('<')[0].trim()||clean.split('@')[0], description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email: clean, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) }
-      await db.customers.put(rec); c = rec
-    }
+    if(c) return c
+    const { isNoiseEmailAddress } = await import('../utils/emailHelpers')
+    if(isNoiseEmailAddress(clean)) return null
+    const { uid } = await import('../repositories/result'); const { now } = await import('../repositories/result')
+    const rec:any = { id: uid(), type:'customer', title: nameRaw.split('<')[0].trim()||clean.split('@')[0], description:'', emoji:'👤', tags:['邮件'], createdAt:now(), updatedAt:now(), relations:[], company:'', email: clean, stage:'lead', isKey:false, level:'C', followUpAt: new Date(Date.now()+3*86400000).toISOString().slice(0,10) }
+    await db.customers.put(rec); c = rec
     return c
   }
 
@@ -376,6 +378,7 @@ export default function InboxPage(){
     if(!selected) return
     let c = customer
     if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
     const due = suggestFollowUpDate(selected.intent||'其他', selected.text)
     const note = await askText('跟进备注', '')
     if(note===null) return
@@ -559,6 +562,7 @@ export default function InboxPage(){
     if(!selected) return
     let c = customer
     if(!c){ c = await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+    if(!c) return
     if(!c || !c.email) return
     try{
       const accs = await listAccounts()
@@ -743,6 +747,23 @@ export default function InboxPage(){
     }catch(e:any){ alert(String(e.message||e).slice(0,200)) }
   },[accounts])
 
+  // 待补正文 >0 且无任务时，自动再跑一轮增量（服务端会优先 body-backfill）
+  useEffect(()=>{
+    if(ingestJob?.running) return
+    const pending = Number(dbFolders[0]?.pendingBodies || 0)
+    if(pending <= 0) return
+    const accs = accounts
+    if(!accs.length) return
+    const t = setTimeout(async()=>{
+      try{
+        if(ingestJob?.running) return
+        const job = await startMailIngest(accs[0].id, 'incremental')
+        if(job) setIngestJob(job)
+      }catch{ /* 静默：用户仍可手动点拉邮件 */ }
+    }, 15000)
+    return ()=> clearTimeout(t)
+  },[dbFolders, ingestJob?.running, accounts])
+
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] -m-4 md:-m-6 max-w-none">
       {askModal}
@@ -824,11 +845,24 @@ export default function InboxPage(){
           {(dbFolders.length>0 && dbFolders[0] || ingestJob?.running) && (
             <span
               className="text-[10px] text-gray-400 hidden lg:inline flex items-center gap-1"
-              title={`服务器库 ${(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封 · 正文 ${(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0} · 占位 ${ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount || 0}${ingestJob?.running && ingestJob.apiCalls>0 ? ` · 本次 API ${ingestJob.apiCalls}` : ''}`}
+              title={
+                `服务器库（MySQL）${(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封 · `+
+                `真实正文 ${(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0} · `+
+                `待补正文 ${(ingestJob?.running ? ingestJob.pendingBodies : dbFolders[0]?.pendingBodies) || 0} · `+
+                `占位 ${(ingestJob?.running ? ingestJob.placeholderCount : dbFolders[0]?.placeholderCount) || 0} · `+
+                `本地镜像 ${emails.length} 封（IndexedDB）`+
+                (ingestJob?.running && ingestJob.apiCalls>0 ? ` · 本次 API ${ingestJob.apiCalls}` : '')
+              }
             >
               {ingestJob?.running && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />}
-              {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0} 封
+              服务器 {(ingestJob?.running ? ingestJob.dbCount : dbFolders[0]?.dbCount) || 0}
               {' · 正文 '}{(ingestJob?.running ? ingestJob.bodyCount : dbFolders[0]?.bodyCount) || 0}
+              {(()=>{
+                const pending = Number((ingestJob?.running ? ingestJob.pendingBodies : dbFolders[0]?.pendingBodies) || 0)
+                if(pending>0) return <span className="text-amber-600" title="信封已入库，正文后台补齐；待补>0时会自动再跑增量"> · 待补 {pending}</span>
+                return null
+              })()}
+              {' · 本地 '}{emails.length}
               {ingestJob?.phase==='attachments' && (ingestJob.attDone||0)>0 && ` · 附件+${ingestJob.attDone}`}
             </span>
           )}
@@ -941,8 +975,8 @@ export default function InboxPage(){
           </div>
           <div className="px-2 py-1 border-b text-xs text-gray-400">
             {searching ? '服务端检索中…' : searchMode
-              ? `搜索结果 ${threadRows.length} 个会话${searchHint ? ` · ${searchHint}` : ''}`
-              : `${threadRows.length} 个会话 · ${filtered.length} 封`}
+              ? (threadRows.length + ' 个会话 · 本地 ' + filtered.length + ' 封' + (dbFolders[0]?.dbCount!=null ? (' · 服务器 ' + dbFolders[0].dbCount) : '') + (searchHint ? ' · ' + searchHint : ''))
+              : (threadRows.length + ' 个会话 · ' + filtered.length + ' 封' + (dbFolders[0]?.dbCount!=null ? (' · 服务器库 ' + dbFolders[0].dbCount) : ''))}
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}
@@ -1004,7 +1038,9 @@ export default function InboxPage(){
               <div className="p-8 text-center text-xs text-gray-300">{searchMode?'无搜索结果':'暂无邮件'}</div>
             )}
             {!searchMode && threadRows.length>=200 && (
-              <div className="p-3 text-center text-[11px] text-gray-400 border-t">仅显示前 200 个会话，更多请用上方搜索（走服务端全库检索）</div>
+              <div className="p-3 text-center text-[11px] text-gray-400 border-t">
+                仅显示前 200 个会话 · 本地 {emails.length} 封 / 服务器库 {dbFolders[0]?.dbCount ?? '—'} 封（本地=IndexedDB 镜像，可能含多文件夹；服务器=MySQL 单库计数）。更多请用上方搜索（走服务端全库检索）
+              </div>
             )}
           </div>
         </div>
@@ -1326,6 +1362,7 @@ export default function InboxPage(){
                 <button onClick={async()=>{
                   let c=customer
                   if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c) }
+                  if(!c) return
                   if(!c||!selected) return
                   const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
                   const { uid } = await import('../repositories/result')

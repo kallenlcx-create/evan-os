@@ -67,7 +67,6 @@ export function classifyOne(
   const stage = c.stage || 'lead'
   const isKey = !!c.isKey
   const repurchaseCount = c.repurchaseCount || 0
-  const score = c.score || 0
   const intent = String((c as any).lastIntent || '')
   const inSeq = !!opts?.inAutoSeq
 
@@ -81,9 +80,10 @@ export function classifyOne(
      (stage === 'qualified' && days <= 7)){
     return { customerId: c.id, tier: 'high', reason: isKey&&level.startsWith('A') ? `重点${level}` : '近期热意图/已资格化', daysSilent: days, emailCount }
   }
-  // 复购
-  if((repurchaseCount >= 1 && days >= 30 && days <= 200) || (isKey && score > 70 && days >= 30)){
-    return { customerId: c.id, tier: 'repurchase', reason: `复购${repurchaseCount}次·静默${days}天`, daysSilent: days, emailCount }
+  // 复购（与 syncTiersFromRules 对齐：已下单/有复购次数 + 静默 30–400 天）
+  const hasOrderTag = (c.tags||[]).map(String).includes('已下单')
+  if((repurchaseCount >= 1 || hasOrderTag) && days >= 30 && days <= 400){
+    return { customerId: c.id, tier: 'repurchase', reason: hasOrderTag||repurchaseCount>=1 ? `已下单/复购${repurchaseCount||''}·静默${days}天` : `静默${days}天`, daysSilent: days, emailCount }
   }
   // 跟进中：有未完成跟进或自动序列
   if(inSeq || opts?.hasFollowUpPending || (days <= 30 && stage !== 'won' && stage !== 'lost')){

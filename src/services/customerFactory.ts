@@ -2,15 +2,18 @@
 import { db } from '../db'
 import type { Customer } from '../types'
 import { uid, now } from '../repositories/result'
-import { extractAmount } from '../utils/emailHelpers'
+import { isNoiseEmailAddress } from '../utils/emailHelpers'
 import { EVENTS, emitEvent } from '../utils/emailHelpers'
+import { levelFromSignals } from './customerDailyClassify'
 
-// 确保客户存在，不存在则创建
-export async function ensureCustomer(emailRaw: string, nameRaw: string): Promise<Customer> {
+/** 噪声地址不建正式客户，返回 null */
+export async function ensureCustomer(emailRaw: string, nameRaw: string): Promise<Customer | null> {
   const addr = (emailRaw.match(/<(.+?)>/)?.[1] || emailRaw).trim().toLowerCase()
+  if(!addr || !addr.includes('@')) return null
   // 查找已有客户
   let c = await db.customers.filter((cc: any) => (cc.email || '').toLowerCase() === addr).first() as any
   if (c) return c
+  if (isNoiseEmailAddress(addr)) return null
   // 创建新客户
   const rec: any = {
     id: uid(),
@@ -34,22 +37,10 @@ export async function ensureCustomer(emailRaw: string, nameRaw: string): Promise
   return rec
 }
 
-// 根据邮件统计自动分级
-export async function autoClassifyCustomer(c: Customer, emailCount: number, totalAmount: number): Promise<{ level: Customer['level']; isKey: boolean }> {
-  let level: Customer['level'] = 'C'
-  let isKey = c.isKey || false
-
-  // 金额分级
-  if (totalAmount >= 50000) { level = 'A+'; isKey = true }
-  else if (totalAmount >= 20000) { level = 'A'; isKey = true }
-  else if (totalAmount >= 5000) { level = 'B' }
-  else if (totalAmount >= 1000) { level = 'C' }
-  else { level = 'D' }
-
-  // 互动加分
-  if (emailCount >= 20 && level === 'C') level = 'B'
-  if (emailCount >= 50 && level === 'B') level = 'A'
-
+/** 等级算法与 customerDailyClassify / CustomersPage 统一：>1500 A+ · >1000 A · >500 B；往来兜底 */
+export async function autoClassifyCustomer(_c: Customer, emailCount: number, totalAmount: number): Promise<{ level: Customer['level']; isKey: boolean }> {
+  const level = levelFromSignals(totalAmount, emailCount)
+  const isKey = level === 'A+' || level === 'A' || totalAmount > 1500 || emailCount >= 5
   return { level, isKey }
 }
 
@@ -85,6 +76,7 @@ export async function getCustomerEmailStats(customerEmail: string) {
   const received = matched.filter(e => e.folder === 'inbox').length
   const unread = matched.filter(e => e.folder === 'inbox' && !e.isRead).length
   let totalAmount = 0
+  const { extractAmount } = await import('../utils/emailHelpers')
   for (const e of matched) {
     totalAmount += extractAmount(e.text || '')
   }

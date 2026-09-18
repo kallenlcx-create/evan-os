@@ -1,6 +1,7 @@
 import { db } from '../db'
 import type { EmailAccount, EmailMessage, EmailIntent } from '../types'
 import { classifyIntent } from '../services/emailAiService'
+import { isNoiseEmailAddress } from '../utils/emailHelpers'
 import { uid, now } from './result'
 import { getSyncConfig } from '../services/cloudSync'
 
@@ -184,7 +185,7 @@ export async function syncFromDb(accountId: string, onBatch?: (done: number, tot
       if(u > since) since = u
     }
     await db.emails.bulkPut(mails)
-    // 客户去重（整批一次查询+一次写入）
+    // 客户去重（整批一次查询+一次写入）；噪声地址不建卡
     try{
       const addrTitle = new Map<string,string>()
       for(const m of mails){
@@ -193,8 +194,8 @@ export async function syncFromDb(accountId: string, onBatch?: (done: number, tot
           addrTitle.set(addr.toLowerCase(), m.from.split('<')[0].trim()||addr.split('@')[0])
       }
       if(addrTitle.size){
-        const keys = [...addrTitle.keys()]
-        const existRows = await db.customers.where('email').anyOf(keys).toArray() as any[]
+        const keys = [...addrTitle.keys()].filter(k=> !isNoiseEmailAddress(k))
+        const existRows = keys.length ? await db.customers.where('email').anyOf(keys).toArray() as any[] : []
         const existSet = new Set(existRows.map(c=> (c.email||'').toLowerCase()))
         const fresh = keys.filter(k=> !existSet.has(k)).map(k=>({
           id: uid(), type:'customer', title: addrTitle.get(k), description:'', emoji:'👤', tags:['邮件'],

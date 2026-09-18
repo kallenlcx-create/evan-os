@@ -7,6 +7,35 @@ export const PERSONAL_DOMAINS = new Set([
   'foxmail.com','sina.com','sohu.com','yeah.net','139.com','189.cn','wo.cn',
 ])
 
+/** 系统/噪声地址：自动建卡与跟进营销前必须过滤 */
+const NOISE_LOCAL = new Set([
+  'noreply','no-reply','donotreply','do-not-reply','mailer-daemon','postmaster',
+  'notifications','notification','newsletter','unsubscribe','bounce','bounces',
+  'automated','auto-reply','system','daemon','root','webmaster','support+noreply',
+])
+const NOISE_DOMAINS = new Set([
+  'youtube.com','quora.com','announce.fiverr.com','fiverr.com','flipboard.com',
+  'googlemail.com','google.com','facebookmail.com','linkedin.com','twitter.com',
+  'medium.com','substack.com','mailchi.mp','sendgrid.net','amazonses.com',
+])
+/** 已知订阅/营销发件人片段 */
+const NOISE_SUBSTRINGS = [
+  'announce.','newsletter.','marketing.','no-reply@','noreply@','notifications@',
+  'do-not-reply@','donotreply@','mailer-daemon@','postmaster@','bounce.',
+]
+
+export function isNoiseEmailAddress(email?: string | null): boolean {
+  const addr = String(email||'').toLowerCase().trim()
+  if(!addr.includes('@')) return true
+  const local = addr.split('@')[0] || ''
+  const domain = addr.split('@')[1] || ''
+  if(NOISE_LOCAL.has(local)) return true
+  if(NOISE_DOMAINS.has(domain)) return true
+  if(domain.endsWith('.bounce')) return true
+  for(const s of NOISE_SUBSTRINGS) if(addr.includes(s)) return true
+  return false
+}
+
 // 从邮件地址提取公司域名
 export function extractDomain(email: string): string {
   const match = email.match(/@([\w.-]+)/)

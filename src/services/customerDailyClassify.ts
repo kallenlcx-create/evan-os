@@ -2,6 +2,7 @@
 // 等级：金额>1500=A+，>1000=A，>500=B，否则按往来 C/D
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
+import { isNoiseEmailAddress } from '../utils/emailHelpers'
 
 export type IntellectConfig = {
   autoDailyClassify: boolean
@@ -278,6 +279,12 @@ export async function syncTiersFromRules(opts?: { ids?: Set<string> }){
   let n = 0
   for(const c of customers){
     if(opts?.ids && !opts.ids.has(c.id)) continue
+    // 噪声客户不写跟进桶
+    if((c.tags||[]).map(String).includes('噪声')) continue
+    if(isNoiseEmailAddress(c.email)) {
+      await db.customers.update(c.id, { aiTier: 'dormant', aiReason: '噪声地址', aiCheckedAt: new Date().toISOString() } as any)
+      continue
+    }
     const mails = [c.email, ...(c.extraEmails||[])].filter(Boolean).map(e=> String(e).toLowerCase())
     let last = c.updatedAt || ''
     for(const m of mails){

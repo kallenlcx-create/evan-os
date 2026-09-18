@@ -9,7 +9,7 @@ import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
-import { MANUAL_BUCKETS, loadManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 void MANUAL_BUCKETS
 void removeManualBucket
 
@@ -34,7 +34,7 @@ export default function FollowUpsPage() {
     return [...m.entries()].sort((a,b)=> b[1]-a[1])
   },[customers])
   const [page, setPage] = useState(1)
-  const [perPage] = useState(4)
+  const [perPage] = useState(20)
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendTarget, setSendTarget] = useState<Customer | null>(null)
   const [sendTemplate, setSendTemplate] = useState(TEMPLATES[0])
@@ -145,6 +145,7 @@ export default function FollowUpsPage() {
     setEmailIndex(byEmail)
     setEmails([])
     setList(await db.followUps.toArray() as FollowUpRecord[])
+    try { setManualMap(await loadManualBucketsAsync()) } catch { /* ignore */ }
   }, [])
 
   useEffect(() => {
@@ -222,6 +223,8 @@ export default function FollowUpsPage() {
     const tierOf = (c: Customer) => (c as any).aiTier as string | undefined
     const out: { c: Customer; days: number; stage: string }[] = []
     for (const c of customers) {
+      // 噪声客户不进雷达
+      if ((c.tags||[]).map(String).includes('噪声')) continue
       const t = tierOf(c)
       const days = daysByCustomer.get(c.id) ?? 99
       const stage = c.stage || 'lead'
