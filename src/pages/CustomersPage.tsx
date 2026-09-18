@@ -399,25 +399,36 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[load])
 
   const handleAiInsight = useCallback(async ()=>{
-    if(!confirm('对范围「'+intelCfg.aiInsightScope.join('/')+'」客户跑 AI 洞察（最多 '+intelCfg.aiInsightBatchMax+' 人，冷却 '+intelCfg.aiInsightCooldownDays+' 天）？')) return
-    setIntelBusy('insight'); setIntelNote('')
+    const { getAiSettings } = await import('../config/aiProviders')
+    const ai = getAiSettings()
+    const aiReady = !!(ai.apiKey || ai.proxyUrl)
+    setIntelBusy('insight')
+    setIntelNote(aiReady
+      ? 'AI洞察进行中…（读取往来并调用大模型）'
+      : '⚠️ 未配置 AI Key/代理，可能失败。请到 AI 设置配置后再跑。')
     try{
       const r = await runAiInsight({ limit: intelCfg.aiInsightBatchMax })
-      setIntelNote(r.note || ('AI 洞察：成功 '+r.ok+' · 失败 '+r.fail))
+      let note = r.note || ('AI 洞察：成功 '+r.ok+' · 失败 '+r.fail)
+      if(r.queued===0) note += '｜请先自动分类，或把冷却调成 0'
+      if(r.fail>0 && r.ok===0) note += '｜请检查 AI Key/网络'
+      setIntelNote(note)
       await load()
-    }catch(e:any){ setIntelNote('洞察失败：'+String(e.message||e).slice(0,100)) }
+    }catch(e:any){ setIntelNote('洞察失败：'+String(e.message||e).slice(0,120)) }
     finally{ setIntelBusy('') }
   },[load, intelCfg])
 
   const handlePurchaseLoop = useCallback(async ()=>{
-    setIntelBusy('loop'); setIntelNote('')
+    setIntelBusy('loop')
+    setIntelNote('复购开发进行中…（读取订单与邮件，调用大模型）')
     try{
-      const r = await runPurchaseLoop()
-      setIntelNote(r.note || ('复购开发：更新 '+r.updated+' 位'))
+      const r = await runPurchaseLoop({ limit: intelCfg.aiInsightBatchMax })
+      let note = r.note || ('复购开发：更新 '+r.updated+' 位')
+      if(!r.totalOrdered) note += '｜无已下单客户，请先自动分类/订单CSV'
+      setIntelNote(note)
       await load()
-    }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,100)) }
+    }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,120)) }
     finally{ setIntelBusy('') }
-  },[load])
+  },[load, intelCfg])
 
   // 打开页面：默认自动每日分类 + 近 N 天订单扫描
   useEffect(()=>{
@@ -687,10 +698,12 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           ))}
         </div>
       )}
-      {intelNote && (
+      {(intelNote || intelBusy) && (
         <div className="text-[11px] px-3 py-2 bg-purple-50 text-purple-800 border border-purple-100 rounded-xl flex items-center gap-2">
-          <span className="flex-1">{intelBusy ? `处理中（${intelBusy}）…` : intelNote}</span>
-          <button onClick={()=> setIntelNote('')} className="text-purple-400">✕</button>
+          <span className="flex-1">
+            {intelBusy ? (intelNote || `处理中（${intelBusy}）…`) : intelNote}
+          </span>
+          {!intelBusy && <button onClick={()=> setIntelNote('')} className="text-purple-400">✕</button>}
         </div>
       )}
       {showIntel && (
