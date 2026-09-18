@@ -7,6 +7,7 @@ import MailHtml from '../components/MailHtml'
 import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
+import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets } from '../services/manualBuckets'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -383,33 +384,26 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
 
   useEffect(()=>{void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[load])
 
-  // 智能分类 / 订单扫描 / AI 洞察 / 已下单闭环（依赖 load，定义在其后）
+  // 自动分类（含订单扫描）/ AI 洞察 / 复购开发
   const handleDailyClassify = useCallback(async ()=>{
     setIntelBusy('classify'); setIntelNote('')
     try{
       const r = await runDailyClassify({ force: true })
-      setIntelNote(formatClassifyResult(r))
+      let note = '自动分类：' + formatClassifyResult(r)
+      const os = await runOrderScan()
+      note += ' · 订单+' + os.ordersAdded + ' 已下单' + os.customersTagged + ' 重复' + os.duplicates
+      setIntelNote(note)
       await load()
-    }catch(e:any){ setIntelNote('分类失败：'+String(e.message||e).slice(0,100)) }
+    }catch(e:any){ setIntelNote('自动分类失败：'+String(e.message||e).slice(0,100)) }
     finally{ setIntelBusy('') }
   },[load])
 
-  const handleOrderScan = useCallback(async ()=>{
-    setIntelBusy('scan'); setIntelNote('')
-    try{
-      const r = await runOrderScan()
-      setIntelNote(`近 ${intelCfg.orderScanDays} 天扫描：邮件 ${r.scanned} · 新增订单 ${r.ordersAdded} · 已下单客户 ${r.customersTagged} · 重复合并 ${r.duplicates}${r.pending?` · 未匹配 ${r.pending}`:''}`)
-      await load()
-    }catch(e:any){ setIntelNote('扫描失败：'+String(e.message||e).slice(0,100)) }
-    finally{ setIntelBusy('') }
-  },[load, intelCfg.orderScanDays])
-
   const handleAiInsight = useCallback(async ()=>{
-    if(!confirm(`对范围「${intelCfg.aiInsightScope.join('/')}」客户跑 AI 洞察（最多 ${intelCfg.aiInsightBatchMax} 人）？`)) return
+    if(!confirm('对范围「'+intelCfg.aiInsightScope.join('/')+'」客户跑 AI 洞察（最多 '+intelCfg.aiInsightBatchMax+' 人）？')) return
     setIntelBusy('insight'); setIntelNote('')
     try{
       const r = await runAiInsight({ limit: intelCfg.aiInsightBatchMax })
-      setIntelNote(`AI 洞察完成：成功 ${r.ok} · 失败 ${r.fail}（画像/意向已写回，跟进桶同步${intelCfg.syncTierToFollowUps?'开':'关'}）`)
+      setIntelNote('AI 洞察完成：成功 '+r.ok+' · 失败 '+r.fail+'（写回客户并同步跟进桶'+(intelCfg.syncTierToFollowUps?'开':'关')+'）')
       await load()
     }catch(e:any){ setIntelNote('洞察失败：'+String(e.message||e).slice(0,100)) }
     finally{ setIntelBusy('') }
@@ -419,9 +413,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     setIntelBusy('loop'); setIntelNote('')
     try{
       const n = await runPurchaseLoop()
-      setIntelNote(`已下单闭环：更新 ${n} 位（周期/NBA/潜在复购）`)
+      setIntelNote('复购开发：更新 '+n+' 位（周期/NBA/潜在复购）')
       await load()
-    }catch(e:any){ setIntelNote('闭环失败：'+String(e.message||e).slice(0,100)) }
+    }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,100)) }
     finally{ setIntelBusy('') }
   },[load])
 
@@ -672,14 +666,27 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
         <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
-        <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="等级：>1500 A+ · >1000 A · >500 B；邮箱类型+重点自动打标">🏷️ 每日分类</button>
-        <button onClick={()=> void handleOrderScan()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-teal-600 text-white disabled:opacity-50" title="扫描近N天付款/成交邮件，自动打「已下单」并排重">📦 订单扫描</button>
+        <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="分级/重点 + 近N天订单扫描 + 跟进桶同步">🏷️ 自动分类</button>
         <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
-        <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 已下单闭环</button>
+        <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
         <button onClick={()=> setShowCsvOrder(true)} className="px-2 py-1 rounded-full text-xs border bg-white" title="CSV：订单号,邮箱,日期,产品,数量,金额">📥 订单CSV</button>
         <button onClick={()=> setShowIntel(v=>!v)} className="px-2 py-1 rounded-full text-xs border bg-white">⚙️ 智能设置</button>
         <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点 {levelCounts.key||0}</button>
       </div>
+      {selectMode && checked.size>0 && (
+        <div className="flex items-center gap-2 flex-wrap bg-indigo-600 text-white rounded-2xl px-3 py-2 text-xs">
+          <span>已选 {checked.size} · 移入跟进板块</span>
+          {MANUAL_BUCKETS.map(b=>(
+            <button key={b.key}
+              onClick={async()=>{
+                await addManualBuckets([...checked], [b.key])
+                setIntelNote(`已将 ${checked.size} 人移入「${b.label}」`)
+              }}
+              className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded-lg border border-white/20"
+            >{b.label}</button>
+          ))}
+        </div>
+      )}
       {intelNote && (
         <div className="text-[11px] px-3 py-2 bg-purple-50 text-purple-800 border border-purple-100 rounded-xl flex items-center gap-2">
           <span className="flex-1">{intelBusy ? `处理中（${intelBusy}）…` : intelNote}</span>
@@ -743,7 +750,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       <div className="flex gap-1 flex-wrap items-center">
         <button onClick={()=> setFilter('all' as any)} className={`px-3 py-1 rounded-full text-xs border ${filter==='all'?'bg-blue-600 text-white':'bg-white'}`}>全部 {levelCounts.all||0}</button>
         {(['A+','A','B','C','D'] as const).map(l=> (
-          <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l} {levelCounts[l]||0}</button>
+          <button key={l} onClick={()=> setFilter(l as any)} className={`px-3 py-1 rounded-full text-xs border ${filter===l?'bg-blue-600 text-white':'bg-white'}`}>{l}</button>
         ))}
         <span className="text-gray-300 self-center">|</span>
         {([
@@ -800,7 +807,16 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               {c.company && <div className="text-[11px] text-gray-400 truncate">🏢 {c.company}</div>}
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${emailType.color}`}><EmailIcon size={9}/>{emailType.label}</span>
-                {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
+                {(c as any).aiTier && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700" title={(c as any).aiReason||''}>
+                    {{high:'高意向',pending:'待成交',repurchase:'复购',marketing:'营销',follow:'跟进',dormant:'沉寂',active:'活跃'}[(c as any).aiTier as string] || (c as any).aiTier}
+                  </span>
+                )}
+                {getCustomerBuckets(c.id).map(b=>{
+                  const label = MANUAL_BUCKETS.find(x=>x.key===b)?.label || b
+                  return <span key={b} className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">手动·{label}</span>
+                })}
+                {(c.tags||[]).filter(t=> !['政府','教育','非盈利','军队','个人','企业','已分类','重点客户','邮件','订单'].includes(String(t))).slice(0,3).map(t=> <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600">{t}</span>)}
                 {stats.count>0 && <span className="text-[10px] text-gray-400">📧{stats.count}封</span>}
                 {(c.value||0)>0 && <span className="text-[10px] text-green-600">💰${Number(c.value).toLocaleString()}</span>}
                 {stats.totalAmount>0 && <span className="text-[10px] text-green-600">${stats.totalAmount.toLocaleString()}</span>}

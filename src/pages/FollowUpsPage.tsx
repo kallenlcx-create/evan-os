@@ -7,8 +7,11 @@ import { useNavigate } from 'react-router-dom'
 import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
-import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount, type IntellectTier } from '../services/customerIntellect'
+import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
+import { MANUAL_BUCKETS, loadManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+void MANUAL_BUCKETS
+void removeManualBucket
 
 // ====== 跟进模板库 ======
 const TEMPLATES = [
@@ -39,6 +42,13 @@ export default function FollowUpsPage() {
   const [sending, setSending] = useState(false)
   // 批量选择 + 智能分类
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [manualMap, setManualMap] = useState<Record<string, { buckets: ManualBucket[] }>>(()=> loadManualBuckets())
+  const [showManualOnly, setShowManualOnly] = useState(false)
+  useEffect(()=>{
+    const h = ()=> setManualMap(loadManualBuckets())
+    window.addEventListener('evan-manual-buckets', h)
+    return ()=> window.removeEventListener('evan-manual-buckets', h)
+  },[])
   const [intellectBusy, setIntellectBusy] = useState(false)
   const [intellectNote, setIntellectNote] = useState('')
   const [batchSending, setBatchSending] = useState(false)
@@ -128,86 +138,50 @@ export default function FollowUpsPage() {
 
   const today = new Date().toISOString().slice(0, 10)
 
-  // ====== 6分类统计（优先 aiTier，否则旧规则）======
+  // ====== 6分类统计：自动/aiTier + 手动板块 ======
   const stats = useMemo(() => {
-    const byTier = (t: IntellectTier) => customers.filter(c => (c as any).aiTier === t).length
-    const hasTier = customers.some(c => (c as any).aiTier)
-    if(hasTier){
-      return {
-        high: byTier('high'),
-        today: list.filter(f => f.dueAt === today && f.status === 'pending').length,
-        overdue: list.filter(f => f.dueAt < today && f.status === 'pending').length,
-        pendingDeals: byTier('pending'),
-        repurchase: byTier('repurchase'),
-        marketing: byTier('marketing'),
-      }
-    }
-    const high = customers.filter(c => c.isKey && (c.level === 'A+' || c.level === 'A')).length
+    const manualCount = (b: ManualBucket) =>
+      Object.values(manualMap).filter(v=> (v.buckets||[]).includes(b)).length
     const todayCnt = list.filter(f => f.dueAt === today && f.status === 'pending').length
     const overdue = list.filter(f => f.dueAt < today && f.status === 'pending').length
-    const pendingDeals = customers.filter(c => c.stage === 'proposal' || c.stage === 'negotiation').length
-    const repurchase = customers.filter(c => c.isKey && (c.score || 0) > 70).length
-    // 旧营销机会过宽：无 aiTier 时用「>30天未联系」兜底
-    const marketing = customers.filter(c => c.isKey && !c.stage?.match(/won|lost/)).length
-    return { high, today: todayCnt, overdue, pendingDeals, repurchase, marketing }
-  }, [customers, list, today])
-
-  // ====== 雷达：沉寂客户（基础排行保留7天门槛；卡片点选看全体）======
-  const radar = useMemo(() => {
-    const byEmail = new Map<string, string>()
-    for (const e of emails) {
-      const addr = (e.from?.match(/<(.+?)>/)?.[1] || e.from || '').toLowerCase()
-      const cur = byEmail.get(addr)
-      if (!cur || e.date > cur) byEmail.set(addr, e.date)
+    return {
+      high: customers.filter(c => (c as any).aiTier === 'high').length + manualCount('high'),
+      today: todayCnt + manualCount('today'),
+      overdue: overdue + manualCount('overdue'),
+      pendingDeals: customers.filter(c => (c as any).aiTier === 'pending').length + manualCount('pending'),
+      repurchase: customers.filter(c => (c as any).aiTier === 'repurchase').length + manualCount('repurchase'),
+      marketing: customers.filter(c => (c as any).aiTier === 'marketing').length + manualCount('marketing'),
     }
-    const lastContactOf = (c: Customer) => {
-      const addrs = [(c.email || '').toLowerCase(), ...((c.extraEmails || []).map(e => e.toLowerCase()))]
-      let last = c.updatedAt
-      for (const a of addrs) {
-        const d = byEmail.get(a)
-        if (d && (!last || d > last)) last = d
+  }, [customers, list, today, manualMap])
+
+const catFiltered = useMemo(() => {
+    const ts = (d: string) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0 }
+    const withDaysAll = customers.map(c => {
+      let last = c.updatedAt || ''
+      const addr = (c.email||'').toLowerCase()
+      for(const e of emails){
+        const from = (e.from?.match(/<([^<>]+)>/)?.[1]||e.from||'').toLowerCase()
+        if(from === addr || (e.to||'').toLowerCase().includes(addr)){
+          if(e.date > last) last = e.date
+        }
       }
-      return last
-    }
-    const withDays = (arr: Customer[]) => arr.map(c => {
-      const last = lastContactOf(c)
-      const days = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 99
-      return { c, days, stage: c.stage || 'lead' }
-    }).sort((a, b) => b.days - a.days)
-    const keyCustomers = customers.filter(c => c.isKey || (c.level === 'A+' || c.level === 'A' || c.level === 'B'))
-    const scored = withDays(keyCustomers).filter(x => x.days >= 7)
-    const aList = scored.filter(x => x.c.level === 'A+' || x.c.level === 'A')
-    const bList = scored.filter(x => x.c.level === 'B')
-    // 卡片点选用：不过滤沉寂天数
-    const allKey = withDays(keyCustomers)
-    const tierOf = (c: Customer) => (c as any).aiTier as IntellectTier | undefined
-    const allHigh = withDays(customers.filter(c => tierOf(c)==='high' || (!tierOf(c) && c.isKey && (c.level === 'A+' || c.level === 'A'))))
-    const allRepurchase = withDays(customers.filter(c => tierOf(c)==='repurchase' || (!tierOf(c) && c.isKey && (c.score || 0) > 70)))
-    // 营销机会：aiTier=marketing；无 tier 时用 >30 天未联系
-    const allMarketing = withDays(customers.filter(c => {
-      const t = tierOf(c)
-      if(t==='marketing') return true
-      if(t) return false
-      const last = lastContactOf(c)
-      const d = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 999
-      return d > 30 && c.stage !== 'lost' && c.stage !== 'won' && !!(c.email || (c.extraEmails||[]).length)
-    }))
-    const allPendingDeals = withDays(customers.filter(c => tierOf(c)==='pending' || (!tierOf(c) && (c.stage === 'proposal' || c.stage === 'negotiation'))))
-    return { all: scored, aList, bList, allKey, allHigh, allRepurchase, allMarketing, allPendingDeals, lastContactOf }
-  }, [customers, emails])
-
-  const catFiltered = useMemo(() => {
-    let rows: typeof radar.all
-    if (catFilter === 'high') rows = radar.allHigh
-    else if (catFilter === 'today') rows = radar.allKey.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt === today))
-    else if (catFilter === 'overdue') rows = radar.allKey.filter(x => list.some(f => f.customerId === x.c.id && f.dueAt < today && f.status === 'pending'))
-    else if (catFilter === 'pending') rows = radar.allPendingDeals
-    else if (catFilter === 'repurchase') rows = radar.allRepurchase
-    else if (catFilter === 'marketing') rows = radar.allMarketing
-    else rows = radar.all
-    if (tagFilter !== 'all') rows = rows.filter(x => ((x.c.tags || []) as string[]).includes(tagFilter))
-    return rows
-  }, [catFilter, radar, list, today, tagFilter])
+      const days = last ? Math.floor((Date.now()-new Date(last).getTime())/86400000) : 99
+      return { c, days, stage: c.stage||'lead' }
+    })
+    const tierOf = (c: Customer) => (c as any).aiTier as string | undefined
+    const inManual = (c: Customer, b: ManualBucket) => (manualMap[c.id]?.buckets||[]).includes(b)
+    let rows: typeof withDaysAll = []
+    if(catFilter === 'high') rows = withDaysAll.filter(x => tierOf(x.c)==='high' || inManual(x.c,'high'))
+    else if(catFilter === 'today') rows = withDaysAll.filter(x => (list.some(f=> f.customerId===x.c.id && f.dueAt===today && f.status==='pending') || inManual(x.c,'today')))
+    else if(catFilter === 'overdue') rows = withDaysAll.filter(x => (list.some(f=> f.customerId===x.c.id && f.dueAt<today && f.status==='pending') || inManual(x.c,'overdue')))
+    else if(catFilter === 'pending') rows = withDaysAll.filter(x => tierOf(x.c)==='pending' || inManual(x.c,'pending'))
+    else if(catFilter === 'repurchase') rows = withDaysAll.filter(x => tierOf(x.c)==='repurchase' || inManual(x.c,'repurchase'))
+    else if(catFilter === 'marketing') rows = withDaysAll.filter(x => tierOf(x.c)==='marketing' || inManual(x.c,'marketing'))
+    else rows = withDaysAll
+    if(showManualOnly) rows = rows.filter(x => Object.values(manualMap[x.c.id]?.buckets||{}).length>0 || (manualMap[x.c.id]?.buckets||[]).length>0)
+    if(tagFilter !== 'all') rows = rows.filter(x => ((x.c.tags||[]) as string[]).includes(tagFilter))
+    return rows.sort((a,b)=> ts(b.c.updatedAt||'') - ts(a.c.updatedAt||''))
+  }, [catFilter, customers, emails, list, today, tagFilter, manualMap, showManualOnly])
 
   // 序列速览：按客户 id 索引 + 今日待发
   const seqMap = useMemo(()=>{
@@ -599,9 +573,10 @@ const handleBatchAiTpl = useCallback(async () => {
             <option value="all">全部标签</option>
             {allTags.map(([t,n])=> <option key={t} value={t}>{t} ({n})</option>)}
           </select>
-          <button onClick={()=> void handleIntellect()} disabled={intellectBusy} className="text-xs px-2 py-1 bg-purple-600 text-white rounded-lg disabled:opacity-50" title="规则引擎：高意向/待成交/复购/营销（>30天未联系）等">
+          <button onClick={()=> void handleIntellect()} disabled={intellectBusy} className="text-xs px-2 py-1 bg-purple-600 text-white rounded-lg disabled:opacity-50" title="规则引擎：高意向/待成交/复购/营销等">
             {intellectBusy ? '分类中…' : '🧠 智能分类'}
           </button>
+          <button onClick={()=> setShowManualOnly(v=>!v)} className={`text-xs px-2 py-1 border rounded ${showManualOnly?'bg-indigo-600 text-white border-indigo-600':'bg-white'}`}>仅手动板块</button>
           <button onClick={() => load()} className="text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
         </div>
         {intellectNote && <div className="mb-2 text-[11px] px-2 py-1.5 bg-purple-50 text-purple-700 rounded-lg">{intellectNote}</div>}
@@ -645,6 +620,16 @@ const handleBatchAiTpl = useCallback(async () => {
                       {TIER_BADGE[(c as any).aiTier]?.label || (c as any).aiTier}
                     </span>
                   )}
+                  {(manualMap[c.id]?.buckets||[]).map(b=>{
+                    const lb = MANUAL_BUCKETS.find(x=>x.key===b)?.label || b
+                    return (
+                      <span key={b} className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 inline-flex items-center gap-1">
+                        手动·{lb}
+                        <button type="button" title="移出该板块" className="text-indigo-400 hover:text-rose-600"
+                          onClick={(e)=>{ e.stopPropagation(); removeManualBucket(c.id, b); setManualMap(loadManualBuckets()) }}>×</button>
+                      </span>
+                    )
+                  })}
                   {days >= 7
                     ? <span className="text-[10px] text-red-500">沉寂{days}天</span>
                     : <span className="text-[10px] text-gray-400">近{days}天有动态</span>}
