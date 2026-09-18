@@ -976,7 +976,7 @@ export default function InboxPage(){
           <div className="px-2 py-1 border-b text-xs text-gray-400">
             {searching ? '服务端检索中…' : searchMode
               ? (threadRows.length + ' 个会话 · 本地 ' + filtered.length + ' 封' + (dbFolders[0]?.dbCount!=null ? (' · 服务器 ' + dbFolders[0].dbCount) : '') + (searchHint ? ' · ' + searchHint : ''))
-              : (threadRows.length + ' 个会话 · ' + filtered.length + ' 封' + (dbFolders[0]?.dbCount!=null ? (' · 服务器库 ' + dbFolders[0].dbCount) : ''))}
+              : (threadRows.length + ' 个会话 · 本地镜像 ' + filtered.length + ' 封' + (dbFolders[0]?.dbCount!=null ? (' · 服务器库 ' + dbFolders[0].dbCount) : ' · 服务器库 —'))}
           </div>
           <div className="flex-1 overflow-y-auto">
             {/* 搜索模式：显示搜索结果 */}

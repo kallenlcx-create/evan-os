@@ -34,7 +34,22 @@ export default function FollowUpsPage() {
     return [...m.entries()].sort((a,b)=> b[1]-a[1])
   },[customers])
   const [page, setPage] = useState(1)
-  const [perPage] = useState(20)
+  /** 每分区各自可配每页条数，默认 10（逾期等桶人多时更干净） */
+  const PER_PAGE_LS = 'evan:followupPerPage'
+  const PER_PAGE_OPTIONS = [5, 10, 20, 30, 50] as const
+  type PerPageKey = 'all' | ManualBucket
+  const loadPerPageMap = (): Record<string, number> => {
+    try { return JSON.parse(localStorage.getItem(PER_PAGE_LS) || '{}') } catch { return {} }
+  }
+  const [perPageMap, setPerPageMap] = useState<Record<string, number>>(() => loadPerPageMap())
+  const perPage = perPageMap[catFilter as PerPageKey] ?? perPageMap.all ?? 10
+  const setPerPage = (n: number) => {
+    const next = { ...loadPerPageMap(), [catFilter as PerPageKey]: n }
+    if (catFilter === 'all') next.all = n
+    localStorage.setItem(PER_PAGE_LS, JSON.stringify(next))
+    setPerPageMap(next)
+    setPage(1)
+  }
   const [showSendModal, setShowSendModal] = useState(false)
   const [sendTarget, setSendTarget] = useState<Customer | null>(null)
   const [sendTemplate, setSendTemplate] = useState(TEMPLATES[0])
@@ -257,7 +272,8 @@ export default function FollowUpsPage() {
   },[sequences])
 
   const totalPages = Math.max(1, Math.ceil(catFiltered.length / perPage))
-  const pageData = catFiltered.slice((page - 1) * perPage, page * perPage)
+  const safePage = Math.min(page, totalPages)
+  const pageData = catFiltered.slice((safePage - 1) * perPage, safePage * perPage)
 
   // ====== 打开发送弹窗 ======
   const openSendModal = useCallback(async (c: Customer) => {
@@ -650,15 +666,19 @@ const handleBatchAiTpl = useCallback(async () => {
         </div>
       )}
 
-      {/* 6分类 */}
+      {/* 6分类：点击进入分区；卡片上显示该分区每页条数 */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-        {cats.map(c => (
+        {cats.map(c => {
+          const npp = perPageMap[c.key] ?? perPageMap.all ?? 10
+          return (
           <button key={c.key} onClick={() => { setCatFilter(c.key); setPage(1) }} className={`p-3 rounded-2xl border text-left transition-all ${catFilter === c.key ? 'ring-2 ring-blue-300 border-blue-300' : 'border-gray-100 bg-white hover:border-gray-200'}`}>
             <div className={`w-7 h-7 rounded-full flex items-center justify-center ${c.bg} ${c.color} mb-1`}><c.icon size={14} /></div>
             <div className="text-xs text-gray-500">{c.label}</div>
             <div className={`text-lg font-bold ${c.color}`}>{c.count}</div>
+            <div className="text-[10px] text-gray-300 mt-0.5">每页 {npp} 条</div>
           </button>
-        ))}
+          )
+        })}
       </div>
 
       {/* 雷达 */}
@@ -667,7 +687,7 @@ const handleBatchAiTpl = useCallback(async () => {
           <div className="w-7 h-7 bg-red-100 rounded-lg flex items-center justify-center">🔥</div>
           <div>
             <div className="text-sm font-bold">客户跟进雷达</div>
-            <div className="text-xs text-gray-400">A/B类客户沉寂预警 · 一键发送跟进邮件</div>
+            <div className="text-xs text-gray-400">六分区各自可设每页条数 · 当前每页 {perPage} 条</div>
           </div>
           <select value={tagFilter} onChange={e=> { setTagFilter(e.target.value); setPage(1) }} className="ml-auto px-2 py-1 border rounded text-xs">
             <option value="all">全部标签</option>
@@ -762,15 +782,39 @@ const handleBatchAiTpl = useCallback(async () => {
           {pageData.length === 0 && <div className="text-center text-xs text-gray-300 py-8">暂无预警</div>}
         </div>
 
-        {/* 分页 */}
-        <div className="flex items-center justify-between mt-3 text-xs text-gray-400">
-          <span>共 {catFiltered.length} 条</span>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} className="w-6 h-6 bg-white border rounded">{'<'}</button>
-            {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => i + 1).map(n => (
-              <button key={n} onClick={() => setPage(n)} className={`w-6 h-6 rounded ${page === n ? 'bg-blue-500 text-white' : 'bg-white border'}`}>{n}</button>
-            ))}
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="w-6 h-6 bg-white border rounded">{'>'}</button>
+        {/* 分页 + 每页条数（按当前分区记忆） */}
+        <div className="flex items-center justify-between mt-3 text-xs text-gray-400 flex-wrap gap-2">
+          <span>
+            共 {catFiltered.length} 条
+            {catFilter !== 'all' && (
+              <span className="ml-1 text-blue-500">
+                · 当前分区「{{high:'高意向',today:'今日跟进',overdue:'逾期跟进',pending:'待成交',repurchase:'复购',marketing:'营销'}[catFilter] || catFilter}」
+              </span>
+            )}
+            {' · 第 '}{safePage}/{totalPages} 页
+          </span>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1">
+              每页
+              <select
+                value={perPage}
+                onChange={e=> setPerPage(Number(e.target.value)||10)}
+                className="border rounded px-1.5 py-0.5 text-[11px] bg-white text-gray-600"
+                title="每个分区可单独设置，切换分区会记住各自条数"
+              >
+                {PER_PAGE_OPTIONS.map(n=> <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} className="w-6 h-6 bg-white border rounded">{'<'}</button>
+              {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                const start = Math.max(1, Math.min(safePage - 3, totalPages - 6))
+                return start + i
+              }).filter(n=> n>=1 && n<=totalPages).map(n => (
+                <button key={n} onClick={() => setPage(n)} className={`w-6 h-6 rounded ${safePage === n ? 'bg-blue-500 text-white' : 'bg-white border'}`}>{n}</button>
+              ))}
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="w-6 h-6 bg-white border rounded">{'>'}</button>
+            </div>
           </div>
         </div>
       </div>
