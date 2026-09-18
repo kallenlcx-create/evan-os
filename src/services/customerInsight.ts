@@ -41,12 +41,16 @@ export type AiInsightRunResult = {
   note: string
 }
 
-export async function runAiInsight(opts?: { limit?: number; force?: boolean }): Promise<AiInsightRunResult> {
+export async function runAiInsight(opts?: { limit?: number; force?: boolean; onlyCustomerIds?: string[] }): Promise<AiInsightRunResult> {
   const cfg = loadIntellectConfig()
   const limit = opts?.limit || cfg.aiInsightBatchMax || 30
   const cooldownMs = Math.max(0, (cfg.aiInsightCooldownDays || 7) * 86400000)
   const all = await db.customers.toArray() as Customer[]
-  const scoped = pickScope(all, cfg.aiInsightScope)
+  let scoped = pickScope(all, cfg.aiInsightScope)
+  if(opts?.onlyCustomerIds?.length){
+    const set = new Set(opts.onlyCustomerIds)
+    scoped = all.filter(c=> set.has(c.id))
+  }
   const emails = await db.emails.toArray() as EmailMessage[]
   const orders = await listPurchaseOrders()
   const now = Date.now()
@@ -269,7 +273,7 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
       }
     }
     const shouldContact = ai?.should_contact_now != null ? !!ai.should_contact_now : (nba==='reorder' || nba==='cross_sell')
-    const profile = ai?.profile_cn || `订单 ${os.length} 次 · ${products.join('/')||'—'} · 距上次 ${daysSince} 天 · 周期约 ${cycle||'—'} 天`
+    const profile = ai?.profile_cn || ''
     await db.customers.update(c.id, {
       purchaseTier: buyerType,
       purchasePattern: pattern,
@@ -277,9 +281,9 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
       nextWindowAt: cycle && last ? new Date(last + cycle*86400000).toISOString().slice(0,10) : undefined,
       nextBestAction: nba,
       nbaReason,
-      aiProfile: profile,
+      ...(profile ? { aiProfile: profile, aiProfileAt: new Date().toISOString() } : {}),
+      purchaseSummary: '订单 '+os.length+' 次 · '+(products.join('/')||'—')+' · 距上次 '+daysSince+' 天 · 周期约 '+(cycle||'—')+' 天',
       purchaseIntelAt: new Date().toISOString(),
-      aiReason: nbaReason || (c as any).aiReason,
       ...(cfg.syncTierToFollowUps && shouldContact && nba==='reorder' && !suppressed
         ? { aiTier:'repurchase', aiReason: nbaReason || '复购窗口' }
         : {}),

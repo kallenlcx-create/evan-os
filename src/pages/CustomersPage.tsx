@@ -718,8 +718,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 {[3,5,7,14].map(d=> <option key={d} value={d}>{d}天</option>)}
               </select>
             </label>
-            <label className="flex items-center gap-1">AI批量上限
-              <input type="number" min={5} max={100} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||30 })} className="w-14 border rounded px-1"/>
+            <label className="flex items-center gap-1">每次画像客户数
+              <input type="number" min={1} max={100} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||20 })} className="w-14 border rounded px-1"/>
             </label>
             <label className="flex items-center gap-1">AI洞察冷却(天)
               <input type="number" min={0} max={30} value={intelCfg.aiInsightCooldownDays} onChange={e=> patchIntelCfg({ aiInsightCooldownDays: Number(e.target.value)||7 })} className="w-14 border rounded px-1"/>
@@ -859,14 +859,10 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 {stats.count>0 && <span className="text-[10px] text-gray-400">📧{stats.count}封</span>}
                 {(c.value||0)>0 && <span className="text-[10px] text-green-600">💰${Number(c.value).toLocaleString()}</span>}
                 {stats.totalAmount>0 && <span className="text-[10px] text-green-600">${stats.totalAmount.toLocaleString()}</span>}
+                {((c as any).aiProfile || (c as any).aiTier || (c as any).nextBestAction) && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700" title="已生成 AI 画像（点开客户查看）">🤖 画像</span>
+                )}
               </div>
-              {(c as any).aiProfile && (
-                <div className="text-[10px] bg-purple-50 text-purple-800 rounded p-1.5 mt-1.5 line-clamp-2" title={(c as any).aiProfile}>
-                  🤖 {(c as any).aiProfile}
-                  {(c as any).nextBestAction && <span className="ml-1 text-purple-600">· NBA:{(c as any).nextBestAction}</span>}
-                </div>
-              )}
-              {! (c as any).aiProfile && c.aiSummary && <div className="text-[10px] bg-purple-50 rounded p-1.5 mt-1.5 truncate">{c.aiSummary}</div>}
               <div className="text-[10px] text-gray-400 flex items-center gap-1 mt-1.5"><Calendar size={9}/> 下次 {c.followUpAt||'—'}</div>
             </div>
           )
@@ -969,6 +965,48 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               </button>
               {(() => { const s = emailStats[(selectedCustomer.email||'').toLowerCase()]; return s && s.totalAmount>0 ? <span>💰 累计金额 <b className="text-green-600">${s.totalAmount.toLocaleString()}</b></span> : null })()}
               <span>📅 下次跟进 {selectedCustomer.followUpAt||'未设置'}</span>
+            </div>
+            {/* AI 画像（详情内展示，不进列表卡片） */}
+            <div className="px-4 py-3 border-b bg-purple-50/40 space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-semibold text-purple-800">🤖 AI 客户画像</div>
+                <span className="text-[10px] text-purple-600">
+                  {(selectedCustomer as any).aiProfileAt
+                    ? `更新 ${new Date((selectedCustomer as any).aiProfileAt).toLocaleString()}`
+                    : '尚未生成'}
+                </span>
+                <button
+                  onClick={async()=>{
+                    try{
+                      setIntelBusy('one'); setIntelNote('单客户 AI 画像生成中…')
+                      const { runAiInsight } = await import('../services/customerInsight')
+                      const r = await runAiInsight({ limit: 30, force: true, onlyCustomerIds: [selectedCustomer.id] })
+                      setIntelNote(r.note || '画像已生成')
+                      const fresh = await db.customers.get(selectedCustomer.id) as any
+                      if(fresh) setSelectedCustomer(fresh)
+                      await load()
+                    }catch(e:any){ setIntelNote('画像失败：'+String(e.message||e).slice(0,100)) }
+                    finally{ setIntelBusy('') }
+                  }}
+                  disabled={!!intelBusy}
+                  className="ml-auto px-2 py-1 text-[11px] bg-purple-600 text-white rounded-lg disabled:opacity-50"
+                >读邮件生成画像</button>
+              </div>
+              {(selectedCustomer as any).aiProfile ? (
+                <div className="text-xs text-gray-700 leading-relaxed">{(selectedCustomer as any).aiProfile}</div>
+              ) : (
+                <div className="text-[11px] text-gray-400">点击「读邮件生成画像」，AI 将阅读该客户往来邮件并总结背景、意向与机会。</div>
+              )}
+              <div className="flex flex-wrap gap-1.5 text-[10px]">
+                {(selectedCustomer as any).aiTier && (
+                  <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
+                    桶：{{high:'高意向',pending:'待成交',repurchase:'复购',marketing:'营销',follow:'跟进',dormant:'沉寂',active:'活跃'}[(selectedCustomer as any).aiTier as string] || (selectedCustomer as any).aiTier}
+                  </span>
+                )}
+                {(selectedCustomer as any).aiIntent && <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">意向 {(selectedCustomer as any).aiIntent}</span>}
+                {(selectedCustomer as any).nextBestAction && <span className="px-1.5 py-0.5 rounded bg-orange-50 text-orange-700">NBA {(selectedCustomer as any).nextBestAction}</span>}
+                {(selectedCustomer as any).aiReason && <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 truncate max-w-[280px]" title={(selectedCustomer as any).aiReason}>{(selectedCustomer as any).aiReason}</span>}
+              </div>
             </div>
             {/* 邮件列表 */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
