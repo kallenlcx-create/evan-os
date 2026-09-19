@@ -5,6 +5,7 @@ import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefca
 import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
 import MailHtml from '../components/MailHtml'
 import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, levelFromSignals, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
+import { coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile, portraitDisplay, PORTRAIT_DIMENSIONS, isFillableDim, type AiPortraitV2 } from '../config/portrait'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
@@ -172,6 +173,44 @@ export default function CustomersPage(){
   const [intelNote, setIntelNote] = useState('')
   const [showCsvOrder, setShowCsvOrder] = useState(false)
   const [csvOrderText, setCsvOrderText] = useState('')
+  /** 十一维画像编辑 */
+  const [portraitEdit, setPortraitEdit] = useState<AiPortraitV2 | null>(null)
+  const [portraitSaving, setPortraitSaving] = useState(false)
+  const openPortraitEdit = (c: Customer) => {
+    const merged = mergePortrait(
+      coercePortrait((c as any).aiPortrait),
+      parsePortraitFromProfile((c as any).aiProfile) || {},
+    )
+    setPortraitEdit(merged)
+  }
+  const savePortraitEdit = async () => {
+    if(!selectedCustomer || !portraitEdit) return
+    setPortraitSaving(true)
+    try{
+      // 空输入保留原值，避免误清
+      const prev = mergePortrait(
+        coercePortrait((selectedCustomer as any).aiPortrait),
+        parsePortraitFromProfile((selectedCustomer as any).aiProfile) || {},
+      )
+      const next = mergePortrait(prev, portraitEdit)
+      const text = formatPortraitText(next)
+      const ts = new Date().toISOString()
+      await db.customers.update(selectedCustomer.id, {
+        aiPortrait: next,
+        aiProfile: `【十一维画像 v2】\n${text}`,
+        aiPortraitVersion: 3,
+        aiProfileAt: ts,
+        portraitEditedAt: ts,
+        portraitEditedBy: 'user',
+      } as any)
+      const fresh = await db.customers.get(selectedCustomer.id) as any
+      if(fresh) setSelectedCustomer(fresh)
+      setPortraitEdit(null)
+      setIntelNote('十一维画像已保存（人工修订，不会被复购开发覆盖）')
+      await load()
+    }catch(e:any){ setIntelNote('画像保存失败：'+String(e.message||e).slice(0,100)) }
+    finally{ setPortraitSaving(false) }
+  }
 
   const patchIntelCfg = useCallback((p: Partial<IntellectConfig>)=>{
     const n = saveIntellectConfig(p)
@@ -430,21 +469,22 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     const { getAiSettings } = await import('../config/aiProviders')
     const ai = getAiSettings()
     const aiReady = !!(ai.apiKey || ai.proxyUrl)
+    const batch = Math.max(1, Math.min(500, intelCfg.purchaseLoopBatchMax || 20))
     setIntelBusy('loop')
     setIntelNote(aiReady
-      ? '复购开发进行中：分析已下单客户的复购周期 / 交叉销售 / 是否该联系（读订单+邮件，每人约 1 次 AI）…'
-      : '复购开发：未配置 AI Key，将用规则估算周期与建议；配置后效果更好…')
+      ? `复购开发进行中：结合十一维画像+订单+邮件分析（每次最多 ${batch} 人）…`
+      : `复购开发：未配置 AI Key，将用规则估算；每次最多 ${batch} 人…`)
     try{
       const r = await runPurchaseLoop({
-        limit: Math.min(20, intelCfg.aiInsightBatchMax || 20),
+        limit: batch,
         delayMs: 800,
         onProgress: (done, total, name)=>{
-          setIntelNote(`复购开发 ${done}/${total} · ${name} …（订单周期 + 下一步行动建议）`)
+          setIntelNote(`复购开发 ${done}/${total} · ${name} …（画像+订单+邮件，不覆盖十一维）`)
         },
       })
       let note = r.note || `复购开发：更新 ${r.updated} 位`
       if(!r.totalOrdered) note += '｜无已下单客户，请先「订单对齐」或导入订单 CSV'
-      if(r.aiFail && !r.aiOk) note += '｜AI 未返回，已用规则兜底（检查 API Key/网络）'
+      if(r.aiFail && !r.aiOk) note += '｜AI 未返回，已用规则兜底'
       setIntelNote(note)
       await load()
     }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,120)) }
@@ -892,6 +932,10 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <label className="flex items-center gap-1">AI洞察冷却(天)
               <input type="number" min={0} max={30} value={intelCfg.aiInsightCooldownDays} onChange={e=> patchIntelCfg({ aiInsightCooldownDays: Number(e.target.value)||7 })} className="w-14 border rounded px-1"/>
             </label>
+            <label className="flex items-center gap-1">复购开发每次人数
+              <input type="number" min={1} max={500} value={intelCfg.purchaseLoopBatchMax || 20} onChange={e=> patchIntelCfg({ purchaseLoopBatchMax: Number(e.target.value)||20 })} className="w-14 border rounded px-1"/>
+              <span className="text-[10px] text-gray-400">人/次</span>
+            </label>
             <label className="flex items-center gap-1">复购冷却(天)
               <input type="number" min={0} max={90} value={intelCfg.purchaseLoopCooldownDays} onChange={e=> patchIntelCfg({ purchaseLoopCooldownDays: Number(e.target.value)||14 })} className="w-14 border rounded px-1"/>
             </label>
@@ -1336,37 +1380,92 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 )
               })()}
             </div>
-            {/* AI 画像（详情内展示，不进列表卡片） */}
+            {/* 红框：十一维背景画像（只可 AI 更新或人工编辑，复购开发永不覆盖） */}
             <div className="px-4 py-3 border-b bg-purple-50/40 space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="text-xs font-semibold text-purple-800">🤖 AI 客户画像</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-xs font-semibold text-purple-800">🤖 AI 客户画像（背景知识）</div>
                 <span className="text-[10px] text-purple-600">
                   {(selectedCustomer as any).aiProfileAt
                     ? `更新 ${new Date((selectedCustomer as any).aiProfileAt).toLocaleString()}`
                     : '尚未生成'}
+                  {(selectedCustomer as any).portraitEditedAt
+                    ? ` · 人工修订 ${new Date((selectedCustomer as any).portraitEditedAt).toLocaleString()}`
+                    : ''}
                 </span>
-                <button
-                  onClick={async()=>{
-                    try{
-                      setIntelBusy('one'); setIntelNote('单客户 AI 画像生成中…')
-                      const { runAiInsight } = await import('../services/customerInsight')
-                      const r = await runAiInsight({ limit: 30, force: true, onlyCustomerIds: [selectedCustomer.id] })
-                      setIntelNote(r.note || '画像已生成')
-                      const fresh = await db.customers.get(selectedCustomer.id) as any
-                      if(fresh) setSelectedCustomer(fresh)
-                      await load()
-                    }catch(e:any){ setIntelNote('画像失败：'+String(e.message||e).slice(0,100)) }
-                    finally{ setIntelBusy('') }
-                  }}
-                  disabled={!!intelBusy}
-                  className="ml-auto px-2 py-1 text-[11px] bg-purple-600 text-white rounded-lg disabled:opacity-50"
-                >读邮件生成画像</button>
+                <div className="ml-auto flex items-center gap-1">
+                  {portraitEdit ? (
+                    <>
+                      <button onClick={()=> void savePortraitEdit()} disabled={portraitSaving}
+                        className="px-2 py-1 text-[11px] bg-emerald-600 text-white rounded-lg disabled:opacity-50"
+                      >{portraitSaving?'保存中…':'保存画像'}</button>
+                      <button onClick={()=> setPortraitEdit(null)} className="px-2 py-1 text-[11px] border rounded-lg text-gray-500">取消</button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={()=> openPortraitEdit(selectedCustomer)}
+                        className="px-2 py-1 text-[11px] border border-purple-200 text-purple-700 rounded-lg hover:bg-purple-100"
+                        title="手工修改十一维；空栏保留原值，保存后不会被复购开发清除"
+                      >✏️ 编辑</button>
+                      <button
+                        onClick={async()=>{
+                          try{
+                            setIntelBusy('one'); setIntelNote('单客户 AI 画像生成中（合并已有十一维）…')
+                            const { runAiInsight } = await import('../services/customerInsight')
+                            const r = await runAiInsight({ limit: 30, force: true, onlyCustomerIds: [selectedCustomer.id], delayMs: 0 })
+                            setIntelNote(r.note || '画像已生成')
+                            const fresh = await db.customers.get(selectedCustomer.id) as any
+                            if(fresh) setSelectedCustomer(fresh)
+                            await load()
+                          }catch(e:any){ setIntelNote('画像失败：'+String(e.message||e).slice(0,100)) }
+                          finally{ setIntelBusy('') }
+                        }}
+                        disabled={!!intelBusy}
+                        className="px-2 py-1 text-[11px] bg-purple-600 text-white rounded-lg disabled:opacity-50"
+                      >读邮件生成画像</button>
+                    </>
+                  )}
+                </div>
               </div>
-              {(selectedCustomer as any).aiProfile ? (
-                <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{(selectedCustomer as any).aiProfile}</div>
-              ) : (
-                <div className="text-[11px] text-gray-400">「读邮件生成画像 / 批量AI画像」按<b>十一维 v2</b> 模板（下单时间/次数、客户类型、产品与工艺偏好、采购规模、预算敏感度、决策方式、时间特征、复购潜力、营销策略）。旧七维客户请重新批量画像。</div>
-              )}
+              {portraitEdit ? (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] text-gray-500">十一维可编辑；保存后仅可通过「读邮件生成画像」或再次编辑更新，复购开发不会覆盖。</div>
+                  {PORTRAIT_DIMENSIONS.map(d=>(
+                    <div key={d.key} className="flex items-start gap-2">
+                      <span className="w-24 shrink-0 text-[11px] text-purple-800 pt-1">{d.label}</span>
+                      <input
+                        value={portraitEdit[d.key] || ''}
+                        onChange={e=> setPortraitEdit(prev=> prev ? { ...prev, [d.key]: e.target.value } : prev)}
+                        placeholder={d.hint}
+                        className="flex-1 border rounded px-2 py-1 text-[11px]"
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (()=>{
+                const portrait = mergePortrait(
+                  coercePortrait((selectedCustomer as any).aiPortrait),
+                  parsePortraitFromProfile((selectedCustomer as any).aiProfile) || {},
+                )
+                const rows = portraitDisplay(portrait)
+                const has = rows.some(r=> isFillableDim(r.value)) || !!(selectedCustomer as any).aiProfile
+                if(!has){
+                  return <div className="text-[11px] text-gray-400">尚未生成十一维画像。点「读邮件生成画像」或「批量AI画像」。</div>
+                }
+                return (
+                  <div className="text-[11px] text-gray-700 space-y-0.5">
+                    <div className="font-semibold text-purple-900">【十一维画像 v2】</div>
+                    {rows.map(r=>(
+                      <div key={r.key} className="flex gap-1">
+                        <span className="text-purple-800 shrink-0">{r.label}：</span>
+                        <span className={isFillableDim(r.value)?'':'text-gray-400'}>{r.value || '—'}</span>
+                      </div>
+                    ))}
+                    {(selectedCustomer as any).aiProfile && !rows.some(r=> isFillableDim(r.value)) && (
+                      <div className="whitespace-pre-wrap text-gray-600 mt-1">{(selectedCustomer as any).aiProfile}</div>
+                    )}
+                  </div>
+                )
+              })()}
               <div className="flex flex-wrap gap-1.5 text-[10px]">
                 {(selectedCustomer as any).aiTier && (
                   <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
@@ -1374,9 +1473,62 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   </span>
                 )}
                 {(selectedCustomer as any).aiIntent && <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">意向 {(selectedCustomer as any).aiIntent}</span>}
-                {(selectedCustomer as any).nextBestAction && <span className="px-1.5 py-0.5 rounded bg-orange-50 text-orange-700">NBA {(selectedCustomer as any).nextBestAction}</span>}
-                {(selectedCustomer as any).aiReason && <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 truncate max-w-[280px]" title={(selectedCustomer as any).aiReason}>{(selectedCustomer as any).aiReason}</span>}
               </div>
+            </div>
+            {/* 蓝框：复购经营情报（独立字段，不覆盖画像） */}
+            <div className="px-4 py-2 border-b bg-blue-50/40 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-semibold text-blue-800">🔁 复购分析（经营情报）</div>
+                <span className="text-[10px] text-blue-600">
+                  {(selectedCustomer as any).purchaseIntelAt
+                    ? `分析 ${new Date((selectedCustomer as any).purchaseIntelAt).toLocaleString()}`
+                    : '尚未分析'}
+                </span>
+                <button
+                  onClick={async()=>{
+                    setIntelBusy('loop-p1')
+                    try{
+                      const { runPurchaseLoop } = await import('../services/customerInsight')
+                      const r = await runPurchaseLoop({
+                        limit: 1, force: true, delayMs: 0,
+                        onProgress: ()=> setIntelNote('复购开发（单客户）结合十一维+订单+邮件…'),
+                      })
+                      setIntelNote(r.note || '复购分析完成')
+                      const fresh = await db.customers.get(selectedCustomer.id) as any
+                      if(fresh) setSelectedCustomer(fresh)
+                      await load()
+                    }catch(e:any){ setIntelNote('复购分析失败：'+String(e.message||e).slice(0,100)) }
+                    finally{ setIntelBusy('') }
+                  }}
+                  disabled={!!intelBusy}
+                  className="ml-auto px-2 py-1 text-[11px] bg-blue-600 text-white rounded-lg disabled:opacity-50"
+                  title="读取十一维画像+订单+邮件做复购分析，不修改画像"
+                >运行复购开发</button>
+              </div>
+              {(() => {
+                const c = selectedCustomer as any
+                const has = c.purchaseSummary || c.nextBestAction || c.purchaseAiNote || c.purchaseTier
+                if(!has) return <div className="text-[11px] text-gray-400">暂无复购分析。点「运行复购开发」；人数上限见智能设置。</div>
+                return (
+                  <div className="text-[11px] text-gray-700 space-y-1">
+                    {c.purchaseSummary && <div>📊 {c.purchaseSummary}</div>}
+                    {(c.purchaseTier || c.nextBestAction) && (
+                      <div>
+                        🎯 类型 <b>{c.purchaseTier||'—'}</b>
+                        {c.nextBestAction && <> · NBA <b>{c.nextBestAction}</b></>}
+                        {c.cycleDaysEst ? <> · 周期约 {c.cycleDaysEst} 天</> : null}
+                        {c.nextWindowAt ? <> · 窗口 {c.nextWindowAt}</> : null}
+                      </div>
+                    )}
+                    {c.nbaReason && <div className="text-blue-800">💡 {c.nbaReason}</div>}
+                    {c.purchaseAiNote && (
+                      <div className="text-gray-700 whitespace-pre-wrap bg-white/60 rounded-lg p-2 border border-blue-100">
+                        {c.purchaseAiNote}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
             {/* 邮件列表 */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">

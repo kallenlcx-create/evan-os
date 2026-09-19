@@ -4,6 +4,11 @@ import type { Customer, EmailMessage } from '../types'
 import { chatOnce } from './aiChat'
 import { loadIntellectConfig, syncTiersFromRules } from './customerDailyClassify'
 import { listPurchaseOrders } from './orderScan'
+import { addManualBuckets } from './manualBuckets'
+import {
+  coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile,
+  isFillableDim,
+} from '../config/portrait'
 
 export type InsightResult = {
   customerId: string
@@ -99,14 +104,22 @@ export async function runAiInsight(opts?: {
       .slice(-12)
     const ords = orders.filter(o=> o.customer_id===c.id).map(o=> `${o.order_date}: ${o.products.join('/')} x${o.qty||'?'} $${o.amount||'?'}`).join('; ')
     const mailText = hist.map(e=> `[${e.date}] ${e.from}\n${e.subject}\n${(e.text||'').slice(0,400)}`).join('\n---\n').slice(0, 4000)
-    // 画像模板：十一维（用户可配置后需强制重画旧七维数据）
+    const prevPortrait = mergePortrait(
+      coercePortrait((c as any).aiPortrait),
+      parsePortraitFromProfile((c as any).aiProfile) || {},
+    )
+    const prevEdited = !!(c as any).portraitEditedAt
+    const prevText = formatPortraitText(prevPortrait)
     const prompt = `你是 Maxemblem 外贸销售分析助手。根据客户邮件/订单输出 JSON，不要其它文字。
 客户：${c.contactName||c.title}（${c.email}，${c.company||''}）等级${c.level||'C'}${c.isKey?'重点':''} 阶段${c.stage||'lead'} 复购${c.repurchaseCount||0}
 订单：${ords||'无'}
 邮件：
 ${mailText||'无'}
 
-必须按十一维画像填写 portrait（中文，信息不足写「邮件未体现」，禁止编造具体日期/金额）：
+【已有十一维画像（可能含人工修正${prevEdited?'，人工已修订，优先采用':''}）】
+${prevText}
+
+必须按十一维画像填写 portrait（中文，信息不足写「邮件未体现」，禁止编造；AI 输出为空时保留已有画像值）：
 1 order_times 下单/付款时间
 2 order_count 下单次数
 3 customer_type 客户类型（公司/军警/学校/赛事/俱乐部/个人/协会等）
@@ -136,34 +149,8 @@ ${mailText||'无'}
         deal_hint: j.deal_hint || '',
         confidence: Number(j.confidence) || 0.6,
       }
-      const po = j.portrait || {}
-      const pick = (k: string) => String(po[k]||'').trim()
-      const portraitFields = {
-        order_times: pick('order_times'),
-        order_count: pick('order_count'),
-        customer_type: pick('customer_type'),
-        product_preference: pick('product_preference'),
-        craft_preference: pick('craft_preference'),
-        procurement_scale: pick('procurement_scale'),
-        budget_sensitivity: pick('budget_sensitivity'),
-        decision_mode: pick('decision_mode'),
-        time_pattern: pick('time_pattern'),
-        repurchase_potential: pick('repurchase_potential'),
-        next_marketing: pick('next_marketing'),
-      }
-      const portraitText = [
-        `① 下单时间：${portraitFields.order_times || '—'}`,
-        `② 下单次数：${portraitFields.order_count || '—'}`,
-        `③ 客户类型：${portraitFields.customer_type || '—'}`,
-        `④ 产品偏好：${portraitFields.product_preference || '—'}`,
-        `⑤ 工艺偏好：${portraitFields.craft_preference || '—'}`,
-        `⑥ 采购规模：${portraitFields.procurement_scale || '—'}`,
-        `⑦ 预算敏感度：${portraitFields.budget_sensitivity || '—'}`,
-        `⑧ 决策方式：${portraitFields.decision_mode || '—'}`,
-        `⑨ 时间特征：${portraitFields.time_pattern || '—'}`,
-        `⑩ 复购潜力：${portraitFields.repurchase_potential || '—'}`,
-        `⑪ 营销策略：${portraitFields.next_marketing || '—'}`,
-      ].join('\n')
+      const portraitFields = mergePortrait(prevPortrait, j.portrait || {})
+      const portraitText = formatPortraitText(portraitFields)
       let tier: string | undefined
       let reason = r.deal_hint || r.profile_cn.slice(0,40)
       if(r.opportunity==='deal' || (r.intent==='high' && r.opportunity!=='none')){
@@ -176,24 +163,23 @@ ${mailText||'无'}
       } else if(r.needs_followup){
         tier = 'follow'; reason = 'AI：建议跟进'
       }
-      // 营销策略可并入 reason，便于跟进雷达提示
-      if(portraitFields.next_marketing && !/未体现|—/.test(portraitFields.next_marketing)){
+      if(isFillableDim(portraitFields.next_marketing)){
         reason = [reason, `策略:${portraitFields.next_marketing}`].filter(Boolean).join(' · ').slice(0,80)
       }
       const patch: any = {
         aiProfile: `${r.profile_cn}\n\n【十一维画像 v2】\n${portraitText}`,
         aiPortrait: portraitFields,
-        aiPortraitVersion: 2,
+        aiPortraitVersion: prevEdited ? 3 : 2,
         aiProfileAt: new Date().toISOString(),
         aiIntent: r.intent,
         aiOpportunity: r.opportunity,
         aiReason: reason,
         aiCheckedAt: new Date().toISOString(),
       }
-      // 产品偏好回写 portrait.products（供邮件模板用）
+      if(prevEdited) patch.portraitEditedAt = (c as any).portraitEditedAt
       const prodStr = portraitFields.product_preference
-      if(prodStr && !/未体现|—|未知/.test(prodStr)){
-        const prods = prodStr.split(/[/、,，]/).map(s=> s.trim()).filter(s=> s && s.length < 24)
+      if(isFillableDim(prodStr)){
+        const prods = String(prodStr).split(/[/、,，]/).map(s=> s.trim()).filter(s=> s && s.length < 24)
         if(prods.length) patch.portrait = { ...(c.portrait||{}), products: prods.slice(0,6) }
       }
       if(cfg.syncTierToFollowUps && tier){
@@ -245,8 +231,7 @@ ${mailText||'无'}
   }
 }
 
-// ====== 复购开发：订单周期 + AI 洞察 ======
-/** 单次 LLM 超时，防止一直「进行中」 */
+// ====== 复购开发：订单周期 + AI 洞察（绝不覆盖十一维画像）======
 async function chatOnceSafe(prompt: string, timeoutMs = 45000): Promise<string> {
   return await Promise.race([
     chatOnce(prompt),
@@ -265,11 +250,13 @@ export async function runPurchaseLoop(opts?: {
   skipped: number
   aiOk: number
   aiFail: number
+  repurchaseQueued: number
   note: string
 }>{
   const cfg = loadIntellectConfig()
   const cooldownMs = Math.max(0, (cfg.purchaseLoopCooldownDays || 14) * 86400000)
   const delayMs = Math.max(0, opts?.delayMs ?? 800)
+  const limit = Math.max(1, opts?.limit || cfg.purchaseLoopBatchMax || 20)
   const orders = await listPurchaseOrders()
   const customers = await db.customers.toArray() as Customer[]
   const byCust = new Map<string, typeof orders>()
@@ -288,13 +275,9 @@ export async function runPurchaseLoop(opts?: {
   }
   const emails = await db.emails.toArray() as EmailMessage[]
   const now = Date.now()
-  const limit = opts?.limit || cfg.aiInsightBatchMax || 20
-  let updated = 0
-  let aiOk = 0
-  let aiFail = 0
-  let skipped = 0
+  let updated = 0, aiOk = 0, aiFail = 0, skipped = 0, repurchaseQueued = 0
   const ordered = customers.filter(c=>{
-    const tags = (c.tags||[]).map(String)
+    const tags = (c.tags||[]).map(str=> String(str))
     return (byCust.get(c.id)||[]).length>0 || tags.includes('已下单')
   })
   const queue = ordered.filter(c=>{
@@ -321,6 +304,11 @@ export async function runPurchaseLoop(opts?: {
     const last = dates.length ? dates[dates.length-1] : null
     const daysSince = last ? Math.floor((now-last)/86400000) : 999
     const products = [...new Set(os.flatMap(o=> o.products||[]))]
+    const portrait = mergePortrait(
+      coercePortrait((c as any).aiPortrait),
+      parsePortraitFromProfile((c as any).aiProfile) || {},
+    )
+    const portraitText = formatPortraitText(portrait)
     let ai: any = null
     try{
       const addrs = new Set([c.email, ...(c.extraEmails||[])].filter(Boolean).map(e=> String(e).toLowerCase()))
@@ -328,21 +316,25 @@ export async function runPurchaseLoop(opts?: {
         const from = (e.from.match(/<([^<>]+)>/)?.[1]||e.from||'').toLowerCase()
         const to = String(e.to||'').toLowerCase()
         return addrs.has(from) || [...addrs].some(a=> to.includes(a))
-      }).slice(-10)
-      const mailText = hist.map(e=> `[${e.date}] ${e.from}: ${e.subject} ${(e.text||'').slice(0,250)}`).join('\n').slice(0, 3000)
-      const prompt = `你是外贸复购分析助手。只输出 JSON。
-客户 ${c.contactName||c.title} ${c.email}
-历史订单：${os.map(o=> o.order_date+' '+o.products.join('/')+' $'+(o.amount||'?')).join('; ')||'无'}
+      }).sort((a,b)=> String(a.date||'').localeCompare(String(b.date||'')))
+      const mailText = hist.slice(-30).map(e=> `[${e.date}] ${e.from}: ${e.subject} ${(e.text||'').slice(0,220)}`).join('\n').slice(0, 5000)
+      const prompt = `你是 Maxemblem 外贸复购分析助手。只输出 JSON，禁止编造。
+【客户背景 · 十一维画像（可能含人工修正，优先采用）】
+${portraitText}
+
+【基础】${c.contactName||c.title} ${c.email} 等级${c.level||'C'} 阶段${c.stage||''} 复购次数${c.repurchaseCount||0}
+【订单】${os.map(o=> o.order_date+' '+o.products.join('/')+' $'+(o.amount||'?')).join('; ')||'无'}
 距上次订单 ${daysSince} 天，估算周期 ${cycle} 天
-邮件摘录：${mailText||'无'}
-输出：{"buyer_type":"once|repeat|dormant|high_value","pattern":"same_product|multi_product|seasonal|unknown","cycle_days_est":数字,"next_products":["…"],"nba":"reorder|cross_sell|reactivation|nurture|none","nba_reason":"中文一句","should_contact_now":true/false,"profile_cn":"中文摘要","confidence":0到1}`
+【邮件往来（结合画像分析，勿覆盖画像）】
+${mailText||'无'}
+
+综合画像+订单+邮件输出复购经营建议：
+{"buyer_type":"once|repeat|dormant|high_value","pattern":"same_product|multi_product|seasonal|unknown","cycle_days_est":数字,"next_products":["…"],"nba":"reorder|cross_sell|reactivation|nurture|none","nba_reason":"中文一句","should_contact_now":true/false,"repurchase_score":0到100,"purchase_ai_note":"3-6句中文经营分析，可引用画像维度","confidence":0到1}`
       const raw = await chatOnceSafe(prompt)
       const m = raw.match(/\{[\s\S]*\}/)
       if(m){ ai = JSON.parse(m[0]); aiOk++ }
       else aiFail++
-    }catch{
-      aiFail++
-    }
+    }catch{ aiFail++ }
 
     let buyerType = ai?.buyer_type || (dates.length<=1 ? 'once' : (daysSince>420 ? 'dormant' : 'repeat'))
     const pattern = ai?.pattern || (products.length<=1 ? 'same_product' : (dates.length>=2 ? 'multi_product' : 'unknown'))
@@ -368,22 +360,36 @@ export async function runPurchaseLoop(opts?: {
         nba = 'cross_sell'; nbaReason = `可交叉：${[...rec].slice(0,3).join('/')}`
       }
     }
+    const score = Number(ai?.repurchase_score)
     const shouldContact = ai?.should_contact_now != null ? !!ai.should_contact_now : (nba==='reorder' || nba==='cross_sell')
-    const profile = ai?.profile_cn || ''
-    await db.customers.update(c.id, {
+    const potHigh = isFillableDim(portrait.repurchase_potential) && /高/.test(portrait.repurchase_potential)
+    const repurchaseHit =
+      nba==='reorder' || nba==='cross_sell'
+      || (shouldContact && (buyerType==='repeat' || buyerType==='high_value'))
+      || (Number.isFinite(score) && score >= 70)
+      || (potHigh && cycle > 0 && daysSince >= Math.floor(cycle*0.6))
+
+    // 写回复购字段；禁止碰 aiProfile / aiPortrait
+    const patch: any = {
       purchaseTier: buyerType,
       purchasePattern: pattern,
       cycleDaysEst: cycle,
       nextWindowAt: cycle && last ? new Date(last + cycle*86400000).toISOString().slice(0,10) : undefined,
       nextBestAction: nba,
       nbaReason,
-      ...(profile ? { aiProfile: profile, aiProfileAt: new Date().toISOString() } : {}),
-      purchaseSummary: '订单 '+os.length+' 次 · '+(products.join('/')||'—')+' · 距上次 '+daysSince+' 天 · 周期约 '+(cycle||'—')+' 天',
+      purchaseAiNote: String(ai?.purchase_ai_note || '').slice(0, 800),
+      purchaseSummary: `订单 ${os.length} 次 · ${(products.join('/')||'—')} · 距上次 ${daysSince} 天 · 周期约 ${cycle||'—'} 天`,
       purchaseIntelAt: new Date().toISOString(),
-      ...(cfg.syncTierToFollowUps && shouldContact && nba==='reorder' && !suppressed
-        ? { aiTier:'repurchase', aiReason: nbaReason || '复购窗口' }
-        : {}),
-    } as any)
+    }
+    if(repurchaseHit && !suppressed){
+      patch.aiTier = 'repurchase'
+      patch.aiReason = nbaReason || 'AI：复购机会'
+      try{
+        addManualBuckets([c.id], ['repurchase'], nbaReason || '复购开发自动入桶', 'add')
+        repurchaseQueued++
+      }catch{ /* ignore */ }
+    }
+    await db.customers.update(c.id, patch)
     updated++
     if(delayMs > 0 && idx < queue.length){
       await new Promise(res=> setTimeout(res, delayMs))
@@ -396,6 +402,7 @@ export async function runPurchaseLoop(opts?: {
     skipped,
     aiOk,
     aiFail,
-    note: `复购开发完成：已下单 ${ordered.length} · 本次分析 ${queue.length} · 更新 ${updated} · AI成功 ${aiOk}${aiFail?`/失败${aiFail}`:''}${skipped?` · 冷却跳过 ${skipped}`:''}`,
+    repurchaseQueued,
+    note: `复购开发完成：已下单 ${ordered.length} · 本次 ${queue.length} · 更新 ${updated} · AI ${aiOk}${aiFail?`/${aiFail}失败`:''} · 进潜在复购 ${repurchaseQueued}${skipped?` · 冷却跳过 ${skipped}`:''}（每批上限 ${limit}）`,
   }
 }

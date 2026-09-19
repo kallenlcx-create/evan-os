@@ -18,6 +18,8 @@ export type IntellectConfig = {
   aiInsightCooldownDays: number
   /** 复购开发冷却（天） */
   purchaseLoopCooldownDays: number
+  /** 复购开发每次分析人数上限 */
+  purchaseLoopBatchMax: number
   /** 成交/下单关键词（不区分大小写） */
   dealKeywords: string[]
   /** 排除词：命中则不当作成交 */
@@ -47,6 +49,7 @@ export function loadIntellectConfig(): IntellectConfig {
     marketingSuppressDays: 7,
     aiInsightCooldownDays: 7,
     purchaseLoopCooldownDays: 14,
+    purchaseLoopBatchMax: 20,
     dealKeywords: [...DEFAULT_DEAL_KEYWORDS],
     dealExcludeWords: [...DEFAULT_DEAL_EXCLUDES],
   }
