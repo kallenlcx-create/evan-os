@@ -16,30 +16,37 @@ export type PurchaseOrder = {
   created_at: string
 }
 
+// ====== 严格成交证据：INQC 是询盘单号，绝不能单独当订单 ======
 const STRONG = [
-  /payment\s*(sent|confirmed|done|received)/i,
-  /\bpaid\b/i,
-  /remittance/i,
-  /wire\s*transfer/i,
-  /TT\s*(copy|payment)?/i,
+  /payment\s*(has\s+been\s+)?(sent|confirmed|done|received|made)/i,
+  /(?:we\s+(?:have\s+)?|i\s+have\s+)paid\b/i,
+  /\bfully\s+paid\b/i,
+  /remittance\s*(advice|copy|attached)?/i,
+  /wire\s+transfer\s*(copy|confirm|attached|sent)?/i,
+  /\bTT\s+(copy|payment|slip|receipt)/i,
   /we\s*(have\s*)?(placed|confirmed)\s*(the\s*)?order/i,
-  /proceed\s*with\s*(the\s*)?order/i,
-  /PO\s*(number|#|attached)/i,
-  // 业务主题常见写法（此前漏检导致「人已下单、系统没标签」）
-  /order\s*confirm/i,
-  /confirmation\s*[:\-]?\s*custom/i,
-  /\bINQC\d{6,}/i,
-  /已付款|付款成功|已下单|订单号|请查收.*款|汇款/i,
+  /please\s+proceed\s+with\s+(the\s+)?order/i,
+  /\bPO[-\s]?\d{4,}/i,
+  /maxemblem\s+order\s+confirm/i,
+  /order\s+confirmation\s*[:\-]/i,
+  /已付款|付款成功|汇款凭证|请查收.*(款|汇款)|款已付/i,
+]
+const NEGATIVE = [
+  /\bunpaid\b/i,
+  /\bnot\s+paid\b/i,
+  /pending\s+payment/i,
+  /awaiting\s+(payment|deposit)/i,
+  /未付款|待付款|尚未付款|未支付/i,
 ]
 function extractAmount(text: string): number | null {
-  const m = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/) || text.match(/USD\s*([\d,]+(?:\.\d{2})?)/i)
+  const m = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/) || text.match(/USD\s*([\d,]+)/i)
   if(!m) return null
   const n = parseFloat(m[1].replace(/,/g,''))
   return Number.isFinite(n) ? n : null
 }
 function extractQty(text: string): number | null {
   const m = text.match(/(\d{1,6})\s*(?:pcs?|pc|枚|个)/i)
-  return m ? Number(m[1]) : null
+  return m ? Number(m[1].replace(/,/g,'')) : null
 }
 function extractProducts(text: string){
   const out = new Set<string>()
@@ -59,10 +66,20 @@ function extractPo(text: string){
 function extractAddr(raw: string){
   return String(raw||'').match(/<([^<>@\s]+@[^<>\s]+)>/)?.[1] || String(raw||'').match(/([^\s<>,;]+@[^\s<>,;]+)/)?.[1] || ''
 }
-function isStrongOrderMail(subject: string, text: string){
-  const s = `${subject}\n${text}`
+export function isStrictOrderEvidence(subject: string, text: string){
+  const s = `${subject||''}\n${text||''}`
+  if (NEGATIVE.some(re => re.test(s))) return false
+  const stripped = s.replace(/\bINQC\d+/gi, '')
+  const inquiryOnly = /\b(custom|inquiry|quote|quotation|price|checking\s+in)\b/i.test(s)
+    && /\bINQC\d+/i.test(s)
+    && !STRONG.some(re => re.test(stripped))
+  if (inquiryOnly) return false
   return STRONG.some(re => re.test(s))
 }
+function isStrongOrderMail(subject: string, text: string){
+  return isStrictOrderEvidence(subject, text)
+}
+void isStrongOrderMail
 function extKey(customerId: string, dateDay: string, amount: number|null, product: string, po: string|null, mailId: string){
   if(po) return `po:${customerId}:${po}`
   if(mailId) return `mail:${customerId}:${mailId}`
@@ -136,11 +153,67 @@ export type OrderScanResult = {
 
 export function isOrderedCustomer(c: Customer, orders?: PurchaseOrder[]): boolean {
   const tags = (c.tags||[]).map(String)
-  if (tags.includes('已下单') || tags.includes('订单')) return true
+  // 仅认：人工/CSV 成交标签、阶段 won、复购次数、库内订单（订单本身也应来自严格扫描/CSV）
+  if (tags.includes('已下单')) return true
   if ((c.stage||'') === 'won') return true
   if ((c.repurchaseCount||0) >= 1) return true
   if (orders && orders.some(o => o.customer_id === c.id)) return true
   return false
+}
+
+/** 清理误标：无严格订单证据的「已下单/订单/won」回退为线索 */
+export async function purgeFalseOrderedTags(): Promise<{
+  scanned: number; purged: number; kept: number; ordersPurged: number
+}>{
+  const customers = await db.customers.toArray() as Customer[]
+  const allOrders = await listPurchaseOrders()
+  // 只保留 CSV/人工订单；误扫描产生的 email_scan 订单丢弃，稍后严格重扫
+  const keepOrders = allOrders.filter(o => o.source === 'csv_import' || o.source === 'manual')
+  const purgeOrderIds = allOrders.filter(o => o.source === 'email_scan').map(o => o.ext_key)
+  for (const key of purgeOrderIds) {
+    try { await db.collections.delete(`po-${key}`) } catch {}
+  }
+  try {
+    const legacy = await db.appState.get('evan:purchaseOrders')
+    if (legacy?.data) {
+      await db.appState.put({
+        key: 'evan:purchaseOrders',
+        data: (legacy.data as PurchaseOrder[]).filter(o => o.source !== 'email_scan'),
+      } as any)
+    }
+  } catch {}
+
+  const keepByCust = new Map<string, PurchaseOrder[]>()
+  for (const o of keepOrders) {
+    const arr = keepByCust.get(o.customer_id) || []
+    arr.push(o); keepByCust.set(o.customer_id, arr)
+  }
+
+  let purged = 0, kept = 0
+  const now = new Date().toISOString()
+  for (const c of customers) {
+    const tags = (c.tags||[]).map(String)
+    const hasOrderTag = tags.includes('已下单') || tags.includes('订单')
+    const won = (c.stage||'') === 'won'
+    const rep = (c.repurchaseCount||0) >= 1
+    if (!hasOrderTag && !won && !rep) continue
+    const manualOrders = keepByCust.get(c.id) || []
+    // 人工导入/明确 CSV 订单 → 保留
+    if (manualOrders.length) { kept++; continue }
+    // 无严格证据：去掉成交标签，阶段 won → lead（除非 lost）
+    const nextTags = tags.filter(t => t !== '已下单' && t !== '订单')
+    const nextStage = c.stage === 'lost' ? 'lost' : 'lead'
+    const nextRep = 0
+    await db.customers.update(c.id, {
+      tags: nextTags,
+      stage: nextStage,
+      repurchaseCount: nextRep,
+      updatedAt: now,
+      orderTagAt: undefined,
+    } as any)
+    purged++
+  }
+  return { scanned: customers.length, purged, kept, ordersPurged: purgeOrderIds.length }
 }
 
 export async function closePendingFollowUps(customerId: string, note = '已下单，自动关闭逾期跟进'): Promise<number> {
@@ -159,13 +232,14 @@ export async function closePendingFollowUps(customerId: string, note = '已下�
 
 export async function markCustomerOrdered(c: Customer, _orders?: PurchaseOrder[]): Promise<boolean> {
   const tags = new Set([...(c.tags||[]).map(String)])
-  const needTag = !tags.has('已下单') || !tags.has('订单')
+  const needTag = !tags.has('已下单')
   const needStage = (c.stage||'') !== 'won' && (c.stage||'') !== 'lost'
   if (!needTag && !needStage) {
     await closePendingFollowUps(c.id)
     return false
   }
-  tags.add('已下单'); tags.add('订单')
+  tags.add('已下单')
+  tags.add('订单')
   const now = new Date().toISOString()
   await db.customers.update(c.id, {
     tags: [...tags],
@@ -178,9 +252,14 @@ export async function markCustomerOrdered(c: Customer, _orders?: PurchaseOrder[]
   return true
 }
 
-export async function syncOrderedCustomersFollowUps(): Promise<{
-  ordered: number; newlyTagged: number; followUpsClosed: number
+export async function syncOrderedCustomersFollowUps(opts?: { purge?: boolean }): Promise<{
+  ordered: number; newlyTagged: number; followUpsClosed: number; purged: number
 }>{
+  let purged = 0
+  if (opts?.purge !== false) {
+    const p = await purgeFalseOrderedTags()
+    purged = p.purged
+  }
   const customers = await db.customers.toArray() as Customer[]
   const orders = await listPurchaseOrders()
   const byCust = new Map<string, PurchaseOrder[]>()
@@ -193,10 +272,11 @@ export async function syncOrderedCustomersFollowUps(): Promise<{
   for (const c of customers) {
     const list = byCust.get(c.id)
     let cur = c
+    // 仅当库内有 CSV/人工订单时补标；扫描标只由 runOrderScan 严格证据写入
     if (list?.length && !(c.tags||[]).map(String).includes('已下单')) {
       const tags = [...new Set([...(c.tags||[]).map(String), '已下单', '订单'])]
       const stage = (c.stage==='lost') ? c.stage : 'won'
-      await db.customers.update(c.id, { tags, stage, isKey: true, updatedAt: now } as any)
+      await db.customers.update(c.id, { tags, stage, isKey: true, repurchaseCount: Math.max(1, c.repurchaseCount||0), updatedAt: now } as any)
       cur = { ...c, tags, stage } as Customer
       newlyTagged++
     }
@@ -208,7 +288,7 @@ export async function syncOrderedCustomersFollowUps(): Promise<{
   }
   if (loadIntellectConfig().syncTierToFollowUps) await syncTiersFromRules()
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))
-  return { ordered, newlyTagged, followUpsClosed }
+  return { ordered, newlyTagged, followUpsClosed, purged }
 }
 
 export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }): Promise<OrderScanResult> {
@@ -233,20 +313,18 @@ export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }
 
   for(const e of emails){
     const text = `${e.subject||''}\n${e.text||''}`
-    const strong = isStrongOrderMail(e.subject||'', e.text||'') || isStrongOrderMail(e.subject||'', '')
+    const strong = isStrictOrderEvidence(e.subject||'', e.text||'')
     if(!strong){ continue }
     const from = extractAddr(e.from).toLowerCase()
     const toList = String(e.to||'').split(',').map(extractAddr).filter(Boolean).map(s=> s.toLowerCase())
+    // 仅：客户来信中的付款证据，或我方明确 Order Confirmation 发给该客户
     let c: Customer | undefined
-    if(from && byAddr.get(from) && !from.includes('maxemblem.com')) c = byAddr.get(from)
-    else {
+    const isSelf = from.includes('maxemblem.com')
+    const isOrderConfirmMail = /maxemblem\s+order\s+confirm|order\s+confirmation\s*[:\-]/i.test(e.subject||'')
+    if(!isSelf && from && byAddr.get(from)) c = byAddr.get(from)
+    else if(isSelf && isOrderConfirmMail){
       for(const a of toList){
         if(a && !a.includes('maxemblem.com') && byAddr.get(a)){ c = byAddr.get(a); break }
-      }
-    }
-    if(!c && from.includes('maxemblem.com')){
-      for(const a of toList){
-        if(a && byAddr.get(a)){ c = byAddr.get(a); break }
       }
     }
     if(!c) { result.pending++; continue }

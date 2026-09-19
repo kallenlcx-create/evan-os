@@ -388,9 +388,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       let note = '自动分类：' + formatClassifyResult(r)
       const os = await runOrderScan({ rescanAll: true })
       const { syncOrderedCustomersFollowUps } = await import('../services/orderScan')
-      const align = await syncOrderedCustomersFollowUps()
+      const align = await syncOrderedCustomersFollowUps({ purge: true })
       note += ' · 订单+' + os.ordersAdded + ' 已下单' + os.customersTagged + ' 重复' + os.duplicates
-      note += ` · 对齐 已下单${align.ordered}/关跟进${align.followUpsClosed}`
+      note += ` · 清误标${align.purged}/真实已下单${align.ordered}/关跟进${align.followUpsClosed}`
       setIntelNote(note)
       await load()
     }catch(e:any){ setIntelNote('自动分类失败：'+String(e.message||e).slice(0,100)) }
@@ -714,8 +714,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             try{
               const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
               const os = await runOrderScan({ rescanAll: true })
-              const r = await syncOrderedCustomersFollowUps()
-              setIntelNote(`订单对齐：扫描+${os.ordersAdded}单 · 已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关闭跟进 ${r.followUpsClosed}`)
+              const r = await syncOrderedCustomersFollowUps({ purge: true })
+              setIntelNote(`订单对齐：清除误标 ${r.purged} · 扫描+${os.ordersAdded} · 真实已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关跟进 ${r.followUpsClosed}`)
               await load()
             }catch(e:any){ setIntelNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
             finally{ setIntelBusy('') }

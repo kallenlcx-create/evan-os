@@ -190,7 +190,8 @@ export default function FollowUpsPage() {
     const orderedSet = new Set<string>()
     for (const c of customers) {
       const tags = (c.tags||[]).map(String)
-      if (tags.includes('已下单') || tags.includes('订单') || c.stage==='won' || (c.repurchaseCount||0)>=1) {
+      // 仅认「已下单」标签 / stage=won / 复购次数；「订单」标签不再单独当成交（曾被误标污染）
+      if (tags.includes('已下单') || c.stage==='won' || (c.repurchaseCount||0)>=1) {
         orderedSet.add(c.id)
       }
     }
@@ -738,8 +739,8 @@ const handleBatchAiTpl = useCallback(async () => {
               try{
                 const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
                 const os = await runOrderScan({ rescanAll: true })
-                const r = await syncOrderedCustomersFollowUps()
-                setIntellectNote(`订单对齐：扫描补单+${os.ordersAdded} 标签+${os.customersTagged} · 已下单 ${r.ordered} 人 · 新打标 ${r.newlyTagged} · 关闭跟进 ${r.followUpsClosed} 条`)
+                const r = await syncOrderedCustomersFollowUps({ purge: true })
+                setIntellectNote(`订单对齐：先清除误标 ${r.purged} · 严格重扫补单+${os.ordersAdded} · 真实已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关闭跟进 ${r.followUpsClosed}`)
                 await load()
               }catch(e:any){ setIntellectNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
               finally{ setOrderAlignBusy(false) }
