@@ -246,15 +246,36 @@ ${mailText||'无'}
 }
 
 // ====== 复购开发：订单周期 + AI 洞察 ======
-export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }){
+/** 单次 LLM 超时，防止一直「进行中」 */
+async function chatOnceSafe(prompt: string, timeoutMs = 45000): Promise<string> {
+  return await Promise.race([
+    chatOnce(prompt),
+    new Promise<string>((_, reject)=> setTimeout(()=> reject(new Error('AI 超时')), timeoutMs)),
+  ])
+}
+
+export async function runPurchaseLoop(opts?: {
+  limit?: number
+  force?: boolean
+  delayMs?: number
+  onProgress?: (done: number, total: number, name: string) => void
+}): Promise<{
+  updated: number
+  totalOrdered: number
+  skipped: number
+  aiOk: number
+  aiFail: number
+  note: string
+}>{
   const cfg = loadIntellectConfig()
   const cooldownMs = Math.max(0, (cfg.purchaseLoopCooldownDays || 14) * 86400000)
+  const delayMs = Math.max(0, opts?.delayMs ?? 800)
   const orders = await listPurchaseOrders()
   const customers = await db.customers.toArray() as Customer[]
   const byCust = new Map<string, typeof orders>()
   for(const o of orders){
-    if(!byCust.has(o.customer_id)) byCust.set(o.customer_id, [])
-    byCust.get(o.customer_id)!.push(o)
+    const arr = byCust.get(o.customer_id) || []
+    arr.push(o); byCust.set(o.customer_id, arr)
   }
   const CROSS: Record<string, string[]> = {
     Medal: ['Medal','Coin','Belt','Trophy'],
@@ -270,6 +291,7 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
   const limit = opts?.limit || cfg.aiInsightBatchMax || 20
   let updated = 0
   let aiOk = 0
+  let aiFail = 0
   let skipped = 0
   const ordered = customers.filter(c=>{
     const tags = (c.tags||[]).map(String)
@@ -283,7 +305,10 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
     return true
   }).slice(0, limit)
 
+  let idx = 0
   for(const c of queue){
+    idx++
+    opts?.onProgress?.(idx, queue.length, c.contactName || c.title || c.email || c.id)
     const os = (byCust.get(c.id)||[]).sort((a,b)=> a.order_date.localeCompare(b.order_date))
     const dates = os.map(o=> new Date(o.order_date).getTime()).filter(t=> Number.isFinite(t))
     let cycle = 0
@@ -296,7 +321,6 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
     const last = dates.length ? dates[dates.length-1] : null
     const daysSince = last ? Math.floor((now-last)/86400000) : 999
     const products = [...new Set(os.flatMap(o=> o.products||[]))]
-    // AI 读邮件补充
     let ai: any = null
     try{
       const addrs = new Set([c.email, ...(c.extraEmails||[])].filter(Boolean).map(e=> String(e).toLowerCase()))
@@ -312,10 +336,13 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
 距上次订单 ${daysSince} 天，估算周期 ${cycle} 天
 邮件摘录：${mailText||'无'}
 输出：{"buyer_type":"once|repeat|dormant|high_value","pattern":"same_product|multi_product|seasonal|unknown","cycle_days_est":数字,"next_products":["…"],"nba":"reorder|cross_sell|reactivation|nurture|none","nba_reason":"中文一句","should_contact_now":true/false,"profile_cn":"中文摘要","confidence":0到1}`
-      const raw = await chatOnce(prompt)
+      const raw = await chatOnceSafe(prompt)
       const m = raw.match(/\{[\s\S]*\}/)
       if(m){ ai = JSON.parse(m[0]); aiOk++ }
-    }catch{}
+      else aiFail++
+    }catch{
+      aiFail++
+    }
 
     let buyerType = ai?.buyer_type || (dates.length<=1 ? 'once' : (daysSince>420 ? 'dormant' : 'repeat'))
     const pattern = ai?.pattern || (products.length<=1 ? 'same_product' : (dates.length>=2 ? 'multi_product' : 'unknown'))
@@ -358,6 +385,9 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
         : {}),
     } as any)
     updated++
+    if(delayMs > 0 && idx < queue.length){
+      await new Promise(res=> setTimeout(res, delayMs))
+    }
   }
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))
   return {
@@ -365,6 +395,7 @@ export async function runPurchaseLoop(opts?: { limit?: number; force?: boolean }
     totalOrdered: ordered.length,
     skipped,
     aiOk,
-    note: `复购开发：已下单 ${ordered.length} · 冷却跳过 ${skipped} · 本次 ${queue.length} · AI ${aiOk} · 更新 ${updated}`,
+    aiFail,
+    note: `复购开发完成：已下单 ${ordered.length} · 本次分析 ${queue.length} · 更新 ${updated} · AI成功 ${aiOk}${aiFail?`/失败${aiFail}`:''}${skipped?` · 冷却跳过 ${skipped}`:''}`,
   }
 }
