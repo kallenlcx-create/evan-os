@@ -702,6 +702,38 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     return acc
   }, {} as Record<string, number>)
 
+  /** 批量 AI 七维画像：优先选中，否则当前筛选；每次人数可配，必须走大模型 */
+  const handleBatchPortrait = useCallback(async (opts?: { force?: boolean })=>{
+    const { getAiSettings } = await import('../config/aiProviders')
+    const ai = getAiSettings()
+    const aiReady = !!(ai.apiKey || ai.proxyUrl)
+    const ids = checked.size > 0 ? [...checked] : filtered.map(c=> c.id)
+    if(!ids.length) return alert('请先筛选或勾选客户')
+    const batchSize = Math.max(1, Math.min(500, intelCfg.aiInsightBatchMax || 10))
+    const batchIds = ids.slice(0, batchSize)
+    const delayMs = 1000
+    if(!aiReady && !confirm('未检测到 AI Key/代理，继续可能失败。仍要尝试？')) return
+    setIntelBusy('portrait')
+    setIntelNote(`批量 AI 画像：目标 ${batchIds.length} 人（上限 ${batchSize}）· 每人间隔约 ${delayMs}ms · ${aiReady?'调用大模型七维模板':'未配置 Key'}…`)
+    try{
+      const r = await runAiInsight({
+        limit: batchIds.length,
+        onlyCustomerIds: batchIds,
+        force: opts?.force !== false,
+        delayMs,
+        onProgress: (done, total, name)=>{
+          setIntelNote(`批量 AI 画像 ${done}/${total} · ${name} …（七维模板，每人间隔约 1s）`)
+        },
+      })
+      let note = r.note || `AI画像 成功${r.ok} 失败${r.fail}`
+      if(r.fail>0 && r.ok===0) note += '｜请检查 AI 设置里的 API Key/代理'
+      if(ids.length > batchIds.length) note += `｜还有 ${ids.length-batchIds.length} 人未处理，可提高「每次画像客户数」后再跑`
+      setIntelNote(note)
+      await load()
+    }catch(e:any){ setIntelNote('批量AI画像失败：'+String(e.message||e).slice(0,120)) }
+    finally{ setIntelBusy('') }
+  },[checked, filtered, intelCfg, load])
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-3">
       <div className="flex items-center gap-2">
@@ -748,6 +780,12 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           title="修复：已下单却在逾期跟进、客户页搜不到已下单标签"
         >🧾 订单对齐</button>
         <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
+        <button
+          onClick={()=> void handleBatchPortrait({ force: true })}
+          disabled={!!intelBusy}
+          className="px-3 py-1 rounded-full text-xs bg-fuchsia-600 text-white disabled:opacity-50"
+          title={`批量 AI 七维画像：优先选中客户，否则当前筛选；每次最多 ${intelCfg.aiInsightBatchMax} 人（智能设置可改），每人间隔约 1 秒，必须走大模型`}
+        >🤖 批量AI画像{checked.size>0 ? `（选中${checked.size}）` : `（筛选${filtered.length}）`}</button>
         <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
         <button onClick={async()=>{
           setIntelBusy('sent'); setIntelNote('正在从邮件库刷新客户发送时间…')
@@ -764,25 +802,29 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       </div>
       {selectMode && checked.size>0 && (
         <div className="flex items-center gap-2 flex-wrap bg-indigo-600 text-white rounded-2xl px-3 py-2 text-xs">
-          <span>已选 {checked.size} · 移入跟进板块</span>
+          <span>已选 {checked.size}</span>
+          <button onClick={()=> void handleBatchPortrait({ force: true })} disabled={!!intelBusy}
+            className="px-2 py-1 bg-fuchsia-500 hover:bg-fuchsia-400 rounded-lg disabled:opacity-50"
+            title="对选中客户批量调用 AI 生成七维画像"
+          >🤖批量AI画像</button>
+          <span className="opacity-80">板块</span>
           {MANUAL_BUCKETS.map(b=>(
-            <button key={b.key}
+            <button key={'p-in-'+b.key}
               onClick={async()=>{
                 await addManualBuckets([...checked], [b.key])
                 setIntelNote(`已将 ${checked.size} 人移入「${b.label}」`)
               }}
               className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded-lg border border-white/20"
-            >{b.label}</button>
+            >+{b.label}</button>
           ))}
-          <span className="opacity-70 mx-1">| 移出</span>
           {MANUAL_BUCKETS.map(b=>(
-            <button key={'x-'+b.key}
+            <button key={'p-out-'+b.key}
               onClick={async()=>{
                 const n = removeManualBuckets([...checked], [b.key])
-                setIntelNote(`已从「${b.label}」移出 ${n} 人`)
+                setIntelNote(`已从「${b.label}」批量移出 ${n} 人`)
                 await load()
               }}
-              className="px-2 py-1 bg-rose-500/40 hover:bg-rose-500/60 rounded-lg border border-white/20"
+              className="px-2 py-1 bg-rose-500/50 hover:bg-rose-500/70 rounded-lg border border-white/20"
             >×{b.label}</button>
           ))}
           <button
@@ -816,8 +858,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 {[3,5,7,14].map(d=> <option key={d} value={d}>{d}天</option>)}
               </select>
             </label>
-            <label className="flex items-center gap-1">每次画像客户数
-              <input type="number" min={1} max={100} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||20 })} className="w-14 border rounded px-1"/>
+            <label className="flex items-center gap-1">每次画像客户数（批量AI画像上限）
+              <input type="number" min={1} max={500} value={intelCfg.aiInsightBatchMax} onChange={e=> patchIntelCfg({ aiInsightBatchMax: Number(e.target.value)||20 })} className="w-14 border rounded px-1"/>
+              <span className="text-[10px] text-gray-400">人/次</span>
             </label>
             <label className="flex items-center gap-1">AI洞察冷却(天)
               <input type="number" min={0} max={30} value={intelCfg.aiInsightCooldownDays} onChange={e=> patchIntelCfg({ aiInsightCooldownDays: Number(e.target.value)||7 })} className="w-14 border rounded px-1"/>
@@ -880,6 +923,12 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           <button onClick={()=> void bulkApply('level')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用等级</button>
           <input value={bulkTag} onChange={e=> setBulkTag(e.target.value)} placeholder="加标签…" className="w-24 px-2 py-1 rounded text-xs text-gray-800" />
           <button onClick={()=> void bulkApply('tag')} className="px-2 py-1 bg-teal-600 rounded text-[11px]">打标签</button>
+          <button
+            onClick={()=> void handleBatchPortrait({ force: true })}
+            disabled={!!intelBusy}
+            className="px-2 py-1 bg-fuchsia-600 rounded text-[11px] disabled:opacity-50"
+            title="对已选客户批量调用 AI 生成七维画像；每次人数见智能设置"
+          >🤖批量AI画像</button>
           <span className="text-gray-400">移入</span>
           {MANUAL_BUCKETS.map(b=>(
             <button key={'in-'+b.key}

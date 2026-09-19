@@ -41,10 +41,18 @@ export type AiInsightRunResult = {
   note: string
 }
 
-export async function runAiInsight(opts?: { limit?: number; force?: boolean; onlyCustomerIds?: string[] }): Promise<AiInsightRunResult> {
+export async function runAiInsight(opts?: {
+  limit?: number
+  force?: boolean
+  onlyCustomerIds?: string[]
+  /** 每人之间的间隔 ms（批量画像可放慢，降低限流） */
+  delayMs?: number
+  onProgress?: (done: number, total: number, name: string) => void
+}): Promise<AiInsightRunResult> {
   const cfg = loadIntellectConfig()
   const limit = opts?.limit || cfg.aiInsightBatchMax || 30
   const cooldownMs = Math.max(0, (cfg.aiInsightCooldownDays || 7) * 86400000)
+  const delayMs = Math.max(0, opts?.delayMs ?? 800)
   const all = await db.customers.toArray() as Customer[]
   let scoped = pickScope(all, cfg.aiInsightScope)
   if(opts?.onlyCustomerIds?.length){
@@ -71,12 +79,15 @@ export async function runAiInsight(opts?: { limit?: number; force?: boolean; onl
       results: [], ok:0, fail:0,
       scopeCount: scoped.length, queued:0, skippedCooldown,
       note: scoped.length
-        ? `AI洞察：范围 ${scoped.length} 人，全部在冷却期内（${cfg.aiInsightCooldownDays}天），本次 0 人。可等冷却结束或强制重跑。`
-        : 'AI洞察：范围内 0 人。请先自动分类或检查 isKey/A+/A/B/C。',
+        ? `AI洞察：范围 ${scoped.length} 人，全部在冷却期内（${cfg.aiInsightCooldownDays}天），本次 0 人。可等冷却结束或对选中客户「批量AI画像」强制重跑。`
+        : 'AI洞察：范围内 0 人。请先筛选/多选客户，或检查 isKey/A+/A/B/C 范围。',
     }
   }
 
+  let idx = 0
   for(const c of queue){
+    idx++
+    opts?.onProgress?.(idx, queue.length, c.contactName || c.title || c.email || c.id)
     const addrs = new Set(customerEmails(c))
     const hist = emails
       .filter(e=>{
@@ -200,6 +211,10 @@ ${mailText||'无'}
       })
       fail++
     }
+    // 批量画像：两人之间间隔，避免限流（速度可慢，保证走 AI）
+    if(delayMs > 0 && idx < queue.length){
+      await new Promise(res=> setTimeout(res, delayMs))
+    }
   }
   if(cfg.syncTierToFollowUps) await syncTiersFromRules()
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))
@@ -208,7 +223,7 @@ ${mailText||'无'}
     scopeCount: scoped.length,
     queued: queue.length,
     skippedCooldown,
-    note: `AI洞察：范围 ${scoped.length} · 冷却跳过 ${skippedCooldown} · 本次 ${queue.length} · 成功 ${ok} · 失败 ${fail}`,
+    note: `AI画像：本次 ${queue.length} 人 · 成功 ${ok} · 失败 ${fail}${skippedCooldown?` · 冷却跳过 ${skippedCooldown}`:''}（七维模板 · 间隔 ${delayMs}ms）`,
   }
 }
 
