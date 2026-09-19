@@ -7,7 +7,7 @@ import MailHtml from '../components/MailHtml'
 import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, levelFromSignals, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
-import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets } from '../services/manualBuckets'
+import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 
 // ====== 邮箱后缀自动分类 ======
@@ -116,6 +116,8 @@ export default function CustomersPage(){
   const [maxSilentDays, setMaxSilentDays] = useState(0) // 0=不限
   const [includeNeverSent, setIncludeNeverSent] = useState(true)
   const [hideOrdered, setHideOrdered] = useState(false)
+  /** 组合筛选：等级（空=跟随顶部 A+/A/B 按钮；有值则按此列表） */
+  const [comboLevels, setComboLevels] = useState<string[]>([])
   const [selectMode, setSelectMode] = useState(false)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkLevel, setBulkLevel] = useState('')
@@ -656,7 +658,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       if(!tags.includes('已下单') && !tags.includes('订单') && c.stage !== 'won') return false
     } else if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
     if(filter==='key' && !c.isKey) return false
-    if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false
+    if(comboLevels.length > 0){
+      if(!comboLevels.includes(c.level || 'C')) return false
+    } else if(['A+','A','B','C','D'].includes(filter) && c.level!==filter) return false
     if(filter==='gov'||filter==='edu'||filter==='org'||filter==='mil'){
       const emailType = classifyEmailType(c.email)
       const filterMap: Record<string,string> = { gov:'政府', edu:'教育', org:'非盈利', mil:'军队' }
@@ -687,7 +691,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     return true
   })
   // 筛选变化时回到第 1 页；页码越界自动夹紧
-  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length, minSilentDays, maxSilentDays, includeNeverSent, hideOrdered])
+  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length, minSilentDays, maxSilentDays, includeNeverSent, hideOrdered, comboLevels])
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
   const safePage = Math.min(page, totalPages)
   const pageData = filtered.slice((safePage - 1) * perPage, safePage * perPage)
@@ -770,6 +774,26 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded-lg border border-white/20"
             >{b.label}</button>
           ))}
+          <span className="opacity-70 mx-1">| 移出</span>
+          {MANUAL_BUCKETS.map(b=>(
+            <button key={'x-'+b.key}
+              onClick={async()=>{
+                const n = removeManualBuckets([...checked], [b.key])
+                setIntelNote(`已从「${b.label}」移出 ${n} 人`)
+                await load()
+              }}
+              className="px-2 py-1 bg-rose-500/40 hover:bg-rose-500/60 rounded-lg border border-white/20"
+            >×{b.label}</button>
+          ))}
+          <button
+            onClick={async()=>{
+              if(!confirm(`清空 ${checked.size} 人的全部手动板块？`)) return
+              const n = removeManualBuckets([...checked], [])
+              setIntelNote(`已清空 ${n} 人手动板块`)
+              await load()
+            }}
+            className="px-2 py-1 bg-white/10 hover:bg-white/20 rounded-lg border border-white/20"
+          >清空板块</button>
         </div>
       )}
       {(intelNote || intelBusy) && (
@@ -856,9 +880,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           <button onClick={()=> void bulkApply('level')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用等级</button>
           <input value={bulkTag} onChange={e=> setBulkTag(e.target.value)} placeholder="加标签…" className="w-24 px-2 py-1 rounded text-xs text-gray-800" />
           <button onClick={()=> void bulkApply('tag')} className="px-2 py-1 bg-teal-600 rounded text-[11px]">打标签</button>
-          <span className="text-gray-400">板块</span>
+          <span className="text-gray-400">移入</span>
           {MANUAL_BUCKETS.map(b=>(
-            <button key={b.key}
+            <button key={'in-'+b.key}
               onClick={async()=>{
                 if(!checked.size) return alert('请先勾选客户')
                 await addManualBuckets([...checked], [b.key])
@@ -868,6 +892,31 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               className="px-2 py-1 bg-indigo-500/80 hover:bg-indigo-400 rounded text-[11px]"
             >{b.label}</button>
           ))}
+          <span className="text-gray-400">移出</span>
+          {MANUAL_BUCKETS.map(b=>(
+            <button key={'out-'+b.key}
+              onClick={async()=>{
+                if(!checked.size) return alert('请先勾选客户')
+                const n = removeManualBuckets([...checked], [b.key])
+                setIntelNote(`已从「${b.label}」移出 ${n} 人的手动板块标记`)
+                window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                await load()
+              }}
+              className="px-2 py-1 bg-rose-500/70 hover:bg-rose-400 rounded text-[11px]"
+              title={`从「手动·${b.label}」批量移除`}
+            >×{b.label}</button>
+          ))}
+          <button
+            onClick={async()=>{
+              if(!checked.size) return alert('请先勾选客户')
+              if(!confirm(`清空 ${checked.size} 人的全部手动跟进板块标记？`)) return
+              const n = removeManualBuckets([...checked], [])
+              setIntelNote(`已清空 ${n} 人的全部手动板块`)
+              window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+              await load()
+            }}
+            className="px-2 py-1 bg-gray-600 hover:bg-gray-500 rounded text-[11px] border border-white/20"
+          >清空手动板块</button>
           <select value={bulkStage} onChange={e=> setBulkStage(e.target.value)} className="px-2 py-1 rounded text-xs text-gray-800">
             <option value="">改阶段…</option><option value="lead">新线索</option><option value="contacted">已联系</option><option value="qualified">已确认</option><option value="proposal">报价中</option><option value="negotiation">谈判中</option><option value="won">已下单</option><option value="lost">流失</option>
           </select>
@@ -908,9 +957,34 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             ⚗️ 筛选条件
             <span className="text-[11px] font-normal text-gray-400">当前命中 {filtered.length} / {list.length}</span>
             <button
-              onClick={()=>{ setMinSilentDays(0); setMaxSilentDays(0); setHideOrdered(false); setIncludeNeverSent(true); setTagFilter('all'); setFilter('all' as any); setQ('') }}
+              onClick={()=>{ setMinSilentDays(0); setMaxSilentDays(0); setHideOrdered(false); setIncludeNeverSent(true); setComboLevels([]); setTagFilter('all'); setFilter('all' as any); setQ('') }}
               className="ml-auto px-2 py-0.5 border rounded text-[11px] text-gray-500 hover:bg-gray-50"
             >清空筛选</button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-gray-500 font-medium">组合预设</span>
+            {([
+              { label: 'A级且未跟进≥14天', levels: ['A','A+'], days: 14 },
+              { label: 'A/B且≥30天', levels: ['A','A+','B'], days: 30 },
+              { label: 'C/D且≥60天', levels: ['C','D'], days: 60 },
+              { label: '全部≥90天', levels: [], days: 90 },
+            ] as const).map(p=>(
+              <button key={p.label}
+                onClick={()=>{ setComboLevels([...p.levels]); setMinSilentDays(p.days); setFilter('all' as any); setHideOrdered(true); setIncludeNeverSent(true) }}
+                className="px-2 py-0.5 border rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+              >{p.label}</button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-gray-500">等级</span>
+            {(['A+','A','B','C','D'] as const).map(l=>(
+              <button key={l}
+                onClick={()=> setComboLevels(prev=> prev.includes(l) ? prev.filter(x=>x!==l) : [...prev, l])}
+                className={`px-2 py-0.5 border rounded-full ${comboLevels.includes(l)?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-600'}`}
+              >{l}</button>
+            ))}
+            {comboLevels.length===0 && <span className="text-[10px] text-gray-400">未选则跟随顶部等级按钮</span>}
+            {comboLevels.length>0 && <button onClick={()=> setComboLevels([])} className="text-[10px] text-gray-400 underline">不限等级</button>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-gray-500">未跟进天数 ≥</span>
@@ -941,7 +1015,18 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               <input type="checkbox" checked={hideOrdered} onChange={e=> setHideOrdered(e.target.checked)}/>
               排除已下单
             </label>
-            <span className="text-[11px] text-gray-400">天数来自「⟳ 刷新跟进时间」写入的我方发送记录；卡片上「⏳未跟进 x 天」</span>
+            <span className="text-[11px] text-gray-400">天数来自「⟳ 刷新跟进时间」</span>
+          </div>
+          <div className="text-[11px] text-gray-500 bg-gray-50 rounded-lg px-2 py-1">
+            当前条件：
+            {comboLevels.length ? `等级∈[${comboLevels.join('/')}]` : (['A+','A','B','C','D'].includes(filter)?`等级=${filter}`:'等级不限')}
+            {minSilentDays>0 ? ` 且 未跟进≥${minSilentDays}天` : ''}
+            {maxSilentDays>0 ? ` 且 未跟进≤${maxSilentDays}天` : ''}
+            {hideOrdered ? ' 且 排除已下单' : ''}
+            {tagFilter!=='all' ? ` 且 标签=${tagFilter}` : ''}
+            {q ? ` 且 搜索「${q}」` : ''}
+            {' →命中 '}
+            <b>{filtered.length}</b>
           </div>
           <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
             <button
@@ -949,11 +1034,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 if(!filtered.length) return
                 setSelectMode(true)
                 setChecked(new Set(filtered.map(c=> c.id)))
-                setIntelNote(`已全选筛选结果 ${filtered.length} 人，可批量打标签 / 改等级 / 移入跟进板块`)
+                setIntelNote(`已全选筛选结果 ${filtered.length} 人，可批量打标签 / 改等级 / 移入或移出跟进板块`)
               }}
               className="px-3 py-1 bg-blue-600 text-white rounded-lg"
             >☑️ 全选筛选结果（{filtered.length}）</button>
-            <span className="text-[11px] text-gray-400">全选后使用下方多选条：加标签、改等级/阶段、移入六板块</span>
+            <span className="text-[11px] text-gray-400">全选后用多选条：打标签、改等级、移入/移出六板块</span>
           </div>
         </div>
       )}
@@ -1195,9 +1280,9 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 >读邮件生成画像</button>
               </div>
               {(selectedCustomer as any).aiProfile ? (
-                <div className="text-xs text-gray-700 leading-relaxed">{(selectedCustomer as any).aiProfile}</div>
+                <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{(selectedCustomer as any).aiProfile}</div>
               ) : (
-                <div className="text-[11px] text-gray-400">点击「读邮件生成画像」，AI 将阅读该客户往来邮件并总结背景、意向与机会。</div>
+                <div className="text-[11px] text-gray-400">点击「读邮件生成画像」，AI 按七维模板输出：下单时间 / 次数 / 产品偏好 / 采购特征 / 客户偏好 / 关注点 / 采购周期与复购潜力。</div>
               )}
               <div className="flex flex-wrap gap-1.5 text-[10px]">
                 {(selectedCustomer as any).aiTier && (

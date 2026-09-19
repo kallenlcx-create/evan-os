@@ -88,14 +88,24 @@ export async function runAiInsight(opts?: { limit?: number; force?: boolean; onl
       .slice(-12)
     const ords = orders.filter(o=> o.customer_id===c.id).map(o=> `${o.order_date}: ${o.products.join('/')} x${o.qty||'?'} $${o.amount||'?'}`).join('; ')
     const mailText = hist.map(e=> `[${e.date}] ${e.from}\n${e.subject}\n${(e.text||'').slice(0,400)}`).join('\n---\n').slice(0, 4000)
-    const prompt = `你是 Maxemblem 外贸销售分析助手。根据客户与邮件/订单信息输出 JSON，不要其它文字。
+    // 画像模板：七维（下单时间/次数/产品偏好/采购特征/客户偏好/关注点/采购周期）
+    const prompt = `你是 Maxemblem 外贸销售分析助手。根据客户邮件/订单输出 JSON，不要其它文字。
 客户：${c.contactName||c.title}（${c.email}，${c.company||''}）等级${c.level||'C'}${c.isKey?'重点':''} 阶段${c.stage||'lead'} 复购${c.repurchaseCount||0}
 订单：${ords||'无'}
 邮件：
 ${mailText||'无'}
 
+必须按七维画像填写 portrait（中文，信息不足写「邮件未体现」，禁止编造具体日期/金额）：
+1 order_times 下单/付款时间
+2 order_count 下单次数
+3 product_preference 产品偏好（Medal/Coin/Pin/Patch/Keychain 等）
+4 procurement 采购特征（规模 pcs + 金额 + 定制程度）
+5 customer_preference 工艺/设计/包装偏好 + 价格敏感度
+6 focus_points 客户关注点（价格/交期/质量/设计/MOQ 等）
+7 cycle_repurchase 采购周期与复购潜力
+
 输出 JSON：
-{"profile_cn":"中文客户背景2-4句","intent":"high|medium|low","opportunity":"deal|repurchase|cross_sell|none","needs_followup":true/false,"followup_at":"YYYY-MM-DD可空","deal_hint":"一句话","confidence":0到1}`
+{"profile_cn":"中文背景2-4句","portrait":{"order_times":"","order_count":"","product_preference":"","procurement":"","customer_preference":"","focus_points":"","cycle_repurchase":""},"intent":"high|medium|low","opportunity":"deal|repurchase|cross_sell|none","needs_followup":true/false,"followup_at":"YYYY-MM-DD可空","deal_hint":"一句话","confidence":0到1}`
     try{
       const raw = await chatOnce(prompt)
       const jsonMatch = raw.match(/\{[\s\S]*\}/)
@@ -111,6 +121,25 @@ ${mailText||'无'}
         deal_hint: j.deal_hint || '',
         confidence: Number(j.confidence) || 0.6,
       }
+      const po = j.portrait || {}
+      const portraitFields = {
+        order_times: String(po.order_times||''),
+        order_count: String(po.order_count||''),
+        product_preference: String(po.product_preference||''),
+        procurement: String(po.procurement||''),
+        customer_preference: String(po.customer_preference||''),
+        focus_points: String(po.focus_points||''),
+        cycle_repurchase: String(po.cycle_repurchase||''),
+      }
+      const portraitText = [
+        `① 下单时间：${portraitFields.order_times || '—'}`,
+        `② 下单次数：${portraitFields.order_count || '—'}`,
+        `③ 产品偏好：${portraitFields.product_preference || '—'}`,
+        `④ 采购特征：${portraitFields.procurement || '—'}`,
+        `⑤ 客户偏好：${portraitFields.customer_preference || '—'}`,
+        `⑥ 关注点：${portraitFields.focus_points || '—'}`,
+        `⑦ 周期/复购：${portraitFields.cycle_repurchase || '—'}`,
+      ].join('\n')
       let tier: string | undefined
       let reason = r.deal_hint || r.profile_cn.slice(0,40)
       if(r.opportunity==='deal' || (r.intent==='high' && r.opportunity!=='none')){
@@ -124,12 +153,19 @@ ${mailText||'无'}
         tier = 'follow'; reason = 'AI：建议跟进'
       }
       const patch: any = {
-        aiProfile: r.profile_cn,
+        aiProfile: `${r.profile_cn}\n\n【七维画像】\n${portraitText}`,
+        aiPortrait: portraitFields,
         aiProfileAt: new Date().toISOString(),
         aiIntent: r.intent,
         aiOpportunity: r.opportunity,
         aiReason: reason,
         aiCheckedAt: new Date().toISOString(),
+      }
+      // 产品偏好回写 portrait.products（供邮件模板用）
+      const prodStr = portraitFields.product_preference
+      if(prodStr && !/未体现|—|未知/.test(prodStr)){
+        const prods = prodStr.split(/[/、,，]/).map(s=> s.trim()).filter(s=> s && s.length < 24)
+        if(prods.length) patch.portrait = { ...(c.portrait||{}), products: prods.slice(0,6) }
       }
       if(cfg.syncTierToFollowUps && tier){
         patch.aiTier = tier

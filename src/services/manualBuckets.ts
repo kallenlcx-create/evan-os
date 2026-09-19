@@ -171,6 +171,33 @@ export function clearCustomerManualBuckets(customerId: string) {
   notify()
 }
 
+/** 批量移出指定板块；buckets 为空数组 = 清空这些客户的全部手动板块 */
+export function removeManualBuckets(customerIds: string[], buckets?: ManualBucket[]) {
+  const store = { ...loadManualBuckets() }
+  const ts = now()
+  let changed = 0
+  for (const id of customerIds) {
+    const cur = store[id]
+    if (!cur) continue
+    const nextBuckets = !buckets || buckets.length === 0
+      ? []
+      : (cur.buckets || []).filter(b => !buckets.includes(b))
+    if (!nextBuckets.length) {
+      delete store[id]
+      void persistEntry(id, { buckets: [], updatedAt: ts })
+    } else {
+      const next: BucketEntry = { ...cur, buckets: nextBuckets, updatedAt: ts }
+      store[id] = next
+      void persistEntry(id, next)
+    }
+    changed++
+  }
+  memStore = store
+  writeLocal(store)
+  notify()
+  return changed
+}
+
 /** 一键清理：只保留邮件噪声类客户不动，供客户页批量归档前用 */
 export function isLikelyNoiseCustomer(c: { email?: string; title?: string; tags?: string[] }): boolean {
   const addr = String(c.email || '').toLowerCase()
