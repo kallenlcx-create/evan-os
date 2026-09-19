@@ -427,12 +427,24 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[load, intelCfg])
 
   const handlePurchaseLoop = useCallback(async ()=>{
+    const { getAiSettings } = await import('../config/aiProviders')
+    const ai = getAiSettings()
+    const aiReady = !!(ai.apiKey || ai.proxyUrl)
     setIntelBusy('loop')
-    setIntelNote('复购开发进行中…（读取订单与邮件，调用大模型）')
+    setIntelNote(aiReady
+      ? '复购开发进行中：分析已下单客户的复购周期 / 交叉销售 / 是否该联系（读订单+邮件，每人约 1 次 AI）…'
+      : '复购开发：未配置 AI Key，将用规则估算周期与建议；配置后效果更好…')
     try{
-      const r = await runPurchaseLoop({ limit: intelCfg.aiInsightBatchMax })
-      let note = r.note || ('复购开发：更新 '+r.updated+' 位')
-      if(!r.totalOrdered) note += '｜无已下单客户，请先自动分类/订单CSV'
+      const r = await runPurchaseLoop({
+        limit: Math.min(20, intelCfg.aiInsightBatchMax || 20),
+        delayMs: 800,
+        onProgress: (done, total, name)=>{
+          setIntelNote(`复购开发 ${done}/${total} · ${name} …（订单周期 + 下一步行动建议）`)
+        },
+      })
+      let note = r.note || `复购开发：更新 ${r.updated} 位`
+      if(!r.totalOrdered) note += '｜无已下单客户，请先「订单对齐」或导入订单 CSV'
+      if(r.aiFail && !r.aiOk) note += '｜AI 未返回，已用规则兜底（检查 API Key/网络）'
       setIntelNote(note)
       await load()
     }catch(e:any){ setIntelNote('复购开发失败：'+String(e.message||e).slice(0,120)) }
@@ -788,7 +800,12 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           className="px-3 py-1 rounded-full text-xs bg-fuchsia-600 text-white disabled:opacity-50"
           title={`批量 AI 十一维画像 v2：优先选中客户，否则当前筛选；每次最多 ${intelCfg.aiInsightBatchMax} 人，每人间隔约 1 秒，必须走大模型；旧七维请强制重跑`}
         >🤖 批量AI画像{checked.size>0 ? `（选中${checked.size}）` : `（筛选${filtered.length}）`}</button>
-        <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
+        <button
+          onClick={()=> void handlePurchaseLoop()}
+          disabled={!!intelBusy}
+          className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50"
+          title="复购开发：对「已下单」客户估算采购周期、复购/交叉销售机会与下一步动作（NBA）；写入客户字段，跟进雷达可筛「潜在复购」。单次最多约 20 人，每人约 1 次 AI，速度偏慢属正常"
+        >🔁 复购开发</button>
         <button onClick={async()=>{
           setIntelBusy('sent'); setIntelNote('正在从邮件库刷新客户发送时间…')
           try{
