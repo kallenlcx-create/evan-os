@@ -110,6 +110,12 @@ export default function CustomersPage(){
   /** 客户卡片分页：避免 700+ 张一次性渲染卡死 */
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(30)
+  /** 高级筛选：未跟进天数等 */
+  const [showFilters, setShowFilters] = useState(false)
+  const [minSilentDays, setMinSilentDays] = useState(0) // 0=不限；>0 则「未跟进 ≥ N 天」
+  const [maxSilentDays, setMaxSilentDays] = useState(0) // 0=不限
+  const [includeNeverSent, setIncludeNeverSent] = useState(true)
+  const [hideOrdered, setHideOrdered] = useState(false)
   const [selectMode, setSelectMode] = useState(false)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkLevel, setBulkLevel] = useState('')
@@ -665,10 +671,23 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       if(emailType.label !== '企业') return false
     }
     if(q && !`${c.title} ${c.company} ${c.email}`.toLowerCase().includes(q.toLowerCase())) return false
+    // 未跟进天数筛选（sentDates：我方最近发送距今天数；从未发送=9999）
+    if(minSilentDays > 0 || maxSilentDays > 0){
+      const sd = sentDatesOf(c)
+      const never = sd.daysSinceSent == null
+      if(never && !includeNeverSent) return false
+      const days = never ? 9999 : Number(sd.daysSinceSent)
+      if(minSilentDays > 0 && days < minSilentDays) return false
+      if(maxSilentDays > 0 && !never && days > maxSilentDays) return false
+    }
+    if(hideOrdered){
+      const tags = (c.tags||[]).map(String)
+      if(tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount||0) >= 1) return false
+    }
     return true
   })
   // 筛选变化时回到第 1 页；页码越界自动夹紧
-  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length])
+  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length, minSilentDays, maxSilentDays, includeNeverSent, hideOrdered])
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
   const safePage = Math.min(page, totalPages)
   const pageData = filtered.slice((safePage - 1) * perPage, safePage * perPage)
@@ -826,17 +845,33 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       {/* 批量操作条 */}
       {selectMode && (
         <div className="flex items-center gap-2 flex-wrap bg-gray-900 text-white rounded-2xl px-3 py-2 text-xs sticky top-0 z-10">
-          <span>已选 {checked.size} 个</span>
+          <span>已选 {checked.size} / 筛选 {filtered.length}</span>
+          <button
+            onClick={()=> setChecked(new Set(filtered.map(c=> c.id)))}
+            className="px-2 py-1 bg-white/10 rounded border border-white/20"
+          >全选筛选</button>
           <select value={bulkLevel} onChange={e=> setBulkLevel(e.target.value)} className="px-2 py-1 rounded text-xs text-gray-800">
             <option value="">改等级…</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option>
           </select>
-          <button onClick={()=> void bulkApply('level')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用</button>
+          <button onClick={()=> void bulkApply('level')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用等级</button>
+          <input value={bulkTag} onChange={e=> setBulkTag(e.target.value)} placeholder="加标签…" className="w-24 px-2 py-1 rounded text-xs text-gray-800" />
+          <button onClick={()=> void bulkApply('tag')} className="px-2 py-1 bg-teal-600 rounded text-[11px]">打标签</button>
+          <span className="text-gray-400">板块</span>
+          {MANUAL_BUCKETS.map(b=>(
+            <button key={b.key}
+              onClick={async()=>{
+                if(!checked.size) return alert('请先勾选客户')
+                await addManualBuckets([...checked], [b.key])
+                setIntelNote(`已将 ${checked.size} 人移入「${b.label}」`)
+                window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+              }}
+              className="px-2 py-1 bg-indigo-500/80 hover:bg-indigo-400 rounded text-[11px]"
+            >{b.label}</button>
+          ))}
           <select value={bulkStage} onChange={e=> setBulkStage(e.target.value)} className="px-2 py-1 rounded text-xs text-gray-800">
             <option value="">改阶段…</option><option value="lead">新线索</option><option value="contacted">已联系</option><option value="qualified">已确认</option><option value="proposal">报价中</option><option value="negotiation">谈判中</option><option value="won">已下单</option><option value="lost">流失</option>
           </select>
-          <button onClick={()=> void bulkApply('stage')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用</button>
-          <input value={bulkTag} onChange={e=> setBulkTag(e.target.value)} placeholder="加标签…" className="w-24 px-2 py-1 rounded text-xs text-gray-800" />
-          <button onClick={()=> void bulkApply('tag')} className="px-2 py-1 bg-teal-600 rounded text-[11px]">加标签</button>
+          <button onClick={()=> void bulkApply('stage')} className="px-2 py-1 bg-blue-600 rounded text-[11px]">应用阶段</button>
           <button onClick={()=> void bulkApply('delete')} className="ml-auto px-2 py-1 bg-red-600 rounded text-[11px]">删除</button>
           <button onClick={clearCheck} className="px-2 py-1 text-gray-300">取消</button>
         </div>
@@ -857,8 +892,71 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         ] as const).map(({k,l,c,label})=> (
           <button key={k} onClick={()=> setFilter(filter===k?'all':k as any)} className={`px-2 py-1 rounded-full text-[10px] border ${filter===k?c+' ring-1 ring-current':'bg-white text-gray-500'}`}>{l} {emailTypeCounts[label]||0}</button>
         ))}
-        <div className="ml-auto relative"><Search size={12} className="absolute left-2 top-2 text-gray-300"/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="pl-6 pr-2 py-1 border rounded-lg text-xs"/></div>
+        <div className="ml-auto relative flex items-center gap-1">
+          <button
+            onClick={()=> setShowFilters(v=>!v)}
+            className={`px-2 py-1 rounded-full text-xs border ${showFilters || minSilentDays>0 || maxSilentDays>0 || hideOrdered ? 'bg-blue-600 text-white border-blue-600' : 'bg-white'}`}
+            title="按未跟进天数等条件筛选"
+          >⚗️ 筛选{(minSilentDays>0||maxSilentDays>0||hideOrdered) ? ` · ${filtered.length}` : ''}</button>
+          <Search size={12} className="absolute left-[68px] top-2 text-gray-300 pointer-events-none"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="pl-6 pr-2 py-1 border rounded-lg text-xs w-40"/>
+        </div>
       </div>
+      {showFilters && (
+        <div className="bg-white border rounded-2xl p-3 text-xs space-y-2">
+          <div className="font-semibold text-sm flex items-center gap-2">
+            ⚗️ 筛选条件
+            <span className="text-[11px] font-normal text-gray-400">当前命中 {filtered.length} / {list.length}</span>
+            <button
+              onClick={()=>{ setMinSilentDays(0); setMaxSilentDays(0); setHideOrdered(false); setIncludeNeverSent(true); setTagFilter('all'); setFilter('all' as any); setQ('') }}
+              className="ml-auto px-2 py-0.5 border rounded text-[11px] text-gray-500 hover:bg-gray-50"
+            >清空筛选</button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-gray-500">未跟进天数 ≥</span>
+            <input
+              type="number" min={0} max={9999} value={minSilentDays || ''}
+              onChange={e=> setMinSilentDays(Math.max(0, Number(e.target.value)||0))}
+              placeholder="不限" className="w-16 border rounded px-1.5 py-0.5"
+            />
+            <span className="text-gray-400">天</span>
+            <span className="text-gray-300 mx-1">·</span>
+            <span className="text-gray-500">且 ≤</span>
+            <input
+              type="number" min={0} max={9999} value={maxSilentDays || ''}
+              onChange={e=> setMaxSilentDays(Math.max(0, Number(e.target.value)||0))}
+              placeholder="不限" className="w-16 border rounded px-1.5 py-0.5"
+            />
+            <span className="text-gray-400">天</span>
+            {[7,14,30,60,90,180].map(n=>(
+              <button key={n} onClick={()=> setMinSilentDays(n)} className={`px-2 py-0.5 border rounded-full ${minSilentDays===n?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-600'}`}>≥{n}天</button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input type="checkbox" checked={includeNeverSent} onChange={e=> setIncludeNeverSent(e.target.checked)}/>
+              含「从未发送」客户
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer" title="已下单/won/有复购次数的不显示">
+              <input type="checkbox" checked={hideOrdered} onChange={e=> setHideOrdered(e.target.checked)}/>
+              排除已下单
+            </label>
+            <span className="text-[11px] text-gray-400">天数来自「⟳ 刷新跟进时间」写入的我方发送记录；卡片上「⏳未跟进 x 天」</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
+            <button
+              onClick={()=>{
+                if(!filtered.length) return
+                setSelectMode(true)
+                setChecked(new Set(filtered.map(c=> c.id)))
+                setIntelNote(`已全选筛选结果 ${filtered.length} 人，可批量打标签 / 改等级 / 移入跟进板块`)
+              }}
+              className="px-3 py-1 bg-blue-600 text-white rounded-lg"
+            >☑️ 全选筛选结果（{filtered.length}）</button>
+            <span className="text-[11px] text-gray-400">全选后使用下方多选条：加标签、改等级/阶段、移入六板块</span>
+          </div>
+        </div>
+      )}
       {/* 自定义标签筛选 */}
       <div className="flex gap-1 flex-wrap items-center">
         <span className="text-[11px] text-gray-400">🏷️ 标签：</span>
