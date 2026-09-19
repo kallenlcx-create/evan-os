@@ -123,13 +123,26 @@ async function persistEntry(customerId: string, entry: BucketEntry) {
   } catch { /* 降级：仅 localStorage */ }
 }
 
-export function addManualBuckets(customerIds: string[], buckets: ManualBucket[], note?: string) {
+/**
+ * 批量写入手动板块
+ * mode='replace'（默认）：每人只保留本次 buckets，避免连点六个「移入」后卡片堆满标签
+ * mode='add'：叠加到已有板块
+ */
+export function addManualBuckets(
+  customerIds: string[],
+  buckets: ManualBucket[],
+  note?: string,
+  mode: 'replace' | 'add' = 'replace',
+) {
   const store = { ...loadManualBuckets() }
   const ts = now()
   for (const id of customerIds) {
     const cur = store[id] || { buckets: [] as ManualBucket[], updatedAt: ts }
+    const nextBuckets = mode === 'add'
+      ? [...new Set([...(cur.buckets || []), ...buckets])]
+      : [...new Set(buckets)]
     const next: BucketEntry = {
-      buckets: [...new Set([...(cur.buckets || []), ...buckets])],
+      buckets: nextBuckets,
       note: note || cur.note,
       updatedAt: ts,
     }

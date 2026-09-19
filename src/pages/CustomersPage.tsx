@@ -123,6 +123,8 @@ export default function CustomersPage(){
   const [bulkLevel, setBulkLevel] = useState('')
   const [bulkStage, setBulkStage] = useState('')
   const [bulkTag, setBulkTag] = useState('')
+  /** 板块移入：replace=只保留本次选的（默认）；add=叠加 */
+  const [bucketAddMode, setBucketAddMode] = useState<'replace'|'add'>('replace')
   const toggleCheck = (id: string) => setChecked(prev => { const n = new Set(prev); if(n.has(id)) n.delete(id); else n.add(id); return n })
   const clearCheck = () => { setChecked(new Set()); setSelectMode(false) }
   const bulkApply = async (kind: 'level' | 'stage' | 'tag' | 'delete') => {
@@ -805,17 +807,25 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           <span>已选 {checked.size}</span>
           <button onClick={()=> void handleBatchPortrait({ force: true })} disabled={!!intelBusy}
             className="px-2 py-1 bg-fuchsia-500 hover:bg-fuchsia-400 rounded-lg disabled:opacity-50"
-            title="对选中客户批量调用 AI 生成七维画像"
+            title="对选中客户批量调用 AI 生成十一维画像"
           >🤖批量AI画像</button>
-          <span className="opacity-80">板块</span>
+          <label className="flex items-center gap-1 opacity-90 cursor-pointer" title="替换=只保留本次点的板块；叠加=在原有手动板块上追加">
+            <input type="checkbox" checked={bucketAddMode==='add'} onChange={e=> setBucketAddMode(e.target.checked?'add':'replace')}/>
+            叠加
+          </label>
+          <span className="opacity-80">板块（{bucketAddMode==='add'?'叠加':'替换'}）</span>
           {MANUAL_BUCKETS.map(b=>(
             <button key={'p-in-'+b.key}
               onClick={async()=>{
-                await addManualBuckets([...checked], [b.key])
-                setIntelNote(`已将 ${checked.size} 人移入「${b.label}」`)
+                if(!checked.size) return alert('请先勾选客户')
+                await addManualBuckets([...checked], [b.key], undefined, bucketAddMode)
+                setIntelNote(bucketAddMode==='add'
+                  ? `已叠加「${b.label}」到 ${checked.size} 人`
+                  : `已将 ${checked.size} 人板块设为「${b.label}」（替换，其它手动板块已清）`)
+                await load()
               }}
               className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded-lg border border-white/20"
-            >+{b.label}</button>
+            >{b.label}</button>
           ))}
           {MANUAL_BUCKETS.map(b=>(
             <button key={'p-out-'+b.key}
@@ -930,13 +940,20 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             title="对已选客户批量调用 AI 生成七维画像；每次人数见智能设置"
           >🤖批量AI画像</button>
           <span className="text-gray-400">移入</span>
+          <label className="flex items-center gap-0.5 text-gray-300 cursor-pointer" title="默认替换；勾选后叠加">
+            <input type="checkbox" checked={bucketAddMode==='add'} onChange={e=> setBucketAddMode(e.target.checked?'add':'replace')} className="accent-indigo-400"/>
+            叠加
+          </label>
           {MANUAL_BUCKETS.map(b=>(
             <button key={'in-'+b.key}
               onClick={async()=>{
                 if(!checked.size) return alert('请先勾选客户')
-                await addManualBuckets([...checked], [b.key])
-                setIntelNote(`已将 ${checked.size} 人移入「${b.label}」`)
+                await addManualBuckets([...checked], [b.key], undefined, bucketAddMode)
+                setIntelNote(bucketAddMode==='add'
+                  ? `已叠加「${b.label}」到 ${checked.size} 人`
+                  : `已将 ${checked.size} 人板块设为「${b.label}」（替换）`)
                 window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                await load()
               }}
               className="px-2 py-1 bg-indigo-500/80 hover:bg-indigo-400 rounded text-[11px]"
             >{b.label}</button>
