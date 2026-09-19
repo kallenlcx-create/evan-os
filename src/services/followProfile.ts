@@ -118,6 +118,55 @@ export function computeMailTimes(emails: EmailMessage[], addrs: string[]){
   return { lastReply, lastSent }
 }
 
+/** 客户上次回复之后，我方发给该客户的邮件数量 */
+export function countFollowsSinceReply(emails: EmailMessage[], addrs: string[], lastReply: string | null): number {
+  const set = new Set(addrs.map(a=> a.toLowerCase()))
+  const since = lastReply || '' // 无回复则统计全部我方发给TA的信
+  let n = 0
+  for(const e of emails){
+    const from = extractAddr(e.from).toLowerCase()
+    const isSelf = e.folder === 'sent' || SELF.has(from)
+    if(!isSelf) continue
+    const to = String(e.to||'').toLowerCase()
+    const hit = to.split(',').some(x=> set.has(extractAddr(x)))
+    if(!hit) continue
+    if(since && String(e.date||'') < since) continue
+    n++
+  }
+  return n
+}
+
+/** 读邮件上下文 + 十一维 → 生成专业跟进英文（只返回正文） */
+export async function generateAiFollowReply(c: Customer, emails: EmailMessage[]): Promise<{ subject: string; body: string }>{
+  const { chatOnce } = await import('./aiChat')
+  const { mergePortrait, coercePortrait, parsePortraitFromProfile, formatPortraitText } = await import('../config/portrait')
+  const addrs = customerAddrs(c)
+  const hist = emails.filter(e=>{
+    const from = extractAddr(e.from).toLowerCase()
+    const to = String(e.to||'').toLowerCase()
+    return addrs.includes(from) || to.split(',').some(x=> addrs.includes(extractAddr(x)))
+  }).sort((a,b)=> String(a.date||'').localeCompare(String(b.date||''))).slice(-15)
+  const portrait = mergePortrait(coercePortrait((c as any).aiPortrait), parsePortraitFromProfile((c as any).aiProfile) || {})
+  const portraitText = formatPortraitText(portrait)
+  const mailText = hist.map(e=> `[${e.date}] ${e.folder==='sent'?'我方':'客户'} ${e.subject}\n${(e.text||'').slice(0,300)}`).join('\n---\n').slice(0, 4500)
+  const prompt = `你是 Maxemblem 外贸业务员 Evan。根据客户画像与邮件上下文，写一封专业、简洁的英文跟进邮件正文。
+【十一维画像】
+${portraitText}
+【客户】${c.contactName||c.title} ${c.email} 等级${c.level||'C'}
+【往来】
+${mailText||'无'}
+要求：只输出邮件正文（不要主题、不要解释）；语气专业友好；结合产品/订单/画像；结尾留一句明确行动引导；落款 Best regards,\\nEvan。不超过180词。`
+  const body = String(await chatOnce(prompt) || '').trim()
+  const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
+  const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, subject:'', messageId:'' } as any))
+  const { normalizeReplySubject } = await import('../utils/mailHtml')
+  const product = (c.portrait as any)?.products?.[0] || 'your project'
+  const subject = th.found && th.subject
+    ? normalizeReplySubject(th.subject)
+    : `Following up - ${product}`
+  return { subject, body: body || `Hi ${c.contactName||c.title||'there'},\n\nJust wanted to follow up on your project. Let me know if you have any questions.\n\nBest regards,\nEvan` }
+}
+
 /**
  * 同步跟进档案 + 规则动作
  * - 回复 → hasReply / followMode=manual / 高意向
@@ -146,6 +195,7 @@ export async function runFollowBoardSync(opts?: {
     if(isNoiseEmailAddress(c.email)) continue
     const addrs = customerAddrs(c)
     const { lastReply, lastSent } = computeMailTimes(emails, addrs)
+    const followCount = countFollowsSinceReply(emails, addrs, lastReply)
     const stage = salesStageOf(c)
     let followMode = followModeOf(c)
     let hasReply = String((c as any).hasReply || '') === 'yes'
@@ -216,6 +266,7 @@ export async function runFollowBoardSync(opts?: {
       hasReply: hasReply ? 'yes' : 'no',
       lastReplyAt: lastReply || (c as any).lastReplyAt || null,
       lastFollowAt: lastSent || (c as any).lastFollowAt || null,
+      followCountSinceReply: followCount,
       followMode,
       followModeSource: hasReply && followMode==='manual' && followModeOf(c)!=='manual' ? 'reply' : ((c as any).followModeSource || 'system'),
       salesStage: stage,

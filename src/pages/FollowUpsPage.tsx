@@ -10,7 +10,9 @@ import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, type FollowMode, type SalesStage } from '../services/followProfile'
+import { addManualBuckets } from '../services/manualBuckets'
+import { isNoiseEmailAddress } from '../utils/emailHelpers'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 void MANUAL_BUCKETS
 void removeManualBucket
@@ -112,6 +114,9 @@ export default function FollowUpsPage() {
   const [showFollowRules, setShowFollowRules] = useState(false)
   const [boardPage, setBoardPage] = useState(1)
   const [boardPerPage, setBoardPerPage] = useState(20)
+  const [aiReplyBusy, setAiReplyBusy] = useState<string>('')
+  const [copiedEmail, setCopiedEmail] = useState('')
+  const [boardHideNoise, setBoardHideNoise] = useState(true)
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -950,7 +955,8 @@ const handleBatchAiTpl = useCallback(async () => {
         const seqMapB = new Map<string, any>()
         for(const s of sequences) seqMapB.set(s.customer_id, s)
         const rows = customers.filter(c=>{
-          if((c.tags||[]).map(String).includes('噪声')) return false
+          if(boardHideNoise && isNoiseEmailAddress(c.email)) return false
+          if(!boardHideNoise && (c.tags||[]).map(String).includes('噪声')) return false
           const st = salesStageOf(c)
           if(boardStage !== 'all' && st !== boardStage) return false
           const fm = followModeOf(c)
@@ -960,6 +966,57 @@ const handleBatchAiTpl = useCallback(async () => {
           if(boardReply === 'no' && hr === 'yes') return false
           return true
         }).sort((a,b)=> (daysNoFollow(b)??999) - (daysNoFollow(a)??999))
+        // 表内即时算「上次回复后我方跟进次数」（与档案字段取较大值）
+        const mailList = emails
+        const followCountOf = (c: Customer) => {
+          const persisted = Number((c as any).followCountSinceReply || 0)
+          const addrs = customerAddrs(c)
+          const { lastReply } = computeMailTimes(mailList, addrs)
+          const live = countFollowsSinceReply(mailList, addrs, lastReply)
+          return Math.max(persisted, live)
+        }
+        const copyEmail = async (email: string) => {
+          try{
+            await navigator.clipboard.writeText(email)
+            setCopiedEmail(email)
+            setTimeout(()=> setCopiedEmail(''), 1200)
+          }catch{
+            const ta = document.createElement('textarea')
+            ta.value = email
+            document.body.appendChild(ta)
+            ta.select()
+            document.execCommand('copy')
+            document.body.removeChild(ta)
+            setCopiedEmail(email)
+            setTimeout(()=> setCopiedEmail(''), 1200)
+          }
+        }
+        const handleAiReply = async (c: Customer) => {
+          try{
+            const { getAiSettings } = await import('../config/aiProviders')
+            const ai = getAiSettings()
+            if(!(ai.apiKey || ai.proxyUrl) && !confirm('未配置 AI Key，生成可能失败。继续？')) return
+            if(!confirm(`为 ${c.contactName||c.title} 用 AI 生成跟进并入队发送？（有往来则挂会话最下方）`)) return
+            setAiReplyBusy(c.id)
+            const mails = await db.emails.toArray()
+            const gen = await generateAiFollowReply(c, mails)
+            const accs = await listAccounts()
+            if(!accs.length){ alert('请先绑定邮箱'); return }
+            const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
+            const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
+            const mid = th.found && th.messageId ? th.messageId : undefined
+            await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
+              html: (await import('../utils/mailHtml')).textToHtml(gen.body),
+              inReplyTo: mid,
+              references: mid,
+            })
+            await setCustomerFollowMode(c, 'manual', 'user')
+            setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'} · 主题 ${gen.subject.slice(0,40)}`)
+            await loadSequences()
+            await load()
+          }catch(e:any){ setIntellectNote('AI回复失败：'+String(e.message||e).slice(0,120)) }
+          finally{ setAiReplyBusy('') }
+        }
         const totalPagesB = Math.max(1, Math.ceil(rows.length / boardPerPage))
         const safeB = Math.min(boardPage, totalPagesB)
         const pageRows = rows.slice((safeB-1)*boardPerPage, safeB*boardPerPage)
@@ -977,6 +1034,7 @@ const handleBatchAiTpl = useCallback(async () => {
               <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
                 <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="cancelled">取消</option>
               </select>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={boardHideNoise} onChange={e=> setBoardHideNoise(e.target.checked)}/> 隐藏噪声邮箱</label>
               <label className="flex items-center gap-1 ml-auto">每页
                 <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-0.5">
                   {[10,20,50,100].map(n=> <option key={n} value={n}>{n}</option>)}
@@ -989,7 +1047,8 @@ const handleBatchAiTpl = useCallback(async () => {
                   <tr className="text-left text-gray-500">
                     <th className="p-2">客户</th><th className="p-2">等级</th><th className="p-2">回复</th>
                     <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
-                    <th className="p-2">跟进状态</th><th className="p-2">未跟进</th><th className="p-2">销售阶段</th><th className="p-2">操作</th>
+                    <th className="p-2">跟进次数</th><th className="p-2">跟进状态</th><th className="p-2">未跟进</th>
+                    <th className="p-2">销售阶段</th><th className="p-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1002,8 +1061,18 @@ const handleBatchAiTpl = useCallback(async () => {
                     return (
                       <tr key={c.id} className="border-t hover:bg-gray-50">
                         <td className="p-2 max-w-[160px]">
-                          <div className="font-medium truncate">{c.contactName||c.title}</div>
-                          <div className="text-gray-400 truncate">{c.email}</div>
+                          <div className="font-medium truncate">{c.contactName||c.title}
+                            {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
+                            {((c as any).aiTier==='high' || String((c as any).hasReply||'')==='yes') && (
+                              <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[9px]" title={String((c as any).aiReason||'高意向')}>高意向</span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={()=> void copyEmail(c.email||'')}
+                            className="text-gray-400 hover:text-blue-600 hover:underline truncate max-w-full text-left"
+                            title="点击复制邮箱"
+                          >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
                         <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
                         <td className="p-2"><span className={`px-1.5 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{hr==='yes'?'有':'无'}</span></td>
@@ -1018,6 +1087,9 @@ const handleBatchAiTpl = useCallback(async () => {
                         </td>
                         <td className="p-2 text-gray-500">{(c as any).lastReplyAt ? String((c as any).lastReplyAt).slice(0,10) : '—'}</td>
                         <td className="p-2 text-gray-500">{(c as any).lastFollowAt ? String((c as any).lastFollowAt).slice(0,10) : '—'}</td>
+                        <td className="p-2" title="距离客户上次回复之后，我方发给该客户的邮件数量（无回复则统计全部我方发送）">
+                          <b className={followCountOf(c)>=3?'text-orange-600':''}>{followCountOf(c)}</b>
+                        </td>
                         <td className="p-2">
                           <div>{stepLabel((c as any).followStep)}{seq?.mode==='auto'?` · 序列${Math.min(seq.current_step,7)}/7`:''}</div>
                         </td>
@@ -1033,9 +1105,27 @@ const handleBatchAiTpl = useCallback(async () => {
                           </select>
                         </td>
                         <td className="p-2">
-                          {fm==='auto'
-                            ? <button onClick={()=> void handleSeqMode(c.id,'manual')} className="px-2 py-0.5 border rounded text-[10px]">停自动</button>
-                            : <button onClick={()=> void handleStartSeq(c)} className="px-2 py-0.5 border rounded text-[10px] text-blue-600">启动序列</button>}
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              onClick={async()=>{
+                                await addManualBuckets([c.id], ['high'], '跟进表标高意向', 'add')
+                                await db.customers.update(c.id, { aiTier:'high', aiReason:'手动高意向', updatedAt:new Date().toISOString() } as any)
+                                setIntellectNote(`已标高意向：${c.contactName||c.email}`)
+                                await load()
+                              }}
+                              className="px-2 py-0.5 border rounded text-[10px] text-orange-600"
+                              title="加入跟进「高意向」并打标"
+                            >高意向</button>
+                            <button
+                              onClick={()=> void handleAiReply(c)}
+                              disabled={aiReplyBusy===c.id || !!aiReplyBusy}
+                              className="px-2 py-0.5 border rounded text-[10px] text-purple-700 disabled:opacity-50"
+                              title="AI 读画像+邮件生成英文跟进，有往来则挂会话最下方入队"
+                            >{aiReplyBusy===c.id?'AI中…':'AI回复'}</button>
+                            {fm==='auto'
+                              ? <button onClick={()=> void handleSeqMode(c.id,'manual')} className="px-2 py-0.5 border rounded text-[10px]">停自动</button>
+                              : <button onClick={()=> void handleStartSeq(c)} className="px-2 py-0.5 border rounded text-[10px] text-blue-600">启动序列</button>}
+                          </div>
                         </td>
                       </tr>
                     )
