@@ -383,6 +383,11 @@ export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }
         classifyReason: matchedKw ? `成交词「${matchedKw}」` : undefined,
       } as any)
       await closePendingFollowUps(c.id, matchedKw ? `成交词「${matchedKw}」` : '已下单，自动关闭逾期跟进')
+      // 跟进档案：已下单 → salesStage + 可选停自动序列
+      try{
+        const { setCustomerSalesStage } = await import('./followProfile')
+        await setCustomerSalesStage(c, 'ordered')
+      }catch{}
       tagged.add(c.id)
       result.customersTagged++
     }

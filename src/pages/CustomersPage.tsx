@@ -8,6 +8,7 @@ import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntell
 import { coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile, portraitDisplay, PORTRAIT_DIMENSIONS, isFillableDim, type AiPortraitV2 } from '../config/portrait'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
+import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow } from '../services/followProfile'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 
@@ -709,7 +710,12 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     // 「已下单」标签筛选同时认 stage=won，避免只扫标签时漏人
     if(tagFilter === '已下单'){
       const tags = (c.tags||[]).map(String)
-      if(!tags.includes('已下单') && !tags.includes('订单') && c.stage !== 'won') return false
+      const stage = String((c as any).salesStage||'')
+      if(!tags.includes('已下单') && !tags.includes('订单') && c.stage !== 'won' && stage !== 'ordered') return false
+    } else if(tagFilter === '取消'){
+      const tags = (c.tags||[]).map(String)
+      const stage = String((c as any).salesStage||'')
+      if(!tags.includes('取消') && stage !== 'cancelled' && c.stage !== 'lost') return false
     } else if(tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) return false
     if(filter==='key' && !c.isKey) return false
     if(comboLevels.length > 0){
@@ -1379,6 +1385,45 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   </>
                 )
               })()}
+            </div>
+            {/* 跟进档案 */}
+            <div className="px-4 py-2 border-b bg-gray-50 text-[11px] text-gray-700 space-y-1">
+              <div className="font-semibold text-gray-800">📋 跟进档案</div>
+              <div className="flex flex-wrap items-center gap-3">
+                <span>方式
+                  <select
+                    value={followModeOf(selectedCustomer)}
+                    onChange={async e=>{
+                      await setCustomerFollowMode(selectedCustomer, e.target.value as any, 'user')
+                      const fresh = await db.customers.get(selectedCustomer.id) as any
+                      if(fresh) setSelectedCustomer(fresh)
+                    }}
+                    className="ml-1 border rounded px-1 py-0.5"
+                  >
+                    <option value="manual">手动跟进</option>
+                    <option value="auto">自动跟进</option>
+                  </select>
+                </span>
+                <span>回复 <b>{String((selectedCustomer as any).hasReply||'')==='yes'?'有':'无'}</b></span>
+                <span>状态 <b>{stepLabel((selectedCustomer as any).followStep)}</b></span>
+                <span>销售阶段
+                  <select
+                    value={salesStageOf(selectedCustomer)}
+                    onChange={async e=>{
+                      await setCustomerSalesStage(selectedCustomer, e.target.value as any)
+                      const fresh = await db.customers.get(selectedCustomer.id) as any
+                      if(fresh) setSelectedCustomer(fresh)
+                    }}
+                    className="ml-1 border rounded px-1 py-0.5"
+                  >
+                    <option value="following">跟进中</option>
+                    <option value="ordered">已下单</option>
+                    <option value="cancelled">取消</option>
+                  </select>
+                </span>
+                <span>未跟进 <b className={(daysNoFollow(selectedCustomer)||0)>7?'text-rose-600':''}>{daysNoFollow(selectedCustomer)==null?'—':`${daysNoFollow(selectedCustomer)}天`}</b></span>
+                <span>最近回复 {String((selectedCustomer as any).lastReplyAt||'').slice(0,10)||'—'}</span>
+              </div>
             </div>
             {/* 红框：十一维背景画像（只可 AI 更新或人工编辑，复购开发永不覆盖） */}
             <div className="px-4 py-3 border-b bg-purple-50/40 space-y-2">

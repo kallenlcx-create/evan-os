@@ -20,6 +20,13 @@ export type IntellectConfig = {
   purchaseLoopCooldownDays: number
   /** 复购开发每次分析人数上限 */
   purchaseLoopBatchMax: number
+  /** 跟进档案规则 */
+  followReplyToManual: boolean
+  followReplyToHigh: boolean
+  followStopSeqOnOrder: boolean
+  followStopSeqOnCancel: boolean
+  followAutoEnrollNoReply: boolean
+  followSimThreshold: number
   /** 成交/下单关键词（不区分大小写） */
   dealKeywords: string[]
   /** 排除词：命中则不当作成交 */
@@ -50,6 +57,12 @@ export function loadIntellectConfig(): IntellectConfig {
     aiInsightCooldownDays: 7,
     purchaseLoopCooldownDays: 14,
     purchaseLoopBatchMax: 20,
+    followReplyToManual: true,
+    followReplyToHigh: true,
+    followStopSeqOnOrder: true,
+    followStopSeqOnCancel: true,
+    followAutoEnrollNoReply: false,
+    followSimThreshold: 0.6,
     dealKeywords: [...DEFAULT_DEAL_KEYWORDS],
     dealExcludeWords: [...DEFAULT_DEAL_EXCLUDES],
   }

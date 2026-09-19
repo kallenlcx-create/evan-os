@@ -9,9 +9,12 @@ import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
-import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, type FollowMode, type SalesStage } from '../services/followProfile'
+import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 void MANUAL_BUCKETS
 void removeManualBucket
+void removeManualBuckets
 
 // ====== 跟进模板库 ======
 const TEMPLATES = [
@@ -99,6 +102,16 @@ export default function FollowUpsPage() {
 
   // ====== 自动跟进序列 ======
   const [seqTab, setSeqTab] = useState<'active'|'replied'|'dormant'>('active')
+  /** 跟进档案视图 */
+  const [mainView, setMainView] = useState<'radar'|'board'>('radar')
+  const [boardMode, setBoardMode] = useState<'all'|FollowMode>('all')
+  const [boardStage, setBoardStage] = useState<'all'|SalesStage>('all')
+  const [boardReply, setBoardReply] = useState<'all'|'yes'|'no'>('all')
+  const [boardBusy, setBoardBusy] = useState(false)
+  const [followCfg, setFollowCfg] = useState<IntellectConfig>(()=> loadIntellectConfig())
+  const [showFollowRules, setShowFollowRules] = useState(false)
+  const [boardPage, setBoardPage] = useState(1)
+  const [boardPerPage, setBoardPerPage] = useState(20)
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -119,6 +132,13 @@ export default function FollowUpsPage() {
       if(c.sendEnd != null) setSendEnd(c.sendEnd)
       if(c.skipHolidays != null) setSkipHolidays(!!c.skipHolidays)
     }catch{}
+    try{
+      const seqs = (await getSequences()).sequences || []
+      setSequences(seqs)
+      // 跟进档案同步：回复/步骤/已下单停序列
+      const r = await runFollowBoardSync({ sequences: seqs })
+      if(r.replies || r.modeChanged || r.stepsUpdated) setIntellectNote(r.note)
+    }catch{}
   }, [])
   const seqStats = useMemo(()=>{
     const auto = sequences.filter(s=> s.mode==='auto').length
@@ -132,16 +152,24 @@ export default function FollowUpsPage() {
     try{
       const accs = await listAccounts()
       if(!accs.length) return alert('请先绑定邮箱账号')
-      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？`)) return
+      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？（档案将标为「自动跟进」）`)) return
       await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      await setCustomerFollowMode(c, 'auto', 'user')
       alert('自动跟进已启动')
       await loadSequences()
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
     }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
   }, [loadSequences])
   const handleSeqMode = useCallback(async (customerId: string, mode: string, fromStep?: number) => {
     try{
       await patchSequence(customerId, { mode, fromStep })
+      const cust = (await db.customers.get(customerId)) as Customer | undefined
+      if(cust){
+        if(mode === 'auto') await setCustomerFollowMode(cust, 'auto', 'user')
+        else if(mode === 'manual') await setCustomerFollowMode(cust, 'manual', 'user')
+      }
       await loadSequences()
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
     }catch(e:any){ alert('操作失败：' + String(e.message||e).slice(0,150)) }
   }, [loadSequences])
 
@@ -251,11 +279,15 @@ export default function FollowUpsPage() {
     for (const c of customers) {
       // 噪声客户不进雷达
       if ((c.tags||[]).map(String).includes('噪声')) continue
+      const stage = salesStageOf(c)
+      if (stage === 'cancelled') continue
       const t = tierOf(c)
       const days = daysByCustomer.get(c.id) ?? 99
-      const stage = c.stage || 'lead'
+      const st = c.stage || 'lead'
       let hit = false
-      if (catFilter === 'high') hit = t === 'high' || inManual(c, 'high')
+      if (catFilter === 'high') {
+        hit = t === 'high' || inManual(c, 'high') || String((c as any).hasReply||'') === 'yes'
+      }
       else if (catFilter === 'today') hit = followIndex.todaySet.has(c.id) || inManual(c, 'today')
       else if (catFilter === 'overdue') {
         // 逾期 = 未下单且跟进过期；已下单仅在手动勾选「逾期」时出现
@@ -272,7 +304,7 @@ export default function FollowUpsPage() {
       if (!hit) continue
       if (showManualOnly && !(manualMap[c.id]?.buckets || []).length) continue
       if (tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) continue
-      out.push({ c, days, stage })
+      out.push({ c, days, stage: st })
     }
     out.sort((x, y) => ts(y.c.updatedAt || '') - ts(x.c.updatedAt || ''))
     return out
@@ -696,6 +728,45 @@ const handleBatchAiTpl = useCallback(async () => {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
+      <div className="flex items-center gap-2 flex-wrap -mt-1">
+        <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
+        <button onClick={()=> setMainView('board')} className={`px-3 py-1 rounded-full text-xs ${mainView==='board'?'bg-blue-600 text-white':'bg-white border'}`}>📋 跟进表</button>
+        <button
+          onClick={async()=>{
+            setBoardBusy(true)
+            try{
+              const seqs = (await getSequences()).sequences || []
+              setSequences(seqs)
+              const r = await runFollowBoardSync({ sequences: seqs, forceStepScan: true })
+              setIntellectNote(r.note)
+              await load()
+            }catch(e:any){ setIntellectNote('档案同步失败：'+String(e.message||e).slice(0,100)) }
+            finally{ setBoardBusy(false) }
+          }}
+          disabled={boardBusy}
+          className="px-2 py-1 rounded-full text-xs bg-white border disabled:opacity-50"
+          title="扫描邮件回复、同步跟进方式/步骤/销售阶段，并联动自动序列"
+        >{boardBusy?'同步中…':'🔄 同步跟进档案'}</button>
+        <button onClick={()=> setShowFollowRules(v=>!v)} className="px-2 py-1 rounded-full text-xs bg-white border">⚙️ 跟进规则</button>
+      </div>
+      {showFollowRules && (
+        <div className="bg-white border rounded-2xl p-3 text-xs space-y-2">
+          <div className="font-semibold text-sm">⚙️ 跟进规则（系统自动判断）</div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followReplyToManual} onChange={e=>{ const n={...followCfg, followReplyToManual:e.target.checked}; setFollowCfg(n); saveIntellectConfig({ followReplyToManual:e.target.checked }) }}/> 有回复→改手动跟进</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followReplyToHigh} onChange={e=>{ setFollowCfg({...followCfg, followReplyToHigh:e.target.checked}); saveIntellectConfig({ followReplyToHigh:e.target.checked }) }}/> 有回复→进高意向</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followStopSeqOnOrder} onChange={e=>{ setFollowCfg({...followCfg, followStopSeqOnOrder:e.target.checked}); saveIntellectConfig({ followStopSeqOnOrder:e.target.checked }) }}/> 已下单→停自动序列</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followStopSeqOnCancel} onChange={e=>{ setFollowCfg({...followCfg, followStopSeqOnCancel:e.target.checked}); saveIntellectConfig({ followStopSeqOnCancel:e.target.checked }) }}/> 取消→停自动序列</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followAutoEnrollNoReply} onChange={e=>{ setFollowCfg({...followCfg, followAutoEnrollNoReply:e.target.checked}); saveIntellectConfig({ followAutoEnrollNoReply:e.target.checked }) }}/> 无回复自动拉入序列</label>
+            <label className="flex items-center gap-1">模板相似度阈值
+              <input type="number" min={0.2} max={0.95} step={0.05} value={followCfg.followSimThreshold||0.6} onChange={e=>{ const v=Number(e.target.value)||0.6; setFollowCfg({...followCfg, followSimThreshold:v}); saveIntellectConfig({ followSimThreshold:v }) }} className="w-14 border rounded px-1"/>
+            </label>
+          </div>
+          <div className="text-[11px] text-gray-400">跟进步号：自动序列按已发出步骤；手动邮件按「模板+间隔」里的序列文案关键词相似度判断（跟进1–7）。标记「自动跟进」才会进自动序列。</div>
+        </div>
+      )}
+      {mainView==='radar' && (
+      <>
       {catFilter !== 'all' && (
         <div className="text-xs text-gray-500 -mt-2">当前筛选：<b className="text-blue-600">{{high:'高意向客户',today:'今日跟进',overdue:'逾期跟进',pending:'待成交机会',repurchase:'潜在复购',marketing:'营销机会'}[catFilter]}</b>
           <button onClick={()=> setCatFilter('all')} className="ml-2 text-gray-400 hover:text-gray-600">✕ 清除</button>
@@ -871,6 +942,117 @@ const handleBatchAiTpl = useCallback(async () => {
           </div>
         </div>
       </div>
+      </>
+      )}
+
+      {/* ====== 跟进档案表 ====== */}
+      {mainView==='board' && (()=>{
+        const seqMapB = new Map<string, any>()
+        for(const s of sequences) seqMapB.set(s.customer_id, s)
+        const rows = customers.filter(c=>{
+          if((c.tags||[]).map(String).includes('噪声')) return false
+          const st = salesStageOf(c)
+          if(boardStage !== 'all' && st !== boardStage) return false
+          const fm = followModeOf(c)
+          if(boardMode !== 'all' && fm !== boardMode) return false
+          const hr = String((c as any).hasReply||'')
+          if(boardReply === 'yes' && hr !== 'yes') return false
+          if(boardReply === 'no' && hr === 'yes') return false
+          return true
+        }).sort((a,b)=> (daysNoFollow(b)??999) - (daysNoFollow(a)??999))
+        const totalPagesB = Math.max(1, Math.ceil(rows.length / boardPerPage))
+        const safeB = Math.min(boardPage, totalPagesB)
+        const pageRows = rows.slice((safeB-1)*boardPerPage, safeB*boardPerPage)
+        return (
+          <div className="bg-white rounded-2xl border p-4 space-y-3">
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="font-semibold text-sm">📋 跟进档案表</span>
+              <span className="text-gray-400">共 {rows.length} 人</span>
+              <select value={boardMode} onChange={e=>{ setBoardMode(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+                <option value="all">全部跟进方式</option><option value="auto">自动跟进</option><option value="manual">手动跟进</option>
+              </select>
+              <select value={boardReply} onChange={e=>{ setBoardReply(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+                <option value="all">回复：全部</option><option value="yes">有回复</option><option value="no">无回复</option>
+              </select>
+              <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+                <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="cancelled">取消</option>
+              </select>
+              <label className="flex items-center gap-1 ml-auto">每页
+                <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-0.5">
+                  {[10,20,50,100].map(n=> <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead className="bg-gray-50">
+                  <tr className="text-left text-gray-500">
+                    <th className="p-2">客户</th><th className="p-2">等级</th><th className="p-2">回复</th>
+                    <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
+                    <th className="p-2">跟进状态</th><th className="p-2">未跟进</th><th className="p-2">销售阶段</th><th className="p-2">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.map(c=>{
+                    const seq = seqMapB.get(c.id)
+                    const fm = followModeOf(c)
+                    const st = salesStageOf(c)
+                    const hr = String((c as any).hasReply||'')
+                    const dn = daysNoFollow(c)
+                    return (
+                      <tr key={c.id} className="border-t hover:bg-gray-50">
+                        <td className="p-2 max-w-[160px]">
+                          <div className="font-medium truncate">{c.contactName||c.title}</div>
+                          <div className="text-gray-400 truncate">{c.email}</div>
+                        </td>
+                        <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
+                        <td className="p-2"><span className={`px-1.5 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{hr==='yes'?'有':'无'}</span></td>
+                        <td className="p-2">
+                          <select value={fm} onChange={async(ev)=>{
+                            await setCustomerFollowMode(c, ev.target.value as FollowMode, 'user')
+                            await load()
+                          }} className="border rounded px-1 py-0.5">
+                            <option value="manual">手动跟进</option>
+                            <option value="auto">自动跟进</option>
+                          </select>
+                        </td>
+                        <td className="p-2 text-gray-500">{(c as any).lastReplyAt ? String((c as any).lastReplyAt).slice(0,10) : '—'}</td>
+                        <td className="p-2 text-gray-500">{(c as any).lastFollowAt ? String((c as any).lastFollowAt).slice(0,10) : '—'}</td>
+                        <td className="p-2">
+                          <div>{stepLabel((c as any).followStep)}{seq?.mode==='auto'?` · 序列${Math.min(seq.current_step,7)}/7`:''}</div>
+                        </td>
+                        <td className={`p-2 ${(dn!=null && dn>7)?'text-rose-600 font-medium':''}`}>{dn==null?'—':`${dn}天`}</td>
+                        <td className="p-2">
+                          <select value={st} onChange={async(ev)=>{
+                            await setCustomerSalesStage(c, ev.target.value as SalesStage)
+                            await load()
+                          }} className="border rounded px-1 py-0.5">
+                            <option value="following">跟进中</option>
+                            <option value="ordered">已下单</option>
+                            <option value="cancelled">取消</option>
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          {fm==='auto'
+                            ? <button onClick={()=> void handleSeqMode(c.id,'manual')} className="px-2 py-0.5 border rounded text-[10px]">停自动</button>
+                            : <button onClick={()=> void handleStartSeq(c)} className="px-2 py-0.5 border rounded text-[10px] text-blue-600">启动序列</button>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-gray-400">
+              <span>第 {safeB}/{totalPagesB} 页 · 标「自动跟进」才进序列</span>
+              <div className="flex gap-1">
+                <button onClick={()=> setBoardPage(p=> Math.max(1,p-1))} className="w-6 h-6 border rounded bg-white">{'<'}</button>
+                <button onClick={()=> setBoardPage(p=> Math.min(totalPagesB,p+1))} className="w-6 h-6 border rounded bg-white">{'>'}</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ====== 自动跟进序列（7步 / 回复转手动 / 沉睡池）====== */}
       <div className="bg-white rounded-2xl border p-4 mt-3">
