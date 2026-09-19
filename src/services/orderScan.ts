@@ -79,6 +79,15 @@ function extKey(customerId: string, dateDay: string, amount: number|null, produc
 const PO_KIND = 'purchase_order'
 let poMigrated = false
 
+/** collections 行 id 必须短：MySQL data.row_id 过长会推送 500 */
+function poRowId(o: PurchaseOrder): string {
+  const seed = String(o.ext_key || o.id || '')
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0
+  const cust = String(o.customer_id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+  return `po_${Math.abs(h).toString(36)}_${cust}`.slice(0, 64)
+}
+
 async function loadAllOrders(): Promise<PurchaseOrder[]> {
   try {
     const rows = await db.collections.where('kind').equals(PO_KIND).toArray() as any[]
@@ -90,7 +99,7 @@ async function loadAllOrders(): Promise<PurchaseOrder[]> {
     if (list.length && !poMigrated) {
       for (const o of list) {
         await db.collections.put({
-          id: `po-${o.ext_key}`,
+          id: poRowId(o),
           kind: PO_KIND,
           category: o.source || 'email_scan',
           data: o,
@@ -111,7 +120,7 @@ async function upsertOrder(o: PurchaseOrder){
       return false
     }
     await db.collections.put({
-      id: `po-${o.ext_key}`,
+      id: poRowId(o),
       kind: PO_KIND,
       category: o.source || 'email_scan',
       data: o,
@@ -162,7 +171,19 @@ export async function purgeFalseOrderedTags(): Promise<{
   const purgeOrderIds = allOrders.filter(o => o.source === 'email_scan').map(o => o.ext_key)
   for (const key of purgeOrderIds) {
     try { await db.collections.delete(`po-${key}`) } catch {}
+    try { await db.collections.delete(poRowId({ ext_key: key, customer_id: '', id: key } as PurchaseOrder)) } catch {}
   }
+  // 清掉历史超长 id（会导致云同步推送 collections 500）
+  try {
+    const cols = await db.collections.where('kind').equals(PO_KIND).toArray() as any[]
+    for (const r of cols) {
+      if (!r?.id) continue
+      const id = String(r.id)
+      if (id.length > 80 || id.startsWith('po-mail:') || id.startsWith('po-anon:')) {
+        await db.collections.delete(id)
+      }
+    }
+  } catch {}
   try {
     const legacy = await db.appState.get('evan:purchaseOrders')
     if (legacy?.data) {

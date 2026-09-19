@@ -279,12 +279,13 @@ class CloudSyncService {
 
     for (const table of SYNC_TABLES) {
       const rows: Record<string, any>[] = await (db as any)[table].toArray()
-      const dirty = rows.filter(r => {
+        const dirty = rows.filter(r => {
+        if (!r?.id || String(r.id).length > 255) return false // 服务端 row_id 上限，超长跳过防 500
         const t = timeOf(table, r)
         return t !== SENTINEL && t > overlapSince
       })
       // 无时间字段的微型表：全量推（幂等）
-      const alwaysAll = rows.filter(r => timeOf(table, r) === SENTINEL)
+      const alwaysAll = rows.filter(r => r?.id && String(r.id).length <= 255 && timeOf(table, r) === SENTINEL)
       const toPush = dirty.length > 0 ? dirty : alwaysAll
       if (toPush.length === 0) continue
       for (let i = 0; i < toPush.length; i += PUSH_CHUNK) {

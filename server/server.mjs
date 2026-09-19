@@ -118,6 +118,8 @@ async function init() {
       PRIMARY KEY (username, table_name, row_id),
       INDEX idx_updated (username, updated_at)
     ) CHARACTER SET utf8mb4`)
+  // 历史库 row_id 仅 VARCHAR(80)，collections/订单等长 id 会推送 500 → 扩到 255
+  try{ await pool.query(`ALTER TABLE data MODIFY row_id VARCHAR(255) NOT NULL`) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS files (
       id VARCHAR(80) PRIMARY KEY,
@@ -459,12 +461,14 @@ app.post('/upsert/:table', auth, wrap(async (req, res) => {
 
   for (const row of rows.slice(0, 500)) {
     if (!row?.id) continue
+    const rid = String(row.id)
+    if (rid.length > 255) continue // 超长 id 直接跳过，避免整批 500
     const updatedAt = row.updatedAt || row.createdAt || new Date().toISOString()
 
     // LWW 服务端守门：只接受比已存记录更新的版本
     const [existing] = await pool.query(
       'SELECT updated_at FROM data WHERE username=? AND table_name=? AND row_id=?',
-      [req.user, tableName, row.id])
+      [req.user, tableName, rid])
     if (existing.length > 0 && new Date(existing[0].updated_at).getTime() >= Date.parse(updatedAt)) {
       continue
     }
@@ -473,7 +477,7 @@ app.post('/upsert/:table', auth, wrap(async (req, res) => {
       `INSERT INTO data (username, table_name, row_id, data, updated_at, deleted)
        VALUES (?,?,?,?,?,0)
        ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at), deleted = 0`,
-      [req.user, tableName, row.id, JSON.stringify({ ...row }), updatedAt.slice(0, 23)])
+      [req.user, tableName, rid, JSON.stringify({ ...row, id: rid }), updatedAt.slice(0, 23)])
     accepted++
   }
   res.json({ ok: true, accepted })
@@ -1653,9 +1657,9 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
     }finally{ lock.release() }
   }catch(e){
     res.status(500).json({error:'获取邮件数失败：'+(e.message||e)})
-              }finally{
-                await logoutSafe(wc)
-              }
+  }finally{
+    try{ await logoutSafe(client) }catch{}
+  }
 }))
 
 // 真实拉取：GET /email/sync/:id?limit=30&folder=INBOX&search=UNSEEN&sinceUid=12345
