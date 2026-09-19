@@ -784,7 +784,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             </label>
           </div>
           <div className="space-y-1">
-            <div className="text-[11px] text-gray-500">成交/下单关键词（逗号分隔，命中邮件用于自动分类金额）</div>
+            <div className="text-[11px] text-gray-500">成交/下单关键词（逗号分隔；<b>订单扫描 · 已下单标签 · 自动分类金额</b>都按这里判断，可随时改，改完点「订单对齐」重算）</div>
             <textarea
               className="w-full border rounded-lg p-2 text-[11px] font-mono"
               rows={2}
@@ -794,7 +794,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                 if(list.length) patchIntelCfg({ dealKeywords: list })
               }}
             />
-            <div className="text-[11px] text-gray-500">排除词</div>
+            <div className="text-[11px] text-gray-500">排除词（命中则不当作成交；与关键词同样作用于订单扫描）</div>
             <input className="w-full border rounded-lg p-2 text-[11px]"
               defaultValue={(intelCfg.dealExcludeWords||[]).join(', ')}
               onBlur={e=>{

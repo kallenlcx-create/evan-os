@@ -1,7 +1,7 @@
 // 近 N 天付款/成交扫描 + 订单去重 + CSV 订单导入
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
-import { loadIntellectConfig, syncTiersFromRules } from './customerDailyClassify'
+import { loadIntellectConfig, syncTiersFromRules, matchDealKeywords, DEFAULT_DEAL_KEYWORDS, DEFAULT_DEAL_EXCLUDES } from './customerDailyClassify'
 
 export type PurchaseOrder = {
   id: string
@@ -16,28 +16,8 @@ export type PurchaseOrder = {
   created_at: string
 }
 
-// ====== 严格成交证据：INQC 是询盘单号，绝不能单独当订单 ======
-const STRONG = [
-  /payment\s*(has\s+been\s+)?(sent|confirmed|done|received|made)/i,
-  /(?:we\s+(?:have\s+)?|i\s+have\s+)paid\b/i,
-  /\bfully\s+paid\b/i,
-  /remittance\s*(advice|copy|attached)?/i,
-  /wire\s+transfer\s*(copy|confirm|attached|sent)?/i,
-  /\bTT\s+(copy|payment|slip|receipt)/i,
-  /we\s*(have\s*)?(placed|confirmed)\s*(the\s*)?order/i,
-  /please\s+proceed\s+with\s+(the\s+)?order/i,
-  /\bPO[-\s]?\d{4,}/i,
-  /maxemblem\s+order\s+confirm/i,
-  /order\s+confirmation\s*[:\-]/i,
-  /已付款|付款成功|汇款凭证|请查收.*(款|汇款)|款已付/i,
-]
-const NEGATIVE = [
-  /\bunpaid\b/i,
-  /\bnot\s+paid\b/i,
-  /pending\s+payment/i,
-  /awaiting\s+(payment|deposit)/i,
-  /未付款|待付款|尚未付款|未支付/i,
-]
+// ====== 成交判定：以「智能设置 → 成交/下单关键词 / 排除词」为准（用户可改，非写死）======
+// INQC 等询盘单号单独出现不算订单
 function extractAmount(text: string): number | null {
   const m = text.match(/\$\s*([\d,]+(?:\.\d{2})?)/) || text.match(/USD\s*([\d,]+)/i)
   if(!m) return null
@@ -66,20 +46,30 @@ function extractPo(text: string){
 function extractAddr(raw: string){
   return String(raw||'').match(/<([^<>@\s]+@[^<>\s]+)>/)?.[1] || String(raw||'').match(/([^\s<>,;]+@[^\s<>,;]+)/)?.[1] || ''
 }
-export function isStrictOrderEvidence(subject: string, text: string){
+
+/**
+ * 是否算成交邮件：读智能设置里的 dealKeywords / dealExcludeWords。
+ * 关键词用户可随时改；改完请点「订单对齐」重算已下单。
+ */
+export function isStrictOrderEvidence(subject: string, text: string, cfgOverride?: { dealKeywords?: string[]; dealExcludeWords?: string[] }){
+  const cfg = cfgOverride || loadIntellectConfig()
+  const kw = (cfg.dealKeywords?.length ? cfg.dealKeywords : DEFAULT_DEAL_KEYWORDS).map(s=> String(s||'').trim()).filter(Boolean)
+  const ex = (cfg.dealExcludeWords?.length ? cfg.dealExcludeWords : DEFAULT_DEAL_EXCLUDES).map(s=> String(s||'').trim()).filter(Boolean)
+  // 主题 + 正文一起判；本地镜像常无正文，主题也必须参与
   const s = `${subject||''}\n${text||''}`
-  if (NEGATIVE.some(re => re.test(s))) return false
-  const stripped = s.replace(/\bINQC\d+/gi, '')
-  const inquiryOnly = /\b(custom|inquiry|quote|quotation|price|checking\s+in)\b/i.test(s)
-    && /\bINQC\d+/i.test(s)
-    && !STRONG.some(re => re.test(stripped))
-  if (inquiryOnly) return false
-  return STRONG.some(re => re.test(s))
+  const dm = matchDealKeywords(s, { dealKeywords: kw, dealExcludeWords: ex })
+  if(!dm.hit) return false
+  // 仅有 INQC/询盘措辞、且命中词又很弱时：仍要求排除词已通过（matchDeal 已处理排除词）
+  return true
 }
-function isStrongOrderMail(subject: string, text: string){
-  return isStrictOrderEvidence(subject, text)
+
+/** 命中的成交词（用于备注/调试） */
+export function matchOrderKeyword(subject: string, text: string): string {
+  const cfg = loadIntellectConfig()
+  const dm = matchDealKeywords(`${subject||''}\n${text||''}`, cfg)
+  return dm.hit ? dm.matched : ''
 }
-void isStrongOrderMail
+
 function extKey(customerId: string, dateDay: string, amount: number|null, product: string, po: string|null, mailId: string){
   if(po) return `po:${customerId}:${po}`
   if(mailId) return `mail:${customerId}:${mailId}`
@@ -216,14 +206,15 @@ export async function purgeFalseOrderedTags(): Promise<{
   return { scanned: customers.length, purged, kept, ordersPurged: purgeOrderIds.length }
 }
 
-export async function closePendingFollowUps(customerId: string, note = '已下单，自动关闭逾期跟进'): Promise<number> {
+export async function closePendingFollowUps(customerId: string, note?: string): Promise<number> {
+  const msg = note || '已下单，自动关闭逾期跟进'
   try {
     const rows = await db.followUps.where('customerId').equals(customerId).toArray() as any[]
     let n = 0
     const ts = new Date().toISOString()
     for (const f of rows) {
       if (f.status !== 'pending') continue
-      await db.followUps.update(f.id, { status: 'done', note: [f.note, note].filter(Boolean).join(' | ').slice(0,200), updatedAt: ts } as any)
+      await db.followUps.update(f.id, { status: 'done', note: [f.note, msg].filter(Boolean).join(' | ').slice(0,200), updatedAt: ts } as any)
       n++
     }
     return n
@@ -313,16 +304,17 @@ export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }
 
   for(const e of emails){
     const text = `${e.subject||''}\n${e.text||''}`
-    const strong = isStrictOrderEvidence(e.subject||'', e.text||'')
+    // 成交与否完全由「智能设置」关键词/排除词决定（用户可改）
+    const strong = isStrictOrderEvidence(e.subject||'', e.text||'', cfg)
     if(!strong){ continue }
+    const matchedKw = matchOrderKeyword(e.subject||'', e.text||'')
     const from = extractAddr(e.from).toLowerCase()
     const toList = String(e.to||'').split(',').map(extractAddr).filter(Boolean).map(s=> s.toLowerCase())
-    // 仅：客户来信中的付款证据，或我方明确 Order Confirmation 发给该客户
-    let c: Customer | undefined
     const isSelf = from.includes('maxemblem.com')
-    const isOrderConfirmMail = /maxemblem\s+order\s+confirm|order\s+confirmation\s*[:\-]/i.test(e.subject||'')
+    let c: Customer | undefined
+    // 优先绑定「客户侧」地址，避免把自己打成已下单
     if(!isSelf && from && byAddr.get(from)) c = byAddr.get(from)
-    else if(isSelf && isOrderConfirmMail){
+    if(!c){
       for(const a of toList){
         if(a && !a.includes('maxemblem.com') && byAddr.get(a)){ c = byAddr.get(a); break }
       }
@@ -352,7 +344,7 @@ export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }
 
     const tags = new Set([...(c.tags||[]).map(String)])
     if(tags.has('已下单')){
-      await closePendingFollowUps(c.id)
+      await closePendingFollowUps(c.id, matchedKw ? `成交词「${matchedKw}」` : '已下单，自动关闭逾期跟进')
       result.duplicates++
     } else {
       tags.add('已下单')
@@ -367,8 +359,9 @@ export async function runOrderScan(opts?: { days?: number; rescanAll?: boolean }
         orderTagAt: now,
         updatedAt: now,
         marketingSuppressedUntil: new Date(Date.now() + cfgSuppress*86400000).toISOString(),
+        classifyReason: matchedKw ? `成交词「${matchedKw}」` : undefined,
       } as any)
-      await closePendingFollowUps(c.id)
+      await closePendingFollowUps(c.id, matchedKw ? `成交词「${matchedKw}」` : '已下单，自动关闭逾期跟进')
       tagged.add(c.id)
       result.customersTagged++
     }
