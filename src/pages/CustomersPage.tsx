@@ -784,7 +784,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           onClick={()=> void handleBatchPortrait({ force: true })}
           disabled={!!intelBusy}
           className="px-3 py-1 rounded-full text-xs bg-fuchsia-600 text-white disabled:opacity-50"
-          title={`批量 AI 七维画像：优先选中客户，否则当前筛选；每次最多 ${intelCfg.aiInsightBatchMax} 人（智能设置可改），每人间隔约 1 秒，必须走大模型`}
+          title={`批量 AI 十一维画像 v2：优先选中客户，否则当前筛选；每次最多 ${intelCfg.aiInsightBatchMax} 人，每人间隔约 1 秒，必须走大模型；旧七维请强制重跑`}
         >🤖 批量AI画像{checked.size>0 ? `（选中${checked.size}）` : `（筛选${filtered.length}）`}</button>
         <button onClick={()=> void handlePurchaseLoop()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50" title="已下单客户：复购周期/NBA/潜在复购">🔁 复购开发</button>
         <button onClick={async()=>{
@@ -1331,7 +1331,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               {(selectedCustomer as any).aiProfile ? (
                 <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{(selectedCustomer as any).aiProfile}</div>
               ) : (
-                <div className="text-[11px] text-gray-400">点击「读邮件生成画像」，AI 按七维模板输出：下单时间 / 次数 / 产品偏好 / 采购特征 / 客户偏好 / 关注点 / 采购周期与复购潜力。</div>
+                <div className="text-[11px] text-gray-400">「读邮件生成画像 / 批量AI画像」按<b>十一维 v2</b> 模板（下单时间/次数、客户类型、产品与工艺偏好、采购规模、预算敏感度、决策方式、时间特征、复购潜力、营销策略）。旧七维客户请重新批量画像。</div>
               )}
               <div className="flex flex-wrap gap-1.5 text-[10px]">
                 {(selectedCustomer as any).aiTier && (
