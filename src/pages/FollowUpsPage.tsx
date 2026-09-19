@@ -117,6 +117,8 @@ export default function FollowUpsPage() {
   const [aiReplyBusy, setAiReplyBusy] = useState<string>('')
   const [copiedEmail, setCopiedEmail] = useState('')
   const [boardHideNoise, setBoardHideNoise] = useState(true)
+  const [boardSelected, setBoardSelected] = useState<Set<string>>(new Set())
+  const [boardBulkBusy, setBoardBulkBusy] = useState('')
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -731,7 +733,7 @@ const handleBatchAiTpl = useCallback(async () => {
   ]
 
   return (
-    <div className="p-4 max-w-6xl mx-auto space-y-4">
+    <div className={`p-4 space-y-4 w-full ${mainView==='board' ? 'max-w-none' : 'max-w-7xl mx-auto'}`}>
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
       <div className="flex items-center gap-2 flex-wrap -mt-1">
         <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
@@ -1020,31 +1022,141 @@ const handleBatchAiTpl = useCallback(async () => {
         const totalPagesB = Math.max(1, Math.ceil(rows.length / boardPerPage))
         const safeB = Math.min(boardPage, totalPagesB)
         const pageRows = rows.slice((safeB-1)*boardPerPage, safeB*boardPerPage)
+        const toggleBoard = (id: string) => setBoardSelected(prev=>{
+          const n = new Set(prev)
+          if(n.has(id)) n.delete(id); else n.add(id)
+          return n
+        })
+        const selectedCustomers = customers.filter(c=> boardSelected.has(c.id))
+        const applyBoardBulk = async (kind: 'mode-auto'|'mode-manual'|'stage-following'|'stage-ordered'|'stage-cancelled'|'high'|'seq-start'|'seq-stop'|'copy-emails') => {
+          if(!selectedCustomers.length) return alert('请先勾选客户')
+          const n = selectedCustomers.length
+          if(kind==='copy-emails'){
+            const list = selectedCustomers.map(c=> c.email).filter(Boolean).join('\n')
+            try{ await navigator.clipboard.writeText(list) }catch{}
+            setIntellectNote(`已复制 ${n} 个邮箱到剪贴板`)
+            return
+          }
+          if(kind==='seq-start'){
+            if(!confirm(`对已选 ${n} 人启动自动跟进序列？（脏箱/已下单建议先取消勾选）`)) return
+            setBoardBulkBusy('seq')
+            let ok=0
+            for(const c of selectedCustomers){
+              try{ await handleStartSeq(c); ok++ }catch{}
+            }
+            setIntellectNote(`批量启动序列：成功 ${ok}/${n}`)
+            setBoardBulkBusy('')
+            await load()
+            return
+          }
+          if(kind==='seq-stop'){
+            setBoardBulkBusy('seq-stop')
+            for(const c of selectedCustomers){
+              await setCustomerFollowMode(c, 'manual', 'user')
+              try{ await patchSequence(c.id, { mode:'manual' }) }catch{}
+            }
+            setIntellectNote(`已批量停自动跟进 ${n} 人`)
+            setBoardBulkBusy('')
+            await load()
+            return
+          }
+          if(kind==='high'){
+            setBoardBulkBusy('high')
+            for(const c of selectedCustomers){
+              await addManualBuckets([c.id], ['high'], '跟进表批量高意向', 'add')
+              await db.customers.update(c.id, { aiTier:'high', aiReason:'批量高意向', updatedAt:new Date().toISOString() } as any)
+            }
+            setIntellectNote(`已批量标高意向 ${n} 人`)
+            setBoardBulkBusy('')
+            await load()
+            return
+          }
+          if(kind.startsWith('mode-')){
+            const mode = kind==='mode-auto' ? 'auto' : 'manual'
+            if(mode==='auto' && !confirm(`将 ${n} 人标为「自动跟进」并尝试启动/恢复序列？`)) return
+            setBoardBulkBusy('mode')
+            for(const c of selectedCustomers){
+              await setCustomerFollowMode(c, mode, 'user')
+            }
+            setIntellectNote(`批量改跟进方式：${n} 人 → ${mode==='auto'?'自动':'手动'}`)
+            setBoardBulkBusy('')
+            await load()
+            return
+          }
+          if(kind.startsWith('stage-')){
+            const st = kind.replace('stage-','') as SalesStage
+            const label = st==='ordered'?'已下单':st==='cancelled'?'取消':'跟进中'
+            if(!confirm(`将 ${n} 人销售阶段改为「${label}」？（已下单/取消会停自动序列）`)) return
+            setBoardBulkBusy('stage')
+            for(const c of selectedCustomers){
+              await setCustomerSalesStage(c, st)
+            }
+            setIntellectNote(`批量销售阶段 → ${label}：${n} 人`)
+            setBoardBulkBusy('')
+            await load()
+          }
+        }
         return (
           <div className="bg-white rounded-2xl border p-4 space-y-3">
-            <div className="flex items-center gap-2 flex-wrap text-xs">
-              <span className="font-semibold text-sm">📋 跟进档案表</span>
-              <span className="text-gray-400">共 {rows.length} 人</span>
-              <select value={boardMode} onChange={e=>{ setBoardMode(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+            <div className="flex items-center gap-2 flex-wrap text-sm">
+              <span className="font-semibold text-base">📋 跟进档案表</span>
+              <span className="text-gray-500">共 {rows.length} 人</span>
+              <select value={boardMode} onChange={e=>{ setBoardMode(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">全部跟进方式</option><option value="auto">自动跟进</option><option value="manual">手动跟进</option>
               </select>
-              <select value={boardReply} onChange={e=>{ setBoardReply(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+              <select value={boardReply} onChange={e=>{ setBoardReply(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">回复：全部</option><option value="yes">有回复</option><option value="no">无回复</option>
               </select>
-              <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1">
+              <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="cancelled">取消</option>
               </select>
-              <label className="flex items-center gap-1"><input type="checkbox" checked={boardHideNoise} onChange={e=> setBoardHideNoise(e.target.checked)}/> 隐藏噪声邮箱</label>
-              <label className="flex items-center gap-1 ml-auto">每页
-                <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-0.5">
+              <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHideNoise} onChange={e=> setBoardHideNoise(e.target.checked)}/> 隐藏噪声邮箱</label>
+              <label className="flex items-center gap-1 ml-auto text-sm">每页
+                <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-1 text-sm">
                   {[10,20,50,100].map(n=> <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
             </div>
+            {boardSelected.size>0 && (
+              <div className="flex flex-wrap items-center gap-2 bg-indigo-600 text-white rounded-xl px-3 py-2 text-sm sticky top-0 z-20">
+                <span className="font-medium">已选 {boardSelected.size}</span>
+                <button onClick={()=> setBoardSelected(new Set(pageRows.map(c=>c.id)))} className="px-2 py-1 bg-white/15 rounded">本页全选</button>
+                <button onClick={()=> setBoardSelected(new Set(rows.map(c=>c.id)))} className="px-2 py-1 bg-white/15 rounded">筛选全选 {rows.length}</button>
+                <span className="opacity-70">|</span>
+                <button onClick={()=> void applyBoardBulk('mode-auto')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">批量自动跟进</button>
+                <button onClick={()=> void applyBoardBulk('mode-manual')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">批量手动跟进</button>
+                <button onClick={()=> void applyBoardBulk('stage-ordered')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-emerald-600 rounded disabled:opacity-50">标已下单</button>
+                <button onClick={()=> void applyBoardBulk('stage-cancelled')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-600 rounded disabled:opacity-50">标取消</button>
+                <button onClick={()=> void applyBoardBulk('stage-following')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">标跟进中</button>
+                <button onClick={()=> void applyBoardBulk('high')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-orange-500 rounded disabled:opacity-50">批量高意向</button>
+                <button onClick={()=> void applyBoardBulk('seq-start')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-purple-600 rounded disabled:opacity-50">批量启动序列</button>
+                <button onClick={()=> void applyBoardBulk('seq-stop')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-gray-700 rounded disabled:opacity-50">批量停自动</button>
+                <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
+                <button onClick={()=> setBoardSelected(new Set())} className="px-2 py-1 text-white/80">取消选择</button>
+                {boardBulkBusy && <span className="opacity-90">处理中…</span>}
+              </div>
+            )}
             <div className="overflow-x-auto">
-              <table className="w-full text-[11px]">
+              <table className="w-full text-sm">
                 <thead className="bg-gray-50">
-                  <tr className="text-left text-gray-500">
+                  <tr className="text-left text-gray-600">
+                    <th className="p-2 w-8">
+                      <input type="checkbox"
+                        checked={pageRows.length>0 && pageRows.every(c=> boardSelected.has(c.id))}
+                        onChange={e=>{
+                          if(e.target.checked) setBoardSelected(prev=>{
+                            const n = new Set(prev)
+                            for(const c of pageRows) n.add(c.id)
+                            return n
+                          })
+                          else setBoardSelected(prev=>{
+                            const n = new Set(prev)
+                            for(const c of pageRows) n.delete(c.id)
+                            return n
+                          })
+                        }}
+                      />
+                    </th>
                     <th className="p-2">客户</th><th className="p-2">等级</th><th className="p-2">回复</th>
                     <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
                     <th className="p-2">跟进次数</th><th className="p-2">跟进状态</th><th className="p-2">未跟进</th>
@@ -1059,46 +1171,49 @@ const handleBatchAiTpl = useCallback(async () => {
                     const hr = String((c as any).hasReply||'')
                     const dn = daysNoFollow(c)
                     return (
-                      <tr key={c.id} className="border-t hover:bg-gray-50">
-                        <td className="p-2 max-w-[160px]">
-                          <div className="font-medium truncate">{c.contactName||c.title}
+                      <tr key={c.id} className={`border-t hover:bg-blue-50/40 ${boardSelected.has(c.id)?'bg-indigo-50/60':''}`}>
+                        <td className="p-2">
+                          <input type="checkbox" checked={boardSelected.has(c.id)} onChange={()=> toggleBoard(c.id)}/>
+                        </td>
+                        <td className="p-2 max-w-[200px]">
+                          <div className="font-medium truncate text-sm">{c.contactName||c.title}
                             {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
-                            {((c as any).aiTier==='high' || String((c as any).hasReply||'')==='yes') && (
-                              <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[9px]" title={String((c as any).aiReason||'高意向')}>高意向</span>
+                            {((c as any).aiTier==='high' || hr==='yes') && (
+                              <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[11px]">高意向</span>
                             )}
                           </div>
                           <button
                             type="button"
                             onClick={()=> void copyEmail(c.email||'')}
-                            className="text-gray-400 hover:text-blue-600 hover:underline truncate max-w-full text-left"
+                            className="text-gray-500 hover:text-blue-600 hover:underline truncate max-w-full text-left text-xs"
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
                         <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
-                        <td className="p-2"><span className={`px-1.5 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}`}>{hr==='yes'?'有':'无'}</span></td>
+                        <td className="p-2"><span className={`px-2 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}`}>{hr==='yes'?'有':'无'}</span></td>
                         <td className="p-2">
                           <select value={fm} onChange={async(ev)=>{
                             await setCustomerFollowMode(c, ev.target.value as FollowMode, 'user')
                             await load()
-                          }} className="border rounded px-1 py-0.5">
+                          }} className="border rounded px-1.5 py-1 text-sm">
                             <option value="manual">手动跟进</option>
                             <option value="auto">自动跟进</option>
                           </select>
                         </td>
-                        <td className="p-2 text-gray-500">{(c as any).lastReplyAt ? String((c as any).lastReplyAt).slice(0,10) : '—'}</td>
-                        <td className="p-2 text-gray-500">{(c as any).lastFollowAt ? String((c as any).lastFollowAt).slice(0,10) : '—'}</td>
-                        <td className="p-2" title="距离客户上次回复之后，我方发给该客户的邮件数量（无回复则统计全部我方发送）">
+                        <td className="p-2 text-gray-600">{(c as any).lastReplyAt ? String((c as any).lastReplyAt).slice(0,10) : '—'}</td>
+                        <td className="p-2 text-gray-600">{(c as any).lastFollowAt ? String((c as any).lastFollowAt).slice(0,10) : '—'}</td>
+                        <td className="p-2" title="距上次客户回复后我方发送数量">
                           <b className={followCountOf(c)>=3?'text-orange-600':''}>{followCountOf(c)}</b>
                         </td>
                         <td className="p-2">
-                          <div>{stepLabel((c as any).followStep)}{seq?.mode==='auto'?` · 序列${Math.min(seq.current_step,7)}/7`:''}</div>
+                          <div className="text-sm">{stepLabel((c as any).followStep)}{seq?.mode==='auto'?` · 序列${Math.min(seq.current_step,7)}/7`:''}</div>
                         </td>
-                        <td className={`p-2 ${(dn!=null && dn>7)?'text-rose-600 font-medium':''}`}>{dn==null?'—':`${dn}天`}</td>
+                        <td className={`p-2 text-sm ${(dn!=null && dn>7)?'text-rose-600 font-medium':''}`}>{dn==null?'—':`${dn}天`}</td>
                         <td className="p-2">
                           <select value={st} onChange={async(ev)=>{
                             await setCustomerSalesStage(c, ev.target.value as SalesStage)
                             await load()
-                          }} className="border rounded px-1 py-0.5">
+                          }} className="border rounded px-1.5 py-1 text-sm">
                             <option value="following">跟进中</option>
                             <option value="ordered">已下单</option>
                             <option value="cancelled">取消</option>
@@ -1113,18 +1228,17 @@ const handleBatchAiTpl = useCallback(async () => {
                                 setIntellectNote(`已标高意向：${c.contactName||c.email}`)
                                 await load()
                               }}
-                              className="px-2 py-0.5 border rounded text-[10px] text-orange-600"
-                              title="加入跟进「高意向」并打标"
+                              className="px-2 py-1 border rounded text-xs text-orange-600"
                             >高意向</button>
                             <button
                               onClick={()=> void handleAiReply(c)}
                               disabled={aiReplyBusy===c.id || !!aiReplyBusy}
-                              className="px-2 py-0.5 border rounded text-[10px] text-purple-700 disabled:opacity-50"
-                              title="AI 读画像+邮件生成英文跟进，有往来则挂会话最下方入队"
+                              className="px-2 py-1 border rounded text-xs text-purple-700 disabled:opacity-50"
+                              title="AI 读画像+邮件生成英文跟进，有往来挂会话入队"
                             >{aiReplyBusy===c.id?'AI中…':'AI回复'}</button>
                             {fm==='auto'
-                              ? <button onClick={()=> void handleSeqMode(c.id,'manual')} className="px-2 py-0.5 border rounded text-[10px]">停自动</button>
-                              : <button onClick={()=> void handleStartSeq(c)} className="px-2 py-0.5 border rounded text-[10px] text-blue-600">启动序列</button>}
+                              ? <button onClick={()=> void handleSeqMode(c.id,'manual')} className="px-2 py-1 border rounded text-xs">停自动</button>
+                              : <button onClick={()=> void handleStartSeq(c)} className="px-2 py-1 border rounded text-xs text-blue-600">启动序列</button>}
                           </div>
                         </td>
                       </tr>
@@ -1133,11 +1247,11 @@ const handleBatchAiTpl = useCallback(async () => {
                 </tbody>
               </table>
             </div>
-            <div className="flex items-center justify-between text-[11px] text-gray-400">
-              <span>第 {safeB}/{totalPagesB} 页 · 标「自动跟进」才进序列</span>
+            <div className="flex items-center justify-between text-sm text-gray-500">
+              <span>第 {safeB}/{totalPagesB} 页 · 勾选后可批量改方式/阶段/高意向/序列</span>
               <div className="flex gap-1">
-                <button onClick={()=> setBoardPage(p=> Math.max(1,p-1))} className="w-6 h-6 border rounded bg-white">{'<'}</button>
-                <button onClick={()=> setBoardPage(p=> Math.min(totalPagesB,p+1))} className="w-6 h-6 border rounded bg-white">{'>'}</button>
+                <button onClick={()=> setBoardPage(p=> Math.max(1,p-1))} className="w-8 h-8 border rounded bg-white">{'<'}</button>
+                <button onClick={()=> setBoardPage(p=> Math.min(totalPagesB,p+1))} className="w-8 h-8 border rounded bg-white">{'>'}</button>
               </div>
             </div>
           </div>
