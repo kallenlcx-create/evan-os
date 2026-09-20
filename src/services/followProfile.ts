@@ -27,6 +27,37 @@ export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
   { n: 7, name: '收口', keywords: ['closing the loop', 'pick it right up', '收口', 'closing the loop on my side'] },
 ]
 
+const STOP = new Set(['your','you','the','and','for','with','from','this','that','have','will','best','regards','dear','hello','please','just','would','could','about','email','thanks','thank','evan','maxemblem','following','follow','check','checking'])
+
+/** 从用户保存的序列模板提取关键词，供「跟进状态」相似度判断 */
+export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
+  if(!list?.length) return []
+  const out: FollowStepTemplate[] = []
+  for(let i=0;i<list.length && i<7;i++){
+    const t = list[i]
+    const id = String(t.id||'')
+    let n = i+1
+    const m = id.match(/(\d+)\s*$/)
+    if(m) n = Number(m[1]) || (i+1)
+    const name = String(t.name||`跟进${n}`)
+    const text = `${t.subject||''}\n${t.body||''}`.toLowerCase()
+    const words = text.split(/[^a-z0-9一-鿿']+/).filter(w=> w.length>=4 && !STOP.has(w))
+    const uniq = [...new Set(words)].slice(0, 12)
+    const phrase: string[] = []
+    const subj = String(t.subject||'').toLowerCase().trim()
+    if(subj) phrase.push(subj)
+    if(String(t.body||'').includes('{{')) phrase.push(...uniq.slice(0,6))
+    const keywords = [...new Set([...phrase, ...uniq])].filter(Boolean).slice(0, 14)
+    const def = DEFAULT_FOLLOW_STEP_TEMPLATES[n-1]
+    out.push({
+      n,
+      name,
+      keywords: keywords.length >= 2 ? keywords : (def?.keywords || keywords),
+    })
+  }
+  return out.length ? out : []
+}
+
 const SELF = new Set(['evan@maxemblem.com'])
 
 function extractAddr(raw: string){
@@ -62,7 +93,7 @@ export function followModeOf(c: Customer): FollowMode {
   return 'manual'
 }
 
-/** 关键词/片段相似度：覆盖 + 主题包含 */
+/** 关键词/片段相似度：覆盖 + 主题包含；templates 优先用「用户在序列模板里填的文案」 */
 export function matchFollowStep(subject: string, body: string, templates?: FollowStepTemplate[], threshold?: number){
   const list = templates?.length ? templates : DEFAULT_FOLLOW_STEP_TEMPLATES
   const th = threshold ?? (loadIntellectConfig().followSimThreshold || 0.6)
@@ -73,12 +104,16 @@ export function matchFollowStep(subject: string, body: string, templates?: Follo
     const kws = (t.keywords||[]).map(k=> String(k).toLowerCase()).filter(Boolean)
     if(!kws.length) continue
     let hit = 0
-    for(const k of kws) if(s.includes(k)) hit++
-    const score = hit / kws.length
-    const subjBoost = kws.some(k => String(subject||'').toLowerCase().includes(k)) ? 0.15 : 0
-    const total = Math.min(1, score + subjBoost)
+    const hitList: string[] = []
+    for(const k of kws){ if(s.includes(k)){ hit++; hitList.push(k) } }
+    let score = hit / Math.max(kws.length, 1)
+    // 主题与模板主题高度一致时加分
+    const subj = String(subject||'').toLowerCase()
+    if(subj && kws.some(k=> subj.includes(k))) score = Math.min(1, score + 0.25)
+    if(kws.length<=2 && hit>=1) score = Math.max(score, 0.75) // 短关键词集：命中即较可信
+    const total = score
     if(total >= th && (total > best.score || (total === best.score && t.n > best.step))){
-      best = { step: t.n, score: total, matched: kws.filter(k=> s.includes(k)).join(',') }
+      best = { step: t.n, score: total, matched: hitList.slice(0,5).join(',') || t.name }
     }
   }
   return best
@@ -176,6 +211,7 @@ ${mailText||'无'}
  */
 export async function runFollowBoardSync(opts?: {
   sequences?: any[]
+  seqTemplates?: any[]
   forceStepScan?: boolean
 }): Promise<FollowBoardStats> {
   const cfg = loadIntellectConfig()
@@ -184,7 +220,9 @@ export async function runFollowBoardSync(opts?: {
   const seqMap = new Map<string, any>()
   for(const s of opts?.sequences || []) seqMap.set(s.customer_id, s)
 
-  const templates = (cfg as any).followStepTemplates as FollowStepTemplate[] | undefined
+  // 优先用用户在「模板+间隔」里保存的 7 步文案做相似度
+  const fromUser = templatesFromSeqTemplates(opts?.seqTemplates || [])
+  const templates = fromUser.length ? fromUser : ((cfg as any).followStepTemplates as FollowStepTemplate[] | undefined)
   const th = (cfg as any).followSimThreshold || 0.6
   const ts = new Date().toISOString()
   let replies = 0, modeChanged = 0, stepsUpdated = 0, highQueued = 0, ordersStopped = 0

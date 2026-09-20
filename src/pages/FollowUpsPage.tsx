@@ -130,22 +130,22 @@ export default function FollowUpsPage() {
   const loadSequences = useCallback(async () => {
     try{
       const j = await getSequences()
-      setSequences(j.sequences || [])
+      const seqs = j.sequences || []
+      setSequences(seqs)
       const t = await getSeqTemplates()
-      setSeqTemplates(t.templates || [])
+      const tpls = t.templates || []
+      setSeqTemplates(tpls)
       const c = await getSeqConfig()
       if(c.intervals) setSeqIntervals(c.intervals)
       if(c.sendStart != null) setSendStart(c.sendStart)
-      if(c.sendEnd != null) setSendEnd(c.sendEnd)
       if(c.skipHolidays != null) setSkipHolidays(!!c.skipHolidays)
-    }catch{}
-    try{
-      const seqs = (await getSequences()).sequences || []
-      setSequences(seqs)
-      // 跟进档案同步：回复/步骤/已下单停序列
-      const r = await runFollowBoardSync({ sequences: seqs })
+      if(c.sendEnd != null) setSendEnd(c.sendEnd)
+      // 步号判断：优先用你保存的序列模板文案做相似度
+      const r = await runFollowBoardSync({ sequences: seqs, seqTemplates: tpls })
       if(r.replies || r.modeChanged || r.stepsUpdated) setIntellectNote(r.note)
-    }catch{}
+    }catch(e:any){
+      setIntellectNote('序列/档案同步失败：'+String(e.message||e).slice(0,140))
+    }
   }, [])
   const seqStats = useMemo(()=>{
     const auto = sequences.filter(s=> s.mode==='auto').length
@@ -744,7 +744,7 @@ const handleBatchAiTpl = useCallback(async () => {
             try{
               const seqs = (await getSequences()).sequences || []
               setSequences(seqs)
-              const r = await runFollowBoardSync({ sequences: seqs, forceStepScan: true })
+              const r = await runFollowBoardSync({ sequences: seqs, seqTemplates, forceStepScan: true })
               setIntellectNote(r.note)
               await load()
             }catch(e:any){ setIntellectNote('档案同步失败：'+String(e.message||e).slice(0,100)) }
@@ -1465,7 +1465,7 @@ const handleBatchAiTpl = useCallback(async () => {
                     <div className="text-xs font-semibold mb-1">{t.name}</div>
                     <input value={tplEdit?.id===t.id ? tplEdit.subject : t.subject} onChange={e=> setTplEdit({ id:t.id, subject:e.target.value, body: tplEdit?.id===t.id ? tplEdit.body : t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
                     <textarea value={tplEdit?.id===t.id ? tplEdit.body : t.body} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={3} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
-                    <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences() }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
+                    <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences(); alert('已保存。此文案也用于判断跟进表「跟进状态」相似度。') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
                   </div>
                 ))}
               </div>

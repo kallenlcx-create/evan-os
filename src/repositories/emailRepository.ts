@@ -622,12 +622,24 @@ export async function getOutboxDetail(id: string): Promise<any>{
 // ====== 自动跟进序列 ======
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()
-  if(!h) throw new Error('请先登录云同步')
-  const r = await fetch(`${h.url}${path}`, { method,
-    headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
-    body: body ? JSON.stringify(body) : undefined })
-  const j = await r.json().catch(()=>({}))
-  if(!r.ok) throw new Error(j.error||`请求失败 ${r.status}`)
+  if(!h) throw new Error('请先登录云同步（同步服务器地址+账号）')
+  let r: Response
+  try{
+    r = await fetch(`${h.url}${path}`, { method,
+      headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
+      body: body ? JSON.stringify(body) : undefined })
+  }catch(e:any){
+    throw new Error('无法连接同步服务器：'+String(e?.message||e).slice(0,80)+'。请确认本机 server.mjs 已启动、云同步地址正确。')
+  }
+  const text = await r.text()
+  // 防护：网关/隧道错误页返回 HTML，不能当 JSON 解析
+  const trimmed = text.trimStart()
+  if(trimmed.startsWith('<') || /^<!DOCTYPE/i.test(trimmed)){
+    throw new Error(`服务器返回了网页而不是数据（HTTP ${r.status}）。多为：未登录/Token失效、Tailscale/隧道 502、或 server.mjs 未运行。请到云同步重新登录后再试。`)
+  }
+  let j: any = {}
+  try{ j = text ? JSON.parse(text) : {} }catch{ j = {} }
+  if(!r.ok) throw new Error(j.error || `请求失败 ${r.status}${text? '：'+text.slice(0,80):''}`)
   return j
 }
 export const getSequences = (mode = '') => seqApi(`/email/sequences${mode?`?mode=${mode}`:''}`)
