@@ -112,12 +112,25 @@ export default function FollowUpsPage() {
   const [followCfg, setFollowCfg] = useState<IntellectConfig>(()=> loadIntellectConfig())
   const [showFollowRules, setShowFollowRules] = useState(false)
   const [boardPage, setBoardPage] = useState(1)
-  const [boardPerPage, setBoardPerPage] = useState(20)
   const [aiReplyBusy, setAiReplyBusy] = useState<string>('')
   const [copiedEmail, setCopiedEmail] = useState('')
   const [boardHideNoise, setBoardHideNoise] = useState(true)
   const [boardSelected, setBoardSelected] = useState<Set<string>>(new Set())
   const [boardBulkBusy, setBoardBulkBusy] = useState('')
+  const BOARD_PER_PAGE_KEY = 'evan:followupBoardPerPage'
+  const BOARD_COL_W_KEY = 'evan:followupBoardColW'
+  const [boardPerPage, setBoardPerPage] = useState<number>(()=>{
+    try{
+      const v = Number(localStorage.getItem(BOARD_PER_PAGE_KEY))
+      return [10,20,50,100].includes(v) ? v : 20
+    }catch{ return 20 }
+  })
+  const setBoardPerPagePersist = (n: number) => {
+    const v = [10,20,50,100].includes(n) ? n : 20
+    try{ localStorage.setItem(BOARD_PER_PAGE_KEY, String(v)) }catch{}
+    setBoardPerPage(v)
+    setBoardPage(1)
+  }
   const [boardSort, setBoardSort] = useState<'no_follow'|'created'|'level'|'reply_time'|'step'|'name'>('no_follow')
   const [boardSortDir, setBoardSortDir] = useState<'asc'|'desc'>('desc')
   const [boardQ, setBoardQ] = useState('')
@@ -125,6 +138,44 @@ export default function FollowUpsPage() {
   const [boardStepMin, setBoardStepMin] = useState(0)
   const [inquiries, setInquiries] = useState<InquiryRecord[]>([])
   const [boardInq, setBoardInq] = useState<'all'|'yes'|'today'|'pending'>('all')
+  /** 筛选区折叠 */
+  const [boardFiltersOpen, setBoardFiltersOpen] = useState(false)
+  /** 列宽（px），拖拽表头边缘调整 */
+  const [boardColW, setBoardColW] = useState<Record<string, number>>(()=>{
+    try{
+      const raw = JSON.parse(localStorage.getItem(BOARD_COL_W_KEY) || '{}')
+      return raw && typeof raw === 'object' ? raw : {}
+    }catch{ return {} }
+  })
+  const saveBoardColW = (w: Record<string, number>) => {
+    setBoardColW(w)
+    try{ localStorage.setItem(BOARD_COL_W_KEY, JSON.stringify(w)) }catch{}
+  }
+  const colW = (key: string, fallback: number) => Number(boardColW[key]) || fallback
+  const startColResize = (key: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = colW(key, 120)
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.max(56, startW + (ev.clientX - startX))
+      saveBoardColW({ ...boardColW, [key]: w })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  const toggleBoardSort = (key: typeof boardSort) => {
+    if(boardSort === key) setBoardSortDir(d=> d==='asc'?'desc':'asc')
+    else { setBoardSort(key); setBoardSortDir(key==='name'||key==='created' ? 'asc' : 'desc') }
+  }
+  const SortIcon = ({ col }: { col: string }) => {
+    if(boardSort !== col) return <span className="text-gray-300 text-[10px] ml-0.5">↕</span>
+    return <span className="text-blue-600 text-[10px] ml-0.5">{boardSortDir==='asc'?'↑':'↓'}</span>
+  }
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -1174,6 +1225,12 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <span className="font-semibold text-base">📋 跟进档案表</span>
               <span className="text-gray-500">共 {rows.length} 人</span>
+              <button
+                onClick={()=> setBoardFiltersOpen(v=>!v)}
+                className={`px-2 py-1 border rounded text-sm ${boardFiltersOpen?'bg-blue-50 border-blue-300 text-blue-700':'bg-white'}`}
+                title="展开/折叠筛选排序栏"
+              >{boardFiltersOpen ? '收起筛选 ▲' : '筛选/排序 ▼'}</button>
+              {boardFiltersOpen && (<>
               <select value={boardMode} onChange={e=>{ setBoardMode(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">全部跟进方式</option><option value="auto">自动跟进</option><option value="manual">手动跟进</option>
               </select>
@@ -1205,8 +1262,9 @@ const handleBatchAiTpl = useCallback(async () => {
               </select>
               <button onClick={()=> setBoardSortDir(d=> d==='asc'?'desc':'asc')} className="px-2 py-1.5 border rounded text-sm">{boardSortDir==='asc'?'↑ 升序':'↓ 降序'}</button>
               <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHideNoise} onChange={e=> setBoardHideNoise(e.target.checked)}/> 隐藏噪声邮箱</label>
+              </>)}
               <label className="flex items-center gap-1 ml-auto text-sm">每页
-                <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-1 text-sm">
+                <select value={boardPerPage} onChange={e=> setBoardPerPagePersist(Number(e.target.value)||20)} className="border rounded px-1 py-1 text-sm">
                   {[10,20,50,100].map(n=> <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
@@ -1238,25 +1296,49 @@ const handleBatchAiTpl = useCallback(async () => {
                       <input type="checkbox"
                         checked={pageRows.length>0 && pageRows.every(c=> boardSelected.has(c.id))}
                         onChange={e=>{
-                          if(e.target.checked) setBoardSelected(prev=>{
-                            const n = new Set(prev)
-                            for(const c of pageRows) n.add(c.id)
-                            return n
-                          })
-                          else setBoardSelected(prev=>{
-                            const n = new Set(prev)
-                            for(const c of pageRows) n.delete(c.id)
-                            return n
-                          })
+                          if(e.target.checked) setBoardSelected(prev=>{ const n=new Set(prev); for(const c of pageRows) n.add(c.id); return n })
+                          else setBoardSelected(prev=>{ const n=new Set(prev); for(const c of pageRows) n.delete(c.id); return n })
                         }}
                       />
                     </th>
-                    <th className="p-2">客户</th><th className="p-2">创建时间</th><th className="p-2">询盘号</th><th className="p-2">等级</th><th className="p-2">回复</th>
-                    <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
-                    <th className="p-2">跟进次数</th><th className="p-2">跟进状态</th><th className="p-2">未跟进</th>
-                    <th className="p-2">销售阶段</th><th className="p-2">操作</th>
+                    {([
+                      { key:'name', label:'客户', w:'name' },
+                      { key:'created', label:'创建时间', w:'created' },
+                      { key:'inq', label:'询盘号', w:'inq' },
+                      { key:'level', label:'等级', w:'level' },
+                      { key:'reply', label:'回复', w:'reply' },
+                      { key:'mode', label:'跟进方式', w:'mode' },
+                      { key:'reply_time', label:'最近回复', w:'reply_time' },
+                      { key:'follow', label:'最近跟进', w:'follow' },
+                      { key:'count', label:'跟进次数', w:'count' },
+                      { key:'step', label:'跟进状态', w:'step' },
+                      { key:'no_follow', label:'未跟进', w:'no_follow' },
+                      { key:'stage', label:'销售阶段', w:'stage' },
+                      { key:'ops', label:'操作', w:'ops' },
+                    ] as const).map(col=>{
+                      const sortable = ['name','created','level','reply_time','step','no_follow'].includes(col.key as string)
+                      return (
+                        <th
+                          key={col.key}
+                          className="p-2 select-none relative"
+                          style={{ width: colW(col.w, col.key==='name'?180:110), minWidth: 56 }}
+                          onClick={()=>{ if(sortable) toggleBoardSort(col.key as any) }}
+                        >
+                          <span className={sortable?'cursor-pointer inline-flex items-center':''}>
+                            {col.label}
+                            {sortable && <SortIcon col={col.key as string} />}
+                          </span>
+                          <span
+                            onMouseDown={(e)=> startColResize(col.w, e)}
+                            className="absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-5 cursor-col-resize hover:bg-blue-400 rounded"
+                            title="拖拽调整列宽"
+                          />
+                        </th>
+                      )
+                    })}
                   </tr>
                 </thead>
+
                 <tbody>
                   {pageRows.map(c=>{
                     const seq = seqMapB.get(c.id)
@@ -1269,7 +1351,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         <td className="p-2">
                           <input type="checkbox" checked={boardSelected.has(c.id)} onChange={()=> toggleBoard(c.id)}/>
                         </td>
-                        <td className="p-2 max-w-[200px]">
+                        <td className="p-2" style={{ maxWidth: colW('name', 180) }}>
                           <div className="font-medium truncate text-sm">{c.contactName||c.title}
                             {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
                             {((c as any).aiTier==='high' || hr==='yes') && (
@@ -1283,7 +1365,7 @@ const handleBatchAiTpl = useCallback(async () => {
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
-                        <td className="p-2 text-gray-600 whitespace-nowrap">{createdAtOf(c)}</td>
+                        <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}>{createdAtOf(c)}</td>
                         <td className="p-2 text-xs">
                           {(()=>{
                             const inq = inqByCust.get(c.id)

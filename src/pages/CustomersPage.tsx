@@ -109,9 +109,21 @@ export default function CustomersPage(){
   }
 
   const [q,setQ]=useState('')
-  /** 客户卡片分页：避免 700+ 张一次性渲染卡死 */
+  /** 客户卡片分页：避免 700+ 张一次性渲染卡死（localStorage 持久化） */
   const [page, setPage] = useState(1)
-  const [perPage, setPerPage] = useState(30)
+  const PER_PAGE_CUST_KEY = 'evan:customersPerPage'
+  const [perPage, setPerPage] = useState<number>(()=>{
+    try{
+      const v = Number(localStorage.getItem(PER_PAGE_CUST_KEY))
+      return [12,30,60,120].includes(v) ? v : 30
+    }catch{ return 30 }
+  })
+  const setPerPagePersist = (n: number) => {
+    const v = [12,30,60,120].includes(n) ? n : 30
+    try{ localStorage.setItem(PER_PAGE_CUST_KEY, String(v)) }catch{}
+    setPerPage(v)
+    setPage(1)
+  }
   /** 高级筛选：未跟进天数等 */
   const [showFilters, setShowFilters] = useState(false)
   const [minSilentDays, setMinSilentDays] = useState(0) // 0=不限；>0 则「未跟进 ≥ N 天」
@@ -1202,7 +1214,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <span>共 {filtered.length} 条 · 第 {safePage}/{totalPages} 页</span>
         <label className="flex items-center gap-1 ml-auto">
           每页
-          <select value={perPage} onChange={e=> setPerPage(Number(e.target.value)||30)} className="border rounded px-1 py-0.5 text-[11px] bg-white">
+          <select value={perPage} onChange={e=> setPerPagePersist(Number(e.target.value)||30)} className="border rounded px-1 py-0.5 text-[11px] bg-white">
             {[12, 30, 60, 120].map(n=> <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
