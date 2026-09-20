@@ -131,8 +131,10 @@ export default function FollowUpsPage() {
     setBoardPerPage(v)
     setBoardPage(1)
   }
-  const [boardSort, setBoardSort] = useState<'no_follow'|'created'|'level'|'reply_time'|'step'|'name'>('no_follow')
+  const [boardSort, setBoardSort] = useState<'no_follow'|'created'|'level'|'reply'|'reply_time'|'follow_at'|'follow_count'|'step'|'name'|'stage'>('no_follow')
   const [boardSortDir, setBoardSortDir] = useState<'asc'|'desc'>('desc')
+  /** 折叠筛选时隐藏多选框；可单独开「多选」 */
+  const [boardSelectMode, setBoardSelectMode] = useState(false)
   const [boardQ, setBoardQ] = useState('')
   const [boardHighOnly, setBoardHighOnly] = useState(false)
   const [boardStepMin, setBoardStepMin] = useState(0)
@@ -1097,6 +1099,8 @@ const handleBatchAiTpl = useCallback(async () => {
           return true
         })
         const LEVEL_RANK: Record<string, number> = { 'A+':5, 'A':4, 'B':3, 'C':2, 'D':1 }
+        const STAGE_RANK: Record<string, number> = { ordered:3, following:2, cancelled:1 }
+        const replyRank = (c: Customer) => String((c as any).hasReply||'')==='yes' ? 1 : 0
         const dir = boardSortDir === 'asc' ? 1 : -1
         rows.sort((a,b)=>{
           switch(boardSort){
@@ -1104,10 +1108,18 @@ const handleBatchAiTpl = useCallback(async () => {
               return dir * String(createdAtOf(a)||'').localeCompare(String(createdAtOf(b)||''))
             case 'level':
               return dir * ((LEVEL_RANK[a.level||'C']||0) - (LEVEL_RANK[b.level||'C']||0))
+            case 'reply':
+              return dir * (replyRank(a) - replyRank(b))
             case 'reply_time':
               return dir * String((a as any).lastReplyAt||'').localeCompare(String((b as any).lastReplyAt||''))
+            case 'follow_at':
+              return dir * String((a as any).lastFollowAt||'').localeCompare(String((b as any).lastFollowAt||''))
+            case 'follow_count':
+              return dir * (followCountOf(a) - followCountOf(b))
             case 'step':
               return dir * (followStepOf(a) - followStepOf(b))
+            case 'stage':
+              return dir * ((STAGE_RANK[salesStageOf(a)]||0) - (STAGE_RANK[salesStageOf(b)]||0))
             case 'name':
               return dir * String(a.contactName||a.title||'').localeCompare(String(b.contactName||b.title||''))
             case 'no_follow':
@@ -1115,6 +1127,7 @@ const handleBatchAiTpl = useCallback(async () => {
               return dir * ((daysNoFollow(a) ?? 999) - (daysNoFollow(b) ?? 999))
           }
         })
+        const showBoardChecks = boardFiltersOpen || boardSelectMode || boardSelected.size > 0
         const copyEmail = async (email: string) => {
           try{
             await navigator.clipboard.writeText(email)
@@ -1230,6 +1243,12 @@ const handleBatchAiTpl = useCallback(async () => {
                 className={`px-2 py-1 border rounded text-sm ${boardFiltersOpen?'bg-blue-50 border-blue-300 text-blue-700':'bg-white'}`}
                 title="展开/折叠筛选排序栏"
               >{boardFiltersOpen ? '收起筛选 ▲' : '筛选/排序 ▼'}</button>
+              {boardFiltersOpen && (
+                <button
+                  onClick={()=> setBoardSelectMode(v=>!v)}
+                  className={`px-2 py-1 border rounded text-sm ${boardSelectMode||boardSelected.size?'bg-indigo-600 text-white border-indigo-600':'bg-white'}`}
+                >☑ 多选{boardSelected.size?`(${boardSelected.size})`:''}</button>
+              )}
               {boardFiltersOpen && (<>
               <select value={boardMode} onChange={e=>{ setBoardMode(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">全部跟进方式</option><option value="auto">自动跟进</option><option value="manual">手动跟进</option>
@@ -1256,8 +1275,12 @@ const handleBatchAiTpl = useCallback(async () => {
                 <option value="no_follow">排序：未跟进天数</option>
                 <option value="created">排序：创建时间</option>
                 <option value="level">排序：客户等级</option>
+                <option value="reply">排序：回复</option>
                 <option value="reply_time">排序：最近回复</option>
+                <option value="follow_at">排序：最近跟进</option>
+                <option value="follow_count">排序：跟进次数</option>
                 <option value="step">排序：跟进状态</option>
+                <option value="stage">排序：销售阶段</option>
                 <option value="name">排序：客户名</option>
               </select>
               <button onClick={()=> setBoardSortDir(d=> d==='asc'?'desc':'asc')} className="px-2 py-1.5 border rounded text-sm">{boardSortDir==='asc'?'↑ 升序':'↓ 降序'}</button>
@@ -1293,6 +1316,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 <thead className="bg-gray-50">
                   <tr className="text-left text-gray-600">
                     <th className="p-2 w-8">
+                      {showBoardChecks ? (
                       <input type="checkbox"
                         checked={pageRows.length>0 && pageRows.every(c=> boardSelected.has(c.id))}
                         onChange={e=>{
@@ -1300,33 +1324,35 @@ const handleBatchAiTpl = useCallback(async () => {
                           else setBoardSelected(prev=>{ const n=new Set(prev); for(const c of pageRows) n.delete(c.id); return n })
                         }}
                       />
+                      ) : null}
                     </th>
                     {([
-                      { key:'name', label:'客户', w:'name' },
-                      { key:'created', label:'创建时间', w:'created' },
+                      { key:'name', label:'客户', w:'name', sort:'name' },
+                      { key:'created', label:'创建时间', w:'created', sort:'created' },
                       { key:'inq', label:'询盘号', w:'inq' },
-                      { key:'level', label:'等级', w:'level' },
-                      { key:'reply', label:'回复', w:'reply' },
+                      { key:'level', label:'等级', w:'level', sort:'level' },
+                      { key:'reply', label:'回复', w:'reply', sort:'reply' },
                       { key:'mode', label:'跟进方式', w:'mode' },
-                      { key:'reply_time', label:'最近回复', w:'reply_time' },
-                      { key:'follow', label:'最近跟进', w:'follow' },
-                      { key:'count', label:'跟进次数', w:'count' },
-                      { key:'step', label:'跟进状态', w:'step' },
-                      { key:'no_follow', label:'未跟进', w:'no_follow' },
-                      { key:'stage', label:'销售阶段', w:'stage' },
+                      { key:'reply_time', label:'最近回复', w:'reply_time', sort:'reply_time' },
+                      { key:'follow', label:'最近跟进', w:'follow', sort:'follow_at' },
+                      { key:'count', label:'跟进次数', w:'count', sort:'follow_count' },
+                      { key:'step', label:'跟进状态', w:'step', sort:'step' },
+                      { key:'no_follow', label:'未跟进', w:'no_follow', sort:'no_follow' },
+                      { key:'stage', label:'销售阶段', w:'stage', sort:'stage' },
                       { key:'ops', label:'操作', w:'ops' },
                     ] as const).map(col=>{
-                      const sortable = ['name','created','level','reply_time','step','no_follow'].includes(col.key as string)
+                      const sortKey = (col as any).sort as string | undefined
+                      const sortable = !!sortKey
                       return (
                         <th
                           key={col.key}
                           className="p-2 select-none relative"
                           style={{ width: colW(col.w, col.key==='name'?180:110), minWidth: 56 }}
-                          onClick={()=>{ if(sortable) toggleBoardSort(col.key as any) }}
+                          onClick={()=>{ if(sortable && sortKey) toggleBoardSort(sortKey as any) }}
                         >
                           <span className={sortable?'cursor-pointer inline-flex items-center':''}>
                             {col.label}
-                            {sortable && <SortIcon col={col.key as string} />}
+                            {sortable && sortKey && <SortIcon col={sortKey} />}
                           </span>
                           <span
                             onMouseDown={(e)=> startColResize(col.w, e)}
@@ -1349,7 +1375,9 @@ const handleBatchAiTpl = useCallback(async () => {
                     return (
                       <tr key={c.id} className={`border-t hover:bg-blue-50/40 ${boardSelected.has(c.id)?'bg-indigo-50/60':''}`}>
                         <td className="p-2">
-                          <input type="checkbox" checked={boardSelected.has(c.id)} onChange={()=> toggleBoard(c.id)}/>
+                          {showBoardChecks && (
+                            <input type="checkbox" checked={boardSelected.has(c.id)} onChange={()=> toggleBoard(c.id)}/>
+                          )}
                         </td>
                         <td className="p-2" style={{ maxWidth: colW('name', 180) }}>
                           <div className="font-medium truncate text-sm">{c.contactName||c.title}
