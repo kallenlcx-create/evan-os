@@ -9,10 +9,10 @@ import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
-import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, addManualBuckets, type ManualBucket } from '../services/manualBuckets'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, createdAtOf, bestFollowStepFromMails, type FollowMode, type SalesStage } from '../services/followProfile'
-import { addManualBuckets } from '../services/manualBuckets'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
+import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 void MANUAL_BUCKETS
 void removeManualBucket
 void removeManualBuckets
@@ -123,6 +123,8 @@ export default function FollowUpsPage() {
   const [boardQ, setBoardQ] = useState('')
   const [boardHighOnly, setBoardHighOnly] = useState(false)
   const [boardStepMin, setBoardStepMin] = useState(0)
+  const [inquiries, setInquiries] = useState<InquiryRecord[]>([])
+  const [boardInq, setBoardInq] = useState<'all'|'yes'|'today'|'pending'>('all')
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -147,6 +149,11 @@ export default function FollowUpsPage() {
       // 步号判断：优先用你保存的序列模板文案做相似度
       const r = await runFollowBoardSync({ sequences: seqs, seqTemplates: tpls })
       if(r.replies || r.modeChanged || r.stepsUpdated) setIntellectNote(r.note)
+      try{
+        const inq = await syncInquiriesFromMails()
+        setInquiries(await listInquiries())
+        if(inq.created || inq.updated) setIntellectNote(`${inq.note}${r.replies||r.modeChanged?' · '+r.note:''}`)
+      }catch{ setInquiries(await listInquiries().catch(()=>[] as InquiryRecord[])) }
     }catch(e:any){
       setIntellectNote('序列/档案同步失败：'+String(e.message||e).slice(0,140))
     }
@@ -749,6 +756,9 @@ const handleBatchAiTpl = useCallback(async () => {
               const seqs = (await getSequences()).sequences || []
               setSequences(seqs)
               const r = await runFollowBoardSync({ sequences: seqs, seqTemplates, forceStepScan: true })
+              const inq = await syncInquiriesFromMails()
+              setInquiries(await listInquiries())
+              setIntellectNote(`${r.note}｜${inq.note}`)
               setIntellectNote(r.note)
               await load()
             }catch(e:any){ setIntellectNote('档案同步失败：'+String(e.message||e).slice(0,100)) }
@@ -995,6 +1005,11 @@ const handleBatchAiTpl = useCallback(async () => {
           return scan.step || 0
         }
         const followCountOf = (c: Customer) => Math.max(Number((c as any).followCountSinceReply || 0), liveFollowCount(c))
+        const inqByCust = new Map<string, InquiryRecord>()
+        const todayStr = new Date().toISOString().slice(0,10)
+        for(const r of inquiries){
+          if(r.customerId && !inqByCust.has(r.customerId)) inqByCust.set(r.customerId, r)
+        }
         const rows = customers.filter(c=>{
           if(boardHideNoise && isBoardNoiseEmail(c.email)) return false
           if((c.tags||[]).map(String).includes('噪声') && boardHideNoise) return false
@@ -1012,9 +1027,20 @@ const handleBatchAiTpl = useCallback(async () => {
           if(boardStepMin > 0){
             if(followStepOf(c) < boardStepMin) return false
           }
+          const inq = inqByCust.get(c.id)
+          const inqTag = isInquiryCustomer(c)
+          if(boardInq === 'yes' && !inq && !inqTag) return false
+          if(boardInq === 'today'){
+            const d = String(inq?.inquiryDate||'')
+            if(d.slice(0,10) !== todayStr) return false
+          }
+          if(boardInq === 'pending'){
+            const ok = !inq || !inq.customerEmail || inq.completeness === 'L0' || inq.status === 'pending_contact'
+            if(!ok) return false
+          }
           if(boardQ.trim()){
             const q = boardQ.trim().toLowerCase()
-            const hay = `${c.contactName||''} ${c.title||''} ${c.email||''} ${c.company||''}`.toLowerCase()
+            const hay = `${c.contactName||''} ${c.title||''} ${c.email||''} ${c.company||''} ${inq?.inquiryNo||''} ${(c as any).inquiryNos?.join?.(' ')||''}`.toLowerCase()
             if(!hay.includes(q)) return false
           }
           return true
@@ -1163,6 +1189,12 @@ const handleBatchAiTpl = useCallback(async () => {
                 <option value={0}>跟进步：全部</option>
                 {[1,2,3,4,5,6,7].map(n=> <option key={n} value={n}>≥跟进{n}</option>)}
               </select>
+              <select value={boardInq} onChange={e=>{ setBoardInq(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
+                <option value="all">询盘：全部</option>
+                <option value="yes">仅询盘</option>
+                <option value="today">今日询盘</option>
+                <option value="pending">待补信息</option>
+              </select>
               <select value={boardSort} onChange={e=> setBoardSort(e.target.value as any)} className="border rounded px-2 py-1.5 text-sm">
                 <option value="no_follow">排序：未跟进天数</option>
                 <option value="created">排序：创建时间</option>
@@ -1219,7 +1251,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         }}
                       />
                     </th>
-                    <th className="p-2">客户</th><th className="p-2">创建时间</th><th className="p-2">等级</th><th className="p-2">回复</th>
+                    <th className="p-2">客户</th><th className="p-2">创建时间</th><th className="p-2">询盘号</th><th className="p-2">等级</th><th className="p-2">回复</th>
                     <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
                     <th className="p-2">跟进次数</th><th className="p-2">跟进状态</th><th className="p-2">未跟进</th>
                     <th className="p-2">销售阶段</th><th className="p-2">操作</th>
@@ -1252,6 +1284,23 @@ const handleBatchAiTpl = useCallback(async () => {
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
                         <td className="p-2 text-gray-600 whitespace-nowrap">{createdAtOf(c)}</td>
+                        <td className="p-2 text-xs">
+                          {(()=>{
+                            const inq = inqByCust.get(c.id)
+                            const nos = (c as any).inquiryNos as string[] | undefined
+                            const no = inq?.inquiryNo || nos?.[0]
+                            if(!no && !isInquiryCustomer(c)) return <span className="text-gray-300">—</span>
+                            return (
+                              <div className="max-w-[140px]">
+                                <div className="font-mono text-[11px] text-blue-700 truncate" title={no}>{no || '询盘'}</div>
+                                <div className="text-[10px] text-gray-400 truncate">
+                                  {[inq?.productName, inq?.qty?`${inq.qty}pcs`:null, inq?.amount?`$${inq.amount}`:null].filter(Boolean).join(' · ') || inq?.inquiryDate?.slice(0,10) || ''}
+                                </div>
+                                {inq?.completeness === 'L0' && <div className="text-[10px] text-amber-600">待补信息</div>}
+                              </div>
+                            )
+                          })()}
+                        </td>
                         <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
                         <td className="p-2"><span className={`px-2 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}`}>{hr==='yes'?'有':'无'}</span></td>
                         <td className="p-2">
