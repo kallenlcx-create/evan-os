@@ -166,10 +166,17 @@ export default function Layout() {
 
         {/* 主内容区 */}
         {/* 邮件中心 / 跟进表需要铺满视口，不受 max-w-7xl 限制 */}
-        <main className={`w-full p-4 md:p-6 ${(location.pathname==='/inbox' || location.pathname==='/followups') ? 'max-w-none' : 'max-w-7xl'}`}>
-          <PageErrorBoundary key={location.pathname}>
-            <Outlet />
-          </PageErrorBoundary>
+        <main
+          className="w-full p-4 md:p-6"
+          style={{
+            maxWidth: (location.pathname==='/inbox' || location.pathname==='/followups') ? 'none' : undefined,
+          }}
+        >
+          <div className={(location.pathname==='/inbox' || location.pathname==='/followups') ? '' : 'max-w-7xl'}>
+            <PageErrorBoundary key={location.pathname}>
+              <Outlet />
+            </PageErrorBoundary>
+          </div>
         </main>
       </div>
       <GlobalSearch />

@@ -75,8 +75,8 @@ const app = express()
 // 认证/写入路由单独限制 body 大小（全局 20mb 过宽，易被单请求吃内存）
 app.use(express.json({ limit: '2mb' }))
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*') // 上线后建议改为你的 Pages 域名
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  res.setHeader('Access-Control-Allow-Origin', '*') // GitHub Pages / 本地均可
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,x-evan-token,x-evan-file-id,Bypass-Tunnel-Reminder')
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()

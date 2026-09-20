@@ -4,7 +4,7 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders, probeSeqServer } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
@@ -770,6 +770,19 @@ const handleBatchAiTpl = useCallback(async () => {
             </label>
           </div>
           <div className="text-[11px] text-gray-400">跟进步号：自动序列按已发出步骤；手动邮件按「模板+间隔」里的序列文案关键词相似度判断（跟进1–7）。标记「自动跟进」才会进自动序列。</div>
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t">
+            <button
+              onClick={async()=>{
+                const p = await probeSeqServer()
+                setIntellectNote(p.ok ? `连接正常：${p.url} · ${p.detail}` : `连接失败：${p.url} · ${p.detail}`)
+                alert(p.ok
+                  ? `✅ 同步服务器可访问\n${p.url}\n${p.detail}\n若保存模板仍失败，请到「云同步」重新登录。`
+                  : `❌ 无法访问同步服务器\n地址：${p.url}\n${p.detail}\n\n请检查：\n1) 本机 server.mjs 是否在跑\n2) 云同步地址是否为 https://win-8c09k6b093h.tail73fe40.ts.net\n3) 浏览器能否直接打开该地址\n4) 云同步退出后重新登录`)
+              }}
+              className="px-3 py-1 bg-blue-600 text-white rounded-lg"
+            >🔌 测试同步连接</button>
+            <span className="text-[10px] text-gray-400">Failed to fetch 多为浏览器访问隧道失败或地址/登录无效，与模板内容无关。</span>
+          </div>
         </div>
       )}
       {mainView==='radar' && (

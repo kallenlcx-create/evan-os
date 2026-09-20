@@ -623,24 +623,42 @@ export async function getOutboxDetail(id: string): Promise<any>{
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步（同步服务器地址+账号）')
+  const url = `${h.url}${path}`
   let r: Response
   try{
-    r = await fetch(`${h.url}${path}`, { method,
+    r = await fetch(url, { method,
       headers: { 'Content-Type': 'application/json', ...bypassHeaders(h) },
       body: body ? JSON.stringify(body) : undefined })
   }catch(e:any){
-    throw new Error('无法连接同步服务器：'+String(e?.message||e).slice(0,80)+'。请确认本机 server.mjs 已启动、云同步地址正确。')
+    const why = String(e?.message||e)
+    const hint = h.url.includes('ts.net')
+      ? 'Tailscale 隧道可能未打通：请在本机确认 server.mjs 与 tailscale serve；浏览器可先直接打开该域名测试。'
+      : '请确认云同步里的服务器地址可访问。'
+    throw new Error(`无法连接同步服务器：${why}\n地址：${h.url}\n${hint}\n若地址不对，请到「云同步」改地址并重新登录。`)
   }
   const text = await r.text()
-  // 防护：网关/隧道错误页返回 HTML，不能当 JSON 解析
   const trimmed = text.trimStart()
   if(trimmed.startsWith('<') || /^<!DOCTYPE/i.test(trimmed)){
-    throw new Error(`服务器返回了网页而不是数据（HTTP ${r.status}）。多为：未登录/Token失效、Tailscale/隧道 502、或 server.mjs 未运行。请到云同步重新登录后再试。`)
+    throw new Error(`服务器返回了网页而不是数据（HTTP ${r.status}，${h.url}）。请到云同步重新登录；若打开该域名也是网页错误，请检查本机 server.mjs / Funnel。`)
   }
   let j: any = {}
   try{ j = text ? JSON.parse(text) : {} }catch{ j = {} }
-  if(!r.ok) throw new Error(j.error || `请求失败 ${r.status}${text? '：'+text.slice(0,80):''}`)
+  if(!r.ok) throw new Error(j.error || `请求失败 ${r.status} @ ${h.url}${text? '：'+text.slice(0,80):''}`)
   return j
+}
+
+/** 诊断：当前同步地址能否打通序列接口 */
+export async function probeSeqServer(): Promise<{ ok: boolean; url: string; detail: string }>{
+  const h = await serverHeaders()
+  if(!h) return { ok:false, url:'(未配置)', detail:'未登录云同步' }
+  try{
+    const r = await fetch(`${h.url}/email/seq-config`, { headers: bypassHeaders(h) })
+    const text = await r.text()
+    if(text.trimStart().startsWith('<')) return { ok:false, url:h.url, detail:`HTTP ${r.status} 返回 HTML（登录失效或隧道错误页）` }
+    return { ok:true, url:h.url, detail:`HTTP ${r.status}${r.ok?' 连接正常':'（已连上但鉴权/参数异常）'}` }
+  }catch(e:any){
+    return { ok:false, url:h.url, detail: String(e?.message||e) }
+  }
 }
 export const getSequences = (mode = '') => seqApi(`/email/sequences${mode?`?mode=${mode}`:''}`)
 export const startSequence = (p: any) => seqApi('/email/sequences', 'POST', p)
