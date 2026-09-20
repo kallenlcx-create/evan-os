@@ -733,7 +733,7 @@ const handleBatchAiTpl = useCallback(async () => {
   ]
 
   return (
-    <div className={`p-4 space-y-4 w-full ${mainView==='board' ? 'max-w-none' : 'max-w-7xl mx-auto'}`}>
+    <div className={`${mainView==='board' ? 'w-full max-w-none' : 'max-w-7xl mx-auto'} p-0 space-y-4`}>
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
       <div className="flex items-center gap-2 flex-wrap -mt-1">
         <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
@@ -1097,7 +1097,7 @@ const handleBatchAiTpl = useCallback(async () => {
           }
         }
         return (
-          <div className="bg-white rounded-2xl border p-4 space-y-3">
+          <div className="bg-white rounded-2xl border p-4 space-y-3 w-full min-w-0">
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <span className="font-semibold text-base">📋 跟进档案表</span>
               <span className="text-gray-500">共 {rows.length} 人</span>

@@ -165,7 +165,8 @@ export default function Layout() {
         )}
 
         {/* 主内容区 */}
-        <main className={`p-4 md:p-6 ${location.pathname==='/inbox' ? 'max-w-none' : 'max-w-7xl'}`}>
+        {/* 邮件中心 / 跟进表需要铺满视口，不受 max-w-7xl 限制 */}
+        <main className={`p-4 md:p-6 ${(location.pathname==='/inbox' || location.pathname==='/followups') ? 'max-w-none' : 'max-w-7xl'}`}>
           <PageErrorBoundary key={location.pathname}>
             <Outlet />
           </PageErrorBoundary>
