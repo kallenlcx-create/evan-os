@@ -10,7 +10,7 @@ import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, addManualBuckets, type ManualBucket } from '../services/manualBuckets'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, createdAtOf, bestFollowStepFromMails, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 void MANUAL_BUCKETS
@@ -1063,6 +1063,11 @@ const handleBatchAiTpl = useCallback(async () => {
         for(const r of inquiries){
           if(r.customerId && !inqByCust.has(r.customerId)) inqByCust.set(r.customerId, r)
         }
+        /** 展示用业务创建时间：询盘日/邮件时间，不用建档时间 */
+        const bizCreatedAt = (c: Customer) => businessCreatedAt(c, {
+          inquiryDate: inqByCust.get(c.id)?.inquiryDate,
+          emails: mailList,
+        })
         const rows = customers.filter(c=>{
           if(boardHideNoise && isBoardNoiseEmail(c.email)) return false
           if((c.tags||[]).map(String).includes('噪声') && boardHideNoise) return false
@@ -1105,7 +1110,8 @@ const handleBatchAiTpl = useCallback(async () => {
         rows.sort((a,b)=>{
           switch(boardSort){
             case 'created':
-              return dir * String(createdAtOf(a)||'').localeCompare(String(createdAtOf(b)||''))
+              return dir * String(businessCreatedAt(a, { inquiryDate: inqByCust.get(a.id)?.inquiryDate, emails: mailList })||'')
+                .localeCompare(String(businessCreatedAt(b, { inquiryDate: inqByCust.get(b.id)?.inquiryDate, emails: mailList })||''))
             case 'level':
               return dir * ((LEVEL_RANK[a.level||'C']||0) - (LEVEL_RANK[b.level||'C']||0))
             case 'reply':
@@ -1393,7 +1399,9 @@ const handleBatchAiTpl = useCallback(async () => {
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
-                        <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}>{createdAtOf(c)}</td>
+                        <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}
+                          title="业务创建时间：优先询盘日(INQC)，否则收发邮件最早日期"
+                        >{bizCreatedAt(c)}</td>
                         <td className="p-2 text-xs">
                           {(()=>{
                             const inq = inqByCust.get(c.id)

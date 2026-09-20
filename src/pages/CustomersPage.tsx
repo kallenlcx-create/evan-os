@@ -8,7 +8,7 @@ import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntell
 import { coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile, portraitDisplay, PORTRAIT_DIMENSIONS, isFillableDim, type AiPortraitV2 } from '../config/portrait'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
-import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow } from '../services/followProfile'
+import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, businessCreatedAt } from '../services/followProfile'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 
@@ -1434,6 +1434,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   </select>
                 </span>
                 <span>未跟进 <b className={(daysNoFollow(selectedCustomer)||0)>7?'text-rose-600':''}>{daysNoFollow(selectedCustomer)==null?'—':`${daysNoFollow(selectedCustomer)}天`}</b></span>
+                <span title="优先询盘日/邮件往来日，非系统建档">业务创建 <b>{(()=>{
+                  const inqDate = (selectedCustomer as any).inquiryAt || ''
+                  return businessCreatedAt(selectedCustomer, { inquiryDate: inqDate, emails: customerEmails })
+                })()}</b></span>
+                <span title="系统首次写入本地库">建档 {(String((selectedCustomer as any).createdAt||'')).slice(0,10)||'—'}</span>
                 <span>最近回复 {String((selectedCustomer as any).lastReplyAt||'').slice(0,10)||'—'}</span>
               </div>
             </div>

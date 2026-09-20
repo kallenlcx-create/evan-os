@@ -299,7 +299,8 @@ export async function runFollowBoardSync(opts?: {
 
     const patch: any = {
       hasReply: hasReply ? 'yes' : 'no',
-      lastReplyAt: lastReply || (c as any).lastReplyAt || null,
+      // 时间一律以邮件收发为准
+      lastReplyAt: lastReply || null,
       lastFollowAt: lastSent || (c as any).lastFollowAt || null,
       followCountSinceReply: followCount,
       followMode,
@@ -309,6 +310,14 @@ export async function runFollowBoardSync(opts?: {
       followStepLabel: stepLabel(followStep),
       followStepMatched,
       updatedAt: ts,
+    }
+    // 回填业务创建时间（询盘日 / 邮件最早往来）
+    const mailBiz = businessCreatedAt(c, { emails })
+    const prevInq = String((c as any).inquiryAt||'').slice(0,10)
+    const inqDate = String((c as any).inquiryAt||'').slice(0,10)
+    const biz = inqDate || (prevInq || mailBiz)
+    if(biz && biz !== createdAtOf(c) && /^\d{4}-\d{2}-\d{2}$/.test(biz)){
+      patch.inquiryAt = (c as any).inquiryAt || biz
     }
     if(hasReply && lastReply) patch.lastReplyAt = lastReply
     await db.customers.update(c.id, patch)
@@ -378,13 +387,53 @@ export async function setCustomerSalesStage(c: Customer, stage: SalesStage){
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))
 }
 
+export function createdAtOf(c: Customer): string {
+  return String((c as any).createdAt || (c as any).created_at || '').slice(0, 10) || '—'
+}
+
+/**
+ * 业务创建时间：必须以收发邮件 / 询盘日为准，不用系统建档时间。
+ * 优先：inquiryAt → 询盘表 inquiryDate → 邮件最早往来 → firstSentAt/lastFollowAt → createdAt
+ */
+export function businessCreatedAt(
+  c: Customer,
+  opts?: { inquiryDate?: string; emails?: EmailMessage[] }
+): string {
+  const fromIso = (v?: string | null) => {
+    if(!v) return ''
+    const s = String(v).slice(0, 10)
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+  }
+  const inquiryAt = fromIso((c as any).inquiryAt) || fromIso(opts?.inquiryDate)
+  if(inquiryAt) return inquiryAt
+
+  // 客户相关邮件最早日期（收或发）
+  if(opts?.emails?.length){
+    const addrs = customerAddrs(c)
+    let earliest = ''
+    for(const e of opts.emails){
+      const from = extractAddr(e.from).toLowerCase()
+      const to = extractAddr(e.to||'').toLowerCase()
+      const hit = addrs.some(a=> a && (a===from || to.includes(a) || from===a))
+      if(!hit) continue
+      const d = fromIso(e.date)
+      if(d && (!earliest || d < earliest)) earliest = d
+    }
+    if(earliest) return earliest
+  }
+
+  const firstSent = fromIso((c as any).firstSentAt)
+  if(firstSent) return firstSent
+  // 最近跟进时间可作弱回退（仍来自邮件）
+  const lastFollow = fromIso((c as any).lastFollowAt)
+  if(lastFollow) return lastFollow
+  return createdAtOf(c)
+}
+
+/** 未跟进天数：只认我方发送时间（邮件），不认建档/更新时间 */
 export function daysNoFollow(c: Customer): number | null {
   const last = (c as any).lastFollowAt || (c as any).lastSentAt || null
   return daysSince(last)
-}
-
-export function createdAtOf(c: Customer): string {
-  return String((c as any).createdAt || (c as any).created_at || '').slice(0, 10) || '—'
 }
 
 /** 跟进表用噪声判断（比 isNoiseEmailAddress 更宽） */

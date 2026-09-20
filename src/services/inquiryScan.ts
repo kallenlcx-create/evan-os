@@ -224,6 +224,7 @@ export async function ensureInquiryCustomer(email: string, name: string): Promis
       salesStage: 'following',
       followMode: 'manual',
       hasReply: 'no',
+      inquiryAt: undefined as string | undefined,
       followUpAt: new Date(Date.now() + 2*86400000).toISOString().slice(0,10),
     }
     await db.customers.put(rec)
@@ -360,11 +361,17 @@ export async function syncInquiriesFromMails(emails?: EmailMessage[]): Promise<{
         const c = await db.customers.get(rec.customerId) as any
         if(c){
           const tags = [...new Set([...(c.tags||[]).map(String), '询盘'])]
-          const nos = [...new Set([...(c.inquiryNos||[]).map(String), no])]
+          const nos = [...new Set([...(c.inquiryNos||[]).map(String), rec.inquiryNo])]
           const patch: any = { tags, inquiryNos: nos, updatedAt: now() }
-          if(!c.followUpAt && rec.inquiryDate){
-            const d = new Date(rec.inquiryDate)
-            if(Number.isFinite(d.getTime())) patch.followUpAt = new Date(d.getTime() + 2*86400000).toISOString().slice(0,10)
+          // 业务创建时间 = 询盘日（INQC），不改 createdAt
+          const inqDate = String(rec.inquiryDate||'').slice(0,10)
+          if(/^\d{4}-\d{2}-\d{2}$/.test(inqDate)){
+            const prevInq = String(c.inquiryAt||'').slice(0,10)
+            if(!prevInq || inqDate < prevInq) patch.inquiryAt = inqDate
+            if(!c.followUpAt){
+              const d = new Date(inqDate)
+              if(Number.isFinite(d.getTime())) patch.followUpAt = new Date(d.getTime() + 2*86400000).toISOString().slice(0,10)
+            }
           }
           await db.customers.update(rec.customerId, patch)
         }
