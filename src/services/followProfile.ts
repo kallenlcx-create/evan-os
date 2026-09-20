@@ -284,19 +284,16 @@ export async function runFollowBoardSync(opts?: {
         followStepMatched = `序列 ${step}/7`
         stepsUpdated++
       }
-    } else if(lastSent){
-      const myMails = emails.filter(e=>{
-        const from = extractAddr(e.from).toLowerCase()
-        return (e.folder==='sent' || SELF.has(from)) && addrs.some(a=> String(e.to||'').toLowerCase().includes(a))
-      }).sort((a,b)=> String(b.date||'').localeCompare(String(a.date||'')))
-      const last = myMails[0]
-      if(last){
-        const m = matchFollowStep(last.subject||'', last.text||'', templates, th)
-        if(m.step > 0 && m.step !== followStep){
-          followStep = m.step
-          followStepMatched = m.matched
-          stepsUpdated++
-        }
+    } else if(lastSent || (c as any).followCountSinceReply > 0){
+      const scan = bestFollowStepFromMails(emails, addrs, templates, th)
+      if(scan.step > 0 && scan.step !== followStep){
+        followStep = scan.step
+        followStepMatched = scan.matched
+        stepsUpdated++
+      } else if(!followStep && scan.step > 0){
+        followStep = scan.step
+        followStepMatched = scan.matched
+        stepsUpdated++
       }
     }
 
@@ -384,4 +381,57 @@ export async function setCustomerSalesStage(c: Customer, stage: SalesStage){
 export function daysNoFollow(c: Customer): number | null {
   const last = (c as any).lastFollowAt || (c as any).lastSentAt || null
   return daysSince(last)
+}
+
+export function createdAtOf(c: Customer): string {
+  return String((c as any).createdAt || (c as any).created_at || '').slice(0, 10) || '—'
+}
+
+/** 跟进表用噪声判断（比 isNoiseEmailAddress 更宽） */
+export function isBoardNoiseEmail(email?: string | null): boolean {
+  const addr = String(email||'').toLowerCase().trim()
+  if(!addr.includes('@')) return true
+  const local = addr.split('@')[0] || ''
+  const domain = addr.split('@')[1] || ''
+  if(local.startsWith('noreply') || local.startsWith('no-reply') || local.startsWith('donotreply')) return true
+  const noiseLocal = ['welcome','service','info','marketing','announce','newsletter','bounce','mailer-daemon','postmaster','notifications']
+  if(noiseLocal.includes(local)) return true
+  const noiseDom = [
+    'wordpress.com','blogger.com','googlemail.com','youtube.com','quora.com',
+    'support.whatsapp.com','abnewswire.com','slickdeals.net','dealnews.com',
+    'bradsdeals.com','getmecodes.com','mediafuse.org','flipboard.com',
+  ]
+  if(noiseDom.includes(domain) || domain.endsWith('.blogger.com')) return true
+  if(domain === 'microsoft.com' || domain.endsWith('.microsoft.com')) {
+    if(/outlook|exchange|notifications/.test(local)) return true
+  }
+  return isNoiseEmailAddress(email)
+}
+
+/** 从该客户「我方发出」的最近邮件里找最匹配的模板步号 */
+export function bestFollowStepFromMails(
+  emails: EmailMessage[],
+  addrs: string[],
+  templates?: FollowStepTemplate[],
+  threshold?: number,
+): { step: number; matched: string; lastSent: string | null; count: number } {
+  const set = new Set(addrs.map(a=> a.toLowerCase()))
+  const mine = emails.filter(e=>{
+    const from = extractAddr(e.from).toLowerCase()
+    if(!(e.folder === 'sent' || SELF.has(from))) return false
+    const to = String(e.to||'').toLowerCase()
+    return to.split(',').some(x=> set.has(extractAddr(x)))
+  }).sort((a,b)=> String(b.date||'').localeCompare(String(a.date||'')))
+  const lastSent = mine[0]?.date ? String(mine[0].date) : null
+  let step = 0
+  let matched = ''
+  // 扫最近 12 封我方邮件，取最高步号匹配
+  for(const e of mine.slice(0, 12)){
+    const m = matchFollowStep(e.subject||'', e.text||'', templates, threshold)
+    if(m.step > step){
+      step = m.step
+      matched = m.matched || ''
+    }
+  }
+  return { step, matched, lastSent, count: mine.length }
 }

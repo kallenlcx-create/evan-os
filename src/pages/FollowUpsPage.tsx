@@ -10,9 +10,8 @@ import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, createdAtOf, bestFollowStepFromMails, type FollowMode, type SalesStage } from '../services/followProfile'
 import { addManualBuckets } from '../services/manualBuckets'
-import { isNoiseEmailAddress } from '../utils/emailHelpers'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 void MANUAL_BUCKETS
 void removeManualBucket
@@ -119,6 +118,11 @@ export default function FollowUpsPage() {
   const [boardHideNoise, setBoardHideNoise] = useState(true)
   const [boardSelected, setBoardSelected] = useState<Set<string>>(new Set())
   const [boardBulkBusy, setBoardBulkBusy] = useState('')
+  const [boardSort, setBoardSort] = useState<'no_follow'|'created'|'level'|'reply_time'|'step'|'name'>('no_follow')
+  const [boardSortDir, setBoardSortDir] = useState<'asc'|'desc'>('desc')
+  const [boardQ, setBoardQ] = useState('')
+  const [boardHighOnly, setBoardHighOnly] = useState(false)
+  const [boardStepMin, setBoardStepMin] = useState(0)
   const [sequences, setSequences] = useState<any[]>([])
   const [seqTemplates, setSeqTemplates] = useState<any[]>([])
   const [seqIntervals, setSeqIntervals] = useState<number[]>([1,2,3,4,5,6,7])
@@ -969,9 +973,31 @@ const handleBatchAiTpl = useCallback(async () => {
       {mainView==='board' && (()=>{
         const seqMapB = new Map<string, any>()
         for(const s of sequences) seqMapB.set(s.customer_id, s)
+                const mailList = emails
+        const liveFollowCount = (c: Customer) => {
+          const addrs = customerAddrs(c)
+          const { lastReply } = computeMailTimes(mailList, addrs)
+          return countFollowsSinceReply(mailList, addrs, lastReply)
+        }
+        const followStepOf = (c: Customer) => {
+          const seq = seqMapB.get(c.id)
+          const sentSteps = seq ? (seq.steps||[]).filter((t:any)=> t.status==='sent').length : 0
+          const persisted = Number((c as any).followStep || 0)
+          if(sentSteps > 0) return Math.max(persisted, sentSteps)
+          if(persisted > 0) return persisted
+          // 本地按模板相似度扫描（即使档案未写入）
+          const addrs = customerAddrs(c)
+          const scan = bestFollowStepFromMails(mailList, addrs, seqTemplates?.length ? seqTemplates.map((tt:any, i:number)=>({
+            n: Number(String(tt.id||'').match(/(\d+)$/)?.[1] || i+1),
+            name: tt.name,
+            keywords: [tt.subject, ...(String(tt.body||'').toLowerCase().split(/\s+/).filter((w:string)=> w.length>=4))].filter(Boolean).map(String),
+          })) : undefined)
+          return scan.step || 0
+        }
+        const followCountOf = (c: Customer) => Math.max(Number((c as any).followCountSinceReply || 0), liveFollowCount(c))
         const rows = customers.filter(c=>{
-          if(boardHideNoise && isNoiseEmailAddress(c.email)) return false
-          if(!boardHideNoise && (c.tags||[]).map(String).includes('噪声')) return false
+          if(boardHideNoise && isBoardNoiseEmail(c.email)) return false
+          if((c.tags||[]).map(String).includes('噪声') && boardHideNoise) return false
           const st = salesStageOf(c)
           if(boardStage !== 'all' && st !== boardStage) return false
           const fm = followModeOf(c)
@@ -979,17 +1005,39 @@ const handleBatchAiTpl = useCallback(async () => {
           const hr = String((c as any).hasReply||'')
           if(boardReply === 'yes' && hr !== 'yes') return false
           if(boardReply === 'no' && hr === 'yes') return false
+          if(boardHighOnly){
+            const high = (c as any).aiTier==='high' || hr==='yes' || c.isKey
+            if(!high) return false
+          }
+          if(boardStepMin > 0){
+            if(followStepOf(c) < boardStepMin) return false
+          }
+          if(boardQ.trim()){
+            const q = boardQ.trim().toLowerCase()
+            const hay = `${c.contactName||''} ${c.title||''} ${c.email||''} ${c.company||''}`.toLowerCase()
+            if(!hay.includes(q)) return false
+          }
           return true
-        }).sort((a,b)=> (daysNoFollow(b)??999) - (daysNoFollow(a)??999))
-        // 表内即时算「上次回复后我方跟进次数」（与档案字段取较大值）
-        const mailList = emails
-        const followCountOf = (c: Customer) => {
-          const persisted = Number((c as any).followCountSinceReply || 0)
-          const addrs = customerAddrs(c)
-          const { lastReply } = computeMailTimes(mailList, addrs)
-          const live = countFollowsSinceReply(mailList, addrs, lastReply)
-          return Math.max(persisted, live)
-        }
+        })
+        const LEVEL_RANK: Record<string, number> = { 'A+':5, 'A':4, 'B':3, 'C':2, 'D':1 }
+        const dir = boardSortDir === 'asc' ? 1 : -1
+        rows.sort((a,b)=>{
+          switch(boardSort){
+            case 'created':
+              return dir * String(createdAtOf(a)||'').localeCompare(String(createdAtOf(b)||''))
+            case 'level':
+              return dir * ((LEVEL_RANK[a.level||'C']||0) - (LEVEL_RANK[b.level||'C']||0))
+            case 'reply_time':
+              return dir * String((a as any).lastReplyAt||'').localeCompare(String((b as any).lastReplyAt||''))
+            case 'step':
+              return dir * (followStepOf(a) - followStepOf(b))
+            case 'name':
+              return dir * String(a.contactName||a.title||'').localeCompare(String(b.contactName||b.title||''))
+            case 'no_follow':
+            default:
+              return dir * ((daysNoFollow(a) ?? 999) - (daysNoFollow(b) ?? 999))
+          }
+        })
         const copyEmail = async (email: string) => {
           try{
             await navigator.clipboard.writeText(email)
@@ -1026,7 +1074,7 @@ const handleBatchAiTpl = useCallback(async () => {
               references: mid,
             })
             await setCustomerFollowMode(c, 'manual', 'user')
-            setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'} · 主题 ${gen.subject.slice(0,40)}`)
+            setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'}`)
             await loadSequences()
             await load()
           }catch(e:any){ setIntellectNote('AI回复失败：'+String(e.message||e).slice(0,120)) }
@@ -1041,26 +1089,22 @@ const handleBatchAiTpl = useCallback(async () => {
           return n
         })
         const selectedCustomers = customers.filter(c=> boardSelected.has(c.id))
-        const applyBoardBulk = async (kind: 'mode-auto'|'mode-manual'|'stage-following'|'stage-ordered'|'stage-cancelled'|'high'|'seq-start'|'seq-stop'|'copy-emails') => {
+        const applyBoardBulk = async (kind: string) => {
           if(!selectedCustomers.length) return alert('请先勾选客户')
           const n = selectedCustomers.length
           if(kind==='copy-emails'){
             const list = selectedCustomers.map(c=> c.email).filter(Boolean).join('\n')
             try{ await navigator.clipboard.writeText(list) }catch{}
-            setIntellectNote(`已复制 ${n} 个邮箱到剪贴板`)
+            setIntellectNote(`已复制 ${n} 个邮箱`)
             return
           }
           if(kind==='seq-start'){
-            if(!confirm(`对已选 ${n} 人启动自动跟进序列？（脏箱/已下单建议先取消勾选）`)) return
+            if(!confirm(`对已选 ${n} 人启动自动跟进序列？`)) return
             setBoardBulkBusy('seq')
             let ok=0
-            for(const c of selectedCustomers){
-              try{ await handleStartSeq(c); ok++ }catch{}
-            }
+            for(const c of selectedCustomers){ try{ await handleStartSeq(c); ok++ }catch{} }
             setIntellectNote(`批量启动序列：成功 ${ok}/${n}`)
-            setBoardBulkBusy('')
-            await load()
-            return
+            setBoardBulkBusy(''); await load(); return
           }
           if(kind==='seq-stop'){
             setBoardBulkBusy('seq-stop')
@@ -1069,9 +1113,7 @@ const handleBatchAiTpl = useCallback(async () => {
               try{ await patchSequence(c.id, { mode:'manual' }) }catch{}
             }
             setIntellectNote(`已批量停自动跟进 ${n} 人`)
-            setBoardBulkBusy('')
-            await load()
-            return
+            setBoardBulkBusy(''); await load(); return
           }
           if(kind==='high'){
             setBoardBulkBusy('high')
@@ -1080,30 +1122,22 @@ const handleBatchAiTpl = useCallback(async () => {
               await db.customers.update(c.id, { aiTier:'high', aiReason:'批量高意向', updatedAt:new Date().toISOString() } as any)
             }
             setIntellectNote(`已批量标高意向 ${n} 人`)
-            setBoardBulkBusy('')
-            await load()
-            return
+            setBoardBulkBusy(''); await load(); return
           }
           if(kind.startsWith('mode-')){
             const mode = kind==='mode-auto' ? 'auto' : 'manual'
-            if(mode==='auto' && !confirm(`将 ${n} 人标为「自动跟进」并尝试启动/恢复序列？`)) return
+            if(mode==='auto' && !confirm(`将 ${n} 人标为「自动跟进」并启动/恢复序列？`)) return
             setBoardBulkBusy('mode')
-            for(const c of selectedCustomers){
-              await setCustomerFollowMode(c, mode, 'user')
-            }
+            for(const c of selectedCustomers){ await setCustomerFollowMode(c, mode, 'user') }
             setIntellectNote(`批量改跟进方式：${n} 人 → ${mode==='auto'?'自动':'手动'}`)
-            setBoardBulkBusy('')
-            await load()
-            return
+            setBoardBulkBusy(''); await load(); return
           }
           if(kind.startsWith('stage-')){
             const st = kind.replace('stage-','') as SalesStage
             const label = st==='ordered'?'已下单':st==='cancelled'?'取消':'跟进中'
-            if(!confirm(`将 ${n} 人销售阶段改为「${label}」？（已下单/取消会停自动序列）`)) return
+            if(!confirm(`将 ${n} 人销售阶段改为「${label}」？`)) return
             setBoardBulkBusy('stage')
-            for(const c of selectedCustomers){
-              await setCustomerSalesStage(c, st)
-            }
+            for(const c of selectedCustomers){ await setCustomerSalesStage(c, st) }
             setIntellectNote(`批量销售阶段 → ${label}：${n} 人`)
             setBoardBulkBusy('')
             await load()
@@ -1123,6 +1157,21 @@ const handleBatchAiTpl = useCallback(async () => {
               <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="cancelled">取消</option>
               </select>
+              <input value={boardQ} onChange={e=>{ setBoardQ(e.target.value); setBoardPage(1) }} placeholder="搜客户/邮箱/公司" className="border rounded px-2 py-1.5 text-sm w-40"/>
+              <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHighOnly} onChange={e=> setBoardHighOnly(e.target.checked)}/> 仅高意向</label>
+              <select value={boardStepMin} onChange={e=>{ setBoardStepMin(Number(e.target.value)||0); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
+                <option value={0}>跟进步：全部</option>
+                {[1,2,3,4,5,6,7].map(n=> <option key={n} value={n}>≥跟进{n}</option>)}
+              </select>
+              <select value={boardSort} onChange={e=> setBoardSort(e.target.value as any)} className="border rounded px-2 py-1.5 text-sm">
+                <option value="no_follow">排序：未跟进天数</option>
+                <option value="created">排序：创建时间</option>
+                <option value="level">排序：客户等级</option>
+                <option value="reply_time">排序：最近回复</option>
+                <option value="step">排序：跟进状态</option>
+                <option value="name">排序：客户名</option>
+              </select>
+              <button onClick={()=> setBoardSortDir(d=> d==='asc'?'desc':'asc')} className="px-2 py-1.5 border rounded text-sm">{boardSortDir==='asc'?'↑ 升序':'↓ 降序'}</button>
               <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHideNoise} onChange={e=> setBoardHideNoise(e.target.checked)}/> 隐藏噪声邮箱</label>
               <label className="flex items-center gap-1 ml-auto text-sm">每页
                 <select value={boardPerPage} onChange={e=>{ setBoardPerPage(Number(e.target.value)||20); setBoardPage(1) }} className="border rounded px-1 py-1 text-sm">
@@ -1170,7 +1219,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         }}
                       />
                     </th>
-                    <th className="p-2">客户</th><th className="p-2">等级</th><th className="p-2">回复</th>
+                    <th className="p-2">客户</th><th className="p-2">创建时间</th><th className="p-2">等级</th><th className="p-2">回复</th>
                     <th className="p-2">跟进方式</th><th className="p-2">最近回复</th><th className="p-2">最近跟进</th>
                     <th className="p-2">跟进次数</th><th className="p-2">跟进状态</th><th className="p-2">未跟进</th>
                     <th className="p-2">销售阶段</th><th className="p-2">操作</th>
@@ -1202,6 +1251,7 @@ const handleBatchAiTpl = useCallback(async () => {
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                         </td>
+                        <td className="p-2 text-gray-600 whitespace-nowrap">{createdAtOf(c)}</td>
                         <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
                         <td className="p-2"><span className={`px-2 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}`}>{hr==='yes'?'有':'无'}</span></td>
                         <td className="p-2">
@@ -1219,7 +1269,11 @@ const handleBatchAiTpl = useCallback(async () => {
                           <b className={followCountOf(c)>=3?'text-orange-600':''}>{followCountOf(c)}</b>
                         </td>
                         <td className="p-2">
-                          <div className="text-sm">{stepLabel((c as any).followStep)}{seq?.mode==='auto'?` · 序列${Math.min(seq.current_step,7)}/7`:''}</div>
+                          <div className="text-sm">
+                            {followStepOf(c) > 0 ? stepLabel(followStepOf(c)) : (seq?.mode==='auto' ? `待发步${Math.min(seq.current_step||1,7)}` : '—')}
+                            {seq?.mode==='auto' ? ` · 序列${Math.min(seq.current_step||1,7)}/7` : ''}
+                          </div>
+                          {String((c as any).followStepMatched||'') && <div className="text-[10px] text-gray-400 truncate max-w-[120px]" title={String((c as any).followStepMatched)}>{(c as any).followStepMatched}</div>}
                         </td>
                         <td className={`p-2 text-sm ${(dn!=null && dn>7)?'text-rose-600 font-medium':''}`}>{dn==null?'—':`${dn}天`}</td>
                         <td className="p-2">
