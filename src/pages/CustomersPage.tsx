@@ -132,6 +132,38 @@ export default function CustomersPage(){
   const [hideOrdered, setHideOrdered] = useState(false)
   /** 组合筛选：等级（空=跟随顶部 A+/A/B 按钮；有值则按此列表） */
   const [comboLevels, setComboLevels] = useState<string[]>([])
+  /** 排序（与筛选叠加；未跟进天数与卡片「⏳未跟进」同源） */
+  const SORT_KEY = 'evan:customersSort'
+  const SORT_DIR_KEY = 'evan:customersSortDir'
+  type CustSort = 'silent'|'name'|'level'|'created'|'reply_time'|'last_follow'|'value'|'email_count'
+  const [custSort, setCustSort] = useState<CustSort>(()=>{
+    try{
+      const v = localStorage.getItem(SORT_KEY) as CustSort | null
+      return (['silent','name','level','created','reply_time','last_follow','value','email_count'] as string[]).includes(v||'') ? (v as CustSort) : 'silent'
+    }catch{ return 'silent' }
+  })
+  const [custSortDir, setCustSortDir] = useState<'asc'|'desc'>(()=>{
+    try{ return localStorage.getItem(SORT_DIR_KEY)==='asc' ? 'asc' : 'desc' }catch{ return 'desc' }
+  })
+  const setCustSortPersist = (s: CustSort, d?: 'asc'|'desc') => {
+    setCustSort(s)
+    try{ localStorage.setItem(SORT_KEY, s) }catch{}
+    if(d){ setCustSortDir(d); try{ localStorage.setItem(SORT_DIR_KEY, d) }catch{} }
+    setPage(1)
+  }
+  const toggleCustSortDir = () => {
+    const d = custSortDir==='asc'?'desc':'asc'
+    setCustSortDir(d)
+    try{ localStorage.setItem(SORT_DIR_KEY, d) }catch{}
+    setPage(1)
+  }
+  /** 未跟进天数：优先邮件 lastFollowAt / sentDates，与卡片显示一致 */
+  const silentDaysOf = (c: Customer) => {
+    const dn = daysNoFollow(c)
+    if(dn != null) return dn
+    const sd = sentDatesOf(c)
+    return sd.daysSinceSent == null ? 9999 : Number(sd.daysSinceSent)
+  }
   const [selectMode, setSelectMode] = useState(false)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkLevel, setBulkLevel] = useState('')
@@ -747,12 +779,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       if(emailType.label !== '企业') return false
     }
     if(q && !`${c.title} ${c.company} ${c.email}`.toLowerCase().includes(q.toLowerCase())) return false
-    // 未跟进天数筛选（sentDates：我方最近发送距今天数；从未发送=9999）
+    // 未跟进天数筛选（与卡片「⏳未跟进」同源：邮件发送时间）
     if(minSilentDays > 0 || maxSilentDays > 0){
-      const sd = sentDatesOf(c)
-      const never = sd.daysSinceSent == null
-      if(never && !includeNeverSent) return false
-      const days = never ? 9999 : Number(sd.daysSinceSent)
+      const days = silentDaysOf(c)
+      const never = days >= 9999
+      if(never && !includeNeverSent && minSilentDays > 0) return false
       if(minSilentDays > 0 && days < minSilentDays) return false
       if(maxSilentDays > 0 && !never && days > maxSilentDays) return false
     }
@@ -762,11 +793,34 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     }
     return true
   })
+  const LEVEL_RANK: Record<string, number> = { 'A+':5,'A':4,'B':3,'C':2,'D':1 }
+  const sortedFiltered = [...filtered].sort((a,b)=>{
+    const dir = custSortDir==='asc' ? 1 : -1
+    switch(custSort){
+      case 'name':
+        return dir * String(a.contactName||a.title||'').localeCompare(String(b.contactName||b.title||''))
+      case 'level':
+        return dir * ((LEVEL_RANK[a.level||'C']||0)-(LEVEL_RANK[b.level||'C']||0))
+      case 'created':
+        return dir * String(businessCreatedAt(a)||'').localeCompare(String(businessCreatedAt(b)||''))
+      case 'reply_time':
+        return dir * String((a as any).lastReplyAt||'').localeCompare(String((b as any).lastReplyAt||''))
+      case 'last_follow':
+        return dir * String((a as any).lastFollowAt||'').localeCompare(String((b as any).lastFollowAt||''))
+      case 'value':
+        return dir * (Number(a.value||0) - Number(b.value||0))
+      case 'email_count':
+        return dir * (Number(emailStats[String(a.email||'').toLowerCase()]?.count||0) - Number(emailStats[String(b.email||'').toLowerCase()]?.count||0))
+      case 'silent':
+      default:
+        return dir * (silentDaysOf(a) - silentDaysOf(b))
+    }
+  })
   // 筛选变化时回到第 1 页；页码越界自动夹紧
-  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length, minSilentDays, maxSilentDays, includeNeverSent, hideOrdered, comboLevels])
-  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
+  useEffect(()=>{ setPage(1) }, [filter, tagFilter, q, perPage, list.length, minSilentDays, maxSilentDays, includeNeverSent, hideOrdered, comboLevels, custSort, custSortDir])
+  const totalPages = Math.max(1, Math.ceil(sortedFiltered.length / perPage))
   const safePage = Math.min(page, totalPages)
-  const pageData = filtered.slice((safePage - 1) * perPage, safePage * perPage)
+  const pageData = sortedFiltered.slice((safePage - 1) * perPage, safePage * perPage)
 
   const emailTypeCounts = list.reduce((acc, c)=>{
     const t = classifyEmailType(c.email).label
@@ -810,7 +864,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     <div className="p-4 max-w-6xl mx-auto space-y-3">
       <div className="flex items-center gap-2">
         <h1 className="text-xl font-bold">👥 客户</h1>
-        <span className="text-xs text-gray-400">{filtered.length} / {list.length}</span>
+        <span className="text-xs text-gray-400">{sortedFiltered.length} / {list.length}</span>
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
         <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
         <button
@@ -1086,21 +1140,50 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         ] as const).map(({k,l,c,label})=> (
           <button key={k} onClick={()=> setFilter(filter===k?'all':k as any)} className={`px-2 py-1 rounded-full text-[10px] border ${filter===k?c+' ring-1 ring-current':'bg-white text-gray-500'}`}>{l} {emailTypeCounts[label]||0}</button>
         ))}
-        <div className="ml-auto relative flex items-center gap-1">
+        <div className="ml-auto relative flex items-center gap-1 flex-wrap">
+          <button
+            onClick={()=>{
+              setMinSilentDays(30)
+              setMaxSilentDays(0)
+              setIncludeNeverSent(true)
+              setCustSortPersist('silent','desc')
+              setShowFilters(true)
+            }}
+            className="px-2 py-1 rounded-full text-xs border bg-orange-50 text-orange-700 border-orange-200"
+            title="筛选未跟进≥30天并按未跟进天数降序"
+          >⏳ 未跟进≥30天</button>
+          <select
+            value={custSort}
+            onChange={e=> setCustSortPersist(e.target.value as CustSort)}
+            className="border rounded px-2 py-1 text-xs bg-white"
+            title="排序字段"
+          >
+            <option value="silent">排序：未跟进天数</option>
+            <option value="last_follow">排序：最近跟进</option>
+            <option value="reply_time">排序：最近回复</option>
+            <option value="created">排序：业务创建</option>
+            <option value="level">排序：客户等级</option>
+            <option value="value">排序：金额</option>
+            <option value="email_count">排序：邮件数</option>
+            <option value="name">排序：客户名</option>
+          </select>
+          <button onClick={toggleCustSortDir} className="px-2 py-1 border rounded text-xs bg-white" title="升序/降序">
+            {custSortDir==='asc'?'↑ 升序':'↓ 降序'}
+          </button>
           <button
             onClick={()=> setShowFilters(v=>!v)}
             className={`px-2 py-1 rounded-full text-xs border ${showFilters || minSilentDays>0 || maxSilentDays>0 || hideOrdered ? 'bg-blue-600 text-white border-blue-600' : 'bg-white'}`}
             title="按未跟进天数等条件筛选"
-          >⚗️ 筛选{(minSilentDays>0||maxSilentDays>0||hideOrdered) ? ` · ${filtered.length}` : ''}</button>
-          <Search size={12} className="absolute left-[68px] top-2 text-gray-300 pointer-events-none"/>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="pl-6 pr-2 py-1 border rounded-lg text-xs w-40"/>
+          >⚗️ 筛选{(minSilentDays>0||maxSilentDays>0||hideOrdered) ? ` · ${sortedFiltered.length}` : ''}</button>
+          <Search size={12} className="absolute left-[68px] top-2 text-gray-300 pointer-events-none hidden"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="px-2 py-1 border rounded-lg text-xs w-40"/>
         </div>
       </div>
       {showFilters && (
         <div className="bg-white border rounded-2xl p-3 text-xs space-y-2">
           <div className="font-semibold text-sm flex items-center gap-2">
             ⚗️ 筛选条件
-            <span className="text-[11px] font-normal text-gray-400">当前命中 {filtered.length} / {list.length}</span>
+            <span className="text-[11px] font-normal text-gray-400">当前命中 {sortedFiltered.length} / {list.length} · 排序：{custSort==='silent'?'未跟进天数':custSort} {custSortDir==='asc'?'↑':'↓'}</span>
             <button
               onClick={()=>{ setMinSilentDays(0); setMaxSilentDays(0); setHideOrdered(false); setIncludeNeverSent(true); setComboLevels([]); setTagFilter('all'); setFilter('all' as any); setQ('') }}
               className="ml-auto px-2 py-0.5 border rounded text-[11px] text-gray-500 hover:bg-gray-50"
@@ -1148,8 +1231,22 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             />
             <span className="text-gray-400">天</span>
             {[7,14,30,60,90,180].map(n=>(
-              <button key={n} onClick={()=> setMinSilentDays(n)} className={`px-2 py-0.5 border rounded-full ${minSilentDays===n?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-600'}`}>≥{n}天</button>
+              <button key={n} onClick={()=> { setMinSilentDays(n); setCustSortPersist('silent','desc') }} className={`px-2 py-0.5 border rounded-full ${minSilentDays===n?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-600'}`}>≥{n}天</button>
             ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-gray-500">排序</span>
+            <select value={custSort} onChange={e=> setCustSortPersist(e.target.value as CustSort)} className="border rounded px-1.5 py-0.5">
+              <option value="silent">未跟进天数</option>
+              <option value="last_follow">最近跟进</option>
+              <option value="reply_time">最近回复</option>
+              <option value="created">业务创建</option>
+              <option value="level">客户等级</option>
+              <option value="value">金额</option>
+              <option value="email_count">邮件数</option>
+              <option value="name">客户名</option>
+            </select>
+            <button onClick={toggleCustSortDir} className="border rounded px-2 py-0.5">{custSortDir==='asc'?'↑ 升序':'↓ 降序'}</button>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-1 cursor-pointer">
@@ -1170,19 +1267,20 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             {hideOrdered ? ' 且 排除已下单' : ''}
             {tagFilter!=='all' ? ` 且 标签=${tagFilter}` : ''}
             {q ? ` 且 搜索「${q}」` : ''}
+            {` · 排序 ${custSort} ${custSortDir==='asc'?'↑':'↓'}`}
             {' →命中 '}
-            <b>{filtered.length}</b>
+            <b>{sortedFiltered.length}</b>
           </div>
           <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
             <button
               onClick={()=>{
                 if(!filtered.length) return
                 setSelectMode(true)
-                setChecked(new Set(filtered.map(c=> c.id)))
-                setIntelNote(`已全选筛选结果 ${filtered.length} 人，可批量打标签 / 改等级 / 移入或移出跟进板块`)
+                setChecked(new Set(sortedFiltered.map(c=> c.id)))
+                setIntelNote(`已全选筛选结果 ${sortedFiltered.length} 人，可批量打标签 / 改等级 / 移入或移出跟进板块`)
               }}
               className="px-3 py-1 bg-blue-600 text-white rounded-lg"
-            >☑️ 全选筛选结果（{filtered.length}）</button>
+            >☑️ 全选筛选结果（{sortedFiltered.length}）</button>
             <span className="text-[11px] text-gray-400">全选后用多选条：打标签、改等级、移入/移出六板块</span>
           </div>
         </div>
@@ -1211,7 +1309,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         </div>
       </div>
       <div className="flex items-center gap-2 text-[11px] text-gray-400">
-        <span>共 {filtered.length} 条 · 第 {safePage}/{totalPages} 页</span>
+        <span>共 {sortedFiltered.length} 条 · 第 {safePage}/{totalPages} 页 · 排序 {custSort==='silent'?'未跟进':custSort} {custSortDir==='asc'?'↑':'↓'}</span>
         <label className="flex items-center gap-1 ml-auto">
           每页
           <select value={perPage} onChange={e=> setPerPagePersist(Number(e.target.value)||30)} className="border rounded px-1 py-0.5 text-[11px] bg-white">
