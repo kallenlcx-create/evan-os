@@ -169,10 +169,10 @@ export default function Layout() {
         <main
           className="w-full p-4 md:p-6"
           style={{
-            maxWidth: (location.pathname==='/inbox' || location.pathname==='/followups') ? 'none' : undefined,
+            maxWidth: (location.pathname==='/inbox' || location.pathname==='/followups' || location.pathname==='/customers') ? 'none' : undefined,
           }}
         >
-          <div className={(location.pathname==='/inbox' || location.pathname==='/followups') ? '' : 'max-w-7xl'}>
+          <div className={(location.pathname==='/inbox' || location.pathname==='/followups' || location.pathname==='/customers') ? '' : 'max-w-7xl'}>
             <PageErrorBoundary key={location.pathname}>
               <Outlet />
             </PageErrorBoundary>

@@ -165,6 +165,9 @@ export default function CustomersPage(){
     return sd.daysSinceSent == null ? 9999 : Number(sd.daysSinceSent)
   }
   const [selectMode, setSelectMode] = useState(false)
+  /** 低频操作收起 */
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [presetHint, setPresetHint] = useState('')
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkLevel, setBulkLevel] = useState('')
   const [bulkStage, setBulkStage] = useState('')
@@ -861,75 +864,98 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
   },[checked, filtered, intelCfg, load])
 
   return (
-    <div className="p-4 max-w-6xl mx-auto space-y-3">
+    <div className="p-4 max-w-none mx-auto space-y-3">
       <div className="flex items-center gap-2">
         <h1 className="text-xl font-bold">👥 客户</h1>
         <span className="text-xs text-gray-400">{sortedFiltered.length} / {list.length}</span>
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
-        <button onClick={()=> void handleDedupe(false)} disabled={deduping} className="px-3 py-1 rounded-full text-xs bg-white border hover:border-orange-300 hover:text-orange-600 disabled:opacity-50" title="同邮箱多条合并，保留批量导入的">🧹 {deduping ? '排重中…' : '一键排重'}</button>
-        <button
-          onClick={async()=>{
-            if(!confirm('将 noreply/系统退信/订阅源等噪声客户标记为「噪声」并移出跟进？不会物理删除。')) return
-            const { isNoiseEmailAddress } = await import('../utils/emailHelpers')
-            const ts = new Date().toISOString()
-            let n = 0
-            for(const c of list){
-              if(!isNoiseEmailAddress(c.email)) continue
-              const tags = [...new Set([...(c.tags||[]).map(String), '噪声'])]
-              if((c.tags||[]).includes('噪声')) continue
-              await db.customers.update(c.id, { tags, stage: 'lost', updatedAt: ts } as any)
-              n++
-            }
-            setIntelNote(`已标记噪声客户 ${n} 个（标签「噪声」+阶段流失，不再新建同类）`)
-            await load()
-          }}
-          className="px-2 py-1 rounded-full text-xs border bg-white hover:border-rose-300 hover:text-rose-600"
-          title="过滤 noreply/系统邮件/订阅源，避免污染跟进雷达"
-        >🚫 标噪声</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
-        <button onClick={()=> void handleDailyClassify()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-blue-600 text-white disabled:opacity-50" title="分级/重点 + 近N天订单扫描 + 跟进桶同步">🏷️ 自动分类</button>
-        <button
-          onClick={async()=>{
-            if(!confirm('全量扫描订单邮件，为已成交客户补「已下单」标签，并关闭其逾期跟进？')) return
-            setIntelBusy('order-align'); setIntelNote('订单对齐中…')
-            try{
-              const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
-              const os = await runOrderScan({ rescanAll: true })
-              const r = await syncOrderedCustomersFollowUps({ purge: true })
-              setIntelNote(`订单对齐：清除误标 ${r.purged} · 扫描+${os.ordersAdded} · 真实已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关跟进 ${r.followUpsClosed}`)
-              await load()
-            }catch(e:any){ setIntelNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
-            finally{ setIntelBusy('') }
-          }}
-          disabled={!!intelBusy}
-          className="px-2 py-1 rounded-full text-xs border bg-white hover:border-orange-400 hover:text-orange-600 disabled:opacity-50"
-          title="修复：已下单却在逾期跟进、客户页搜不到已下单标签"
-        >🧾 订单对齐</button>
-        <button onClick={()=> void handleAiInsight()} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs bg-purple-600 text-white disabled:opacity-50" title="AI 读往来：背景/高意向/跟进/机会，同步跟进桶">🔍 AI洞察</button>
-        <button
-          onClick={()=> void handleBatchPortrait({ force: true })}
-          disabled={!!intelBusy}
-          className="px-3 py-1 rounded-full text-xs bg-fuchsia-600 text-white disabled:opacity-50"
-          title={`批量 AI 十一维画像 v2：优先选中客户，否则当前筛选；每次最多 ${intelCfg.aiInsightBatchMax} 人，每人间隔约 1 秒，必须走大模型；旧七维请强制重跑`}
-        >🤖 批量AI画像{checked.size>0 ? `（选中${checked.size}）` : `（筛选${filtered.length}）`}</button>
-        <button
-          onClick={()=> void handlePurchaseLoop()}
-          disabled={!!intelBusy}
-          className="px-3 py-1 rounded-full text-xs bg-orange-600 text-white disabled:opacity-50"
-          title="复购开发：对「已下单」客户估算采购周期、复购/交叉销售机会与下一步动作（NBA）；写入客户字段，跟进雷达可筛「潜在复购」。单次最多约 20 人，每人约 1 次 AI，速度偏慢属正常"
-        >🔁 复购开发</button>
-        <button onClick={async()=>{
-          setIntelBusy('sent'); setIntelNote('正在从邮件库刷新客户发送时间…')
-          try{
-            const r = await refreshSentDatesFromLocal()
-            setIntelNote(`跟进时间已刷新：更新 ${r.updated} 人 · 有发送记录 ${r.customersWithSent}`)
-            await load()
-          }catch(e:any){ setIntelNote('刷新失败：'+String(e.message||e).slice(0,80)) }
-          finally{ setIntelBusy('') }
-        }} disabled={!!intelBusy} className="px-2 py-1 rounded-full text-xs border bg-white disabled:opacity-50">⟳ 刷新跟进时间</button>
-        <button onClick={()=> setShowCsvOrder(true)} className="px-2 py-1 rounded-full text-xs border bg-white" title="CSV：订单号,邮箱,日期,产品,数量,金额">📥 订单CSV</button>
-        <button onClick={()=> setShowIntel(v=>!v)} className="px-2 py-1 rounded-full text-xs border bg-white">⚙️ 智能设置</button>
-        <button onClick={()=> setFilter('key' as any)} className={`ml-auto px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点 {levelCounts.key||0}</button>
+        <div className="relative">
+          <button
+            onClick={()=> setMoreOpen(v=>!v)}
+            className={`px-3 py-1 rounded-full text-xs border ${moreOpen?'bg-gray-800 text-white':'bg-white'}`}
+            title="低频操作：分类/对齐/AI/复购/订单等"
+          >⋯ 更多{(intelBusy?' · '+intelBusy:'')}</button>
+          {moreOpen && (
+            <div className="absolute z-30 left-0 top-8 w-72 bg-white border rounded-2xl shadow-lg p-2 space-y-1 text-xs">
+              <div className="text-[10px] text-gray-400 px-1">智能与数据（低频）</div>
+              <button onClick={()=>{ setMoreOpen(false); void handleDailyClassify() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🏷️ 自动分类</button>
+              <button onClick={()=>{ setMoreOpen(false); void handleAiInsight() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🔍 AI洞察</button>
+              <button onClick={()=>{ setMoreOpen(false); void handleBatchPortrait({ force: true }) }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🤖 批量AI画像</button>
+              <button onClick={()=>{ setMoreOpen(false); void handlePurchaseLoop() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🔁 复购开发</button>
+              <div className="border-t my-1"/>
+              <button
+                onClick={()=>{
+                  setMoreOpen(false)
+                  if(!confirm('全量扫描订单邮件，为已成交客户补「已下单」标签，并关闭其逾期跟进？')) return
+                  setIntelBusy('order-align'); setIntelNote('订单对齐中…')
+                  ;(async()=>{
+                    try{
+                      const { syncOrderedCustomersFollowUps, runOrderScan } = await import('../services/orderScan')
+                      const os = await runOrderScan({ rescanAll: true })
+                      const r = await syncOrderedCustomersFollowUps({ purge: true })
+                      setIntelNote(`订单对齐：清除误标 ${r.purged} · 扫描+${os.ordersAdded} · 真实已下单 ${r.ordered} · 新打标 ${r.newlyTagged} · 关跟进 ${r.followUpsClosed}`)
+                      await load()
+                    }catch(e:any){ setIntelNote('订单对齐失败：'+String(e.message||e).slice(0,120)) }
+                    finally{ setIntelBusy('') }
+                  })()
+                }}
+                disabled={!!intelBusy}
+                className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50"
+              >🧾 订单对齐</button>
+              <button onClick={()=>{ setMoreOpen(false); void handleDedupe(false) }} disabled={deduping} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🧹 一键排重</button>
+              <button
+                onClick={()=>{
+                  setMoreOpen(false)
+                  if(!confirm('将 noreply/系统退信/订阅源等噪声客户标记为「噪声」并移出跟进？')) return
+                  ;(async()=>{
+                    const { isNoiseEmailAddress } = await import('../utils/emailHelpers')
+                    const ts = new Date().toISOString()
+                    let n = 0
+                    for(const c of list){
+                      if(!isNoiseEmailAddress(c.email)) continue
+                      if((c.tags||[]).includes('噪声')) continue
+                      const tags = [...new Set([...(c.tags||[]).map(String), '噪声'])]
+                      await db.customers.update(c.id, { tags, stage: 'lost', updatedAt: ts } as any)
+                      n++
+                    }
+                    setIntelNote(`已标记噪声客户 ${n} 个`)
+                    await load()
+                  })()
+                }}
+                className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50"
+              >🚫 标噪声</button>
+              <button onClick={()=>{ setMoreOpen(false); setShowIntel(true) }} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50">⚙️ 智能设置</button>
+              <button onClick={()=>{ setMoreOpen(false); setShowCsvOrder(true) }} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50">📥 订单CSV</button>
+              <button onClick={()=>{
+                setMoreOpen(false); setIntelBusy('sent'); setIntelNote('正在从邮件库刷新客户发送时间…')
+                ;(async()=>{
+                  try{
+                    const r = await refreshSentDatesFromLocal()
+                    setIntelNote(`跟进时间已刷新：更新 ${r.updated} 人 · 有发送记录 ${r.customersWithSent}`)
+                    await load()
+                  }catch(e:any){ setIntelNote('刷新失败：'+String(e.message||e).slice(0,80)) }
+                  finally{ setIntelBusy('') }
+                })()
+              }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">⟳ 刷新跟进时间</button>
+            </div>
+          )}
+        </div>
+        <button onClick={()=> setFilter('key' as any)} className={`px-3 py-1 rounded-full text-xs ${filter==='key'?'bg-yellow-500 text-white':'bg-white border'}`}>⭐ 重点 {levelCounts.key||0}</button>
+      </div>
+      {/* 常用视图预设 */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="text-gray-400">视图：</span>
+        {([
+          { id:'silent30', label:'⏳未跟进≥30', apply:()=>{ setMinSilentDays(30); setMaxSilentDays(0); setIncludeNeverSent(true); setHideOrdered(false); setCustSortPersist('silent','desc'); setShowFilters(true); setFilter('all' as any); setTagFilter('all'); setPresetHint('未跟进≥30天') } },
+          { id:'a_silent', label:'A级·未跟进≥14', apply:()=>{ setComboLevels(['A','A+']); setMinSilentDays(14); setIncludeNeverSent(true); setCustSortPersist('silent','desc'); setShowFilters(true); setFilter('all' as any); setPresetHint('A级且未跟进≥14天') } },
+          { id:'inq_today', label:'今日询盘', apply:()=>{ setTagFilter('询盘'); setFilter('all' as any); setMinSilentDays(0); setCustSortPersist('created','desc'); setShowFilters(false); setPresetHint('询盘（按业务创建倒序，找今日）') } },
+          { id:'repurchase', label:'复购窗口', apply:()=>{ setTagFilter('已下单'); setFilter('all' as any); setMinSilentDays(30); setMaxSilentDays(0); setHideOrdered(false); setCustSortPersist('silent','desc'); setShowFilters(true); setPresetHint('已下单且未跟进≥30（复购候选）') } },
+          { id:'marketing', label:'营销机会', apply:()=>{ setHideOrdered(true); setMinSilentDays(30); setIncludeNeverSent(true); setTagFilter('all'); setFilter('all' as any); setCustSortPersist('silent','desc'); setShowFilters(true); setPresetHint('排除已下单 + 未跟进≥30') } },
+        ] as const).map(p=>(
+          <button key={p.id} onClick={p.apply} className="px-2 py-0.5 border rounded-full bg-white hover:border-blue-300 hover:text-blue-600">{p.label}</button>
+        ))}
+        {presetHint && <span className="text-gray-500">当前：{presetHint}</span>}
       </div>
       {selectMode && checked.size>0 && (
         <div className="flex items-center gap-2 flex-wrap bg-indigo-600 text-white rounded-2xl px-3 py-2 text-xs">

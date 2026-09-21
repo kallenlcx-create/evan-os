@@ -815,6 +815,34 @@ const handleBatchAiTpl = useCallback(async () => {
     active: { label:'活跃', cls:'bg-teal-50 text-teal-700' },
   }
 
+  /** AI 跟进入队（复用生成+挂会话逻辑；不改变发送管道） */
+  const handleAiReply = useCallback(async (c: Customer) => {
+    try{
+      const { getAiSettings } = await import('../config/aiProviders')
+      const ai = getAiSettings()
+      if(!(ai.apiKey || ai.proxyUrl) && !confirm('未配置 AI Key，生成可能失败。继续？')) return
+      if(!confirm(`为 ${c.contactName||c.title} 用 AI 生成跟进并入队发送？（有往来则挂会话最下方）`)) return
+      setAiReplyBusy(c.id)
+      const mails = await db.emails.toArray()
+      const gen = await generateAiFollowReply(c, mails)
+      const accs = await listAccounts()
+      if(!accs.length){ alert('请先绑定邮箱'); return }
+      const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
+      const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
+      const mid = th.found && th.messageId ? th.messageId : undefined
+      await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
+        html: (await import('../utils/mailHtml')).textToHtml(gen.body),
+        inReplyTo: mid,
+        references: mid,
+      })
+      await setCustomerFollowMode(c, 'manual', 'user')
+      setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'}`)
+      await loadSequences()
+      await load()
+    }catch(e:any){ setIntellectNote('AI回复失败：'+String(e.message||e).slice(0,120)) }
+    finally{ setAiReplyBusy('') }
+  }, [load, loadSequences])
+
   const cats = [
     { key: 'high', label: '高意向客户', icon: Flame, count: stats.high, color: 'text-red-500', bg: 'bg-red-50' },
     { key: 'today', label: '今日跟进', icon: Clock, count: stats.today, color: 'text-blue-500', bg: 'bg-blue-50' },
@@ -827,6 +855,67 @@ const handleBatchAiTpl = useCallback(async () => {
   return (
     <div className={`${mainView==='board' ? 'w-full max-w-none' : 'max-w-7xl mx-auto'} p-0 space-y-4`}>
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
+      {/* 今日待办（不改发信逻辑，只做聚合与快捷操作） */}
+      {(() => {
+        const today = new Date().toISOString().slice(0,10)
+        const seqDue = sequences.filter(s=> s.mode==='auto' && String(s.next_due_at||'').slice(0,10) <= today)
+        const todoInq = customers.filter(c=>{
+          if(isBoardNoiseEmail(c.email)) return false
+          const inq = inquiries.find(r=> r.customerId===c.id)
+          const d = String(inq?.inquiryDate || (c as any).inquiryAt || '').slice(0,10)
+          return d === today || (isInquiryCustomer(c) && !String((c as any).hasReply||'').match(/yes/))
+        }).slice(0, 8)
+        const todoSilent = customers.filter(c=>{
+          if(isBoardNoiseEmail(c.email)) return false
+          if(salesStageOf(c)!=='following') return false
+          const dn = daysNoFollow(c)
+          return dn!=null && dn>=30
+        }).sort((a,b)=> (daysNoFollow(b)||0)-(daysNoFollow(a)||0)).slice(0, 8)
+        const todoReply = customers.filter(c=> String((c as any).hasReply||'')==='yes' && followModeOf(c)==='manual').slice(0, 8)
+        if(!todoInq.length && !todoSilent.length && !todoReply.length && !seqDue.length) return null
+        return (
+          <div className="bg-gradient-to-r from-slate-50 to-blue-50 border border-blue-100 rounded-2xl p-3 text-xs space-y-2">
+            <div className="font-semibold text-sm text-slate-800">📌 今日待办（聚合）· 跟进方式/高意向/序列快捷操作</div>
+            <div className="grid md:grid-cols-3 gap-2">
+              <div className="bg-white/80 rounded-xl p-2 border border-blue-50">
+                <div className="font-medium text-blue-800 mb-1">询盘/新客（{todoInq.length}）</div>
+                {todoInq.map(c=>(
+                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
+                    <span className="truncate flex-1" title={c.email}>{c.contactName||c.title}</span>
+                    <button className="text-orange-600" onClick={async()=>{ await addManualBuckets([c.id],['high'],'今日待办高意向','add'); await db.customers.update(c.id,{aiTier:'high',aiReason:'今日待办',updatedAt:new Date().toISOString()} as any); await load() }}>高意向</button>
+                    <button className="text-blue-600" onClick={()=> void handleStartSeq(c)}>自动</button>
+                  </div>
+                ))}
+                {!todoInq.length && <div className="text-gray-400">暂无</div>}
+              </div>
+              <div className="bg-white/80 rounded-xl p-2 border border-orange-50">
+                <div className="font-medium text-orange-800 mb-1">未跟进≥30天（{todoSilent.length}）</div>
+                {todoSilent.map(c=>(
+                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
+                    <span className="truncate flex-1">{c.contactName||c.title} <span className="text-rose-500">{daysNoFollow(c)}天</span></span>
+                    <button className="text-blue-600" onClick={()=> void handleStartSeq(c)}>序列</button>
+                    <button className="text-purple-700" onClick={()=> void handleAiReply(c)} disabled={!!aiReplyBusy}>AI</button>
+                  </div>
+                ))}
+                {!todoSilent.length && <div className="text-gray-400">暂无</div>}
+              </div>
+              <div className="bg-white/80 rounded-xl p-2 border border-purple-50">
+                <div className="font-medium text-purple-800 mb-1">有回复需处理 / 序列待发</div>
+                {todoReply.map(c=>(
+                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
+                    <span className="truncate flex-1">{c.contactName||c.title}</span>
+                    <button className="text-gray-600" onClick={async()=>{ await setCustomerFollowMode(c,'auto','user'); await load() }}>转自动</button>
+                  </div>
+                ))}
+                {seqDue.slice(0,5).map(s=>(
+                  <div key={'sd'+s.customer_id} className="text-[11px] text-purple-700 truncate">🔁 {s.customer?.title||s.email} · 到期 {String(s.next_due_at).slice(0,10)}</div>
+                ))}
+                {!todoReply.length && !seqDue.length && <div className="text-gray-400">暂无</div>}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
       <div className="flex items-center gap-2 flex-wrap -mt-1">
         <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
         <button onClick={()=> setMainView('board')} className={`px-3 py-1 rounded-full text-xs ${mainView==='board'?'bg-blue-600 text-white':'bg-white border'}`}>📋 跟进表</button>
@@ -882,6 +971,14 @@ const handleBatchAiTpl = useCallback(async () => {
       )}
       {mainView==='radar' && (
       <>
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="text-gray-400">视图：</span>
+        <button onClick={()=>{ setCatFilter('all'); setShowManualOnly(false); setTagFilter('all') }} className="px-2 py-0.5 border rounded-full bg-white">全部雷达</button>
+        <button onClick={()=> setCatFilter('high')} className="px-2 py-0.5 border rounded-full bg-white">高意向</button>
+        <button onClick={()=> setCatFilter('overdue')} className="px-2 py-0.5 border rounded-full bg-white">逾期</button>
+        <button onClick={()=> setCatFilter('repurchase')} className="px-2 py-0.5 border rounded-full bg-white">复购</button>
+        <button onClick={()=>{ setCatFilter('overdue'); setPerPage(10) }} className="px-2 py-0.5 border rounded-full bg-white">逾期·每页10</button>
+      </div>
       {catFilter !== 'all' && (
         <div className="text-xs text-gray-500 -mt-2">当前筛选：<b className="text-blue-600">{{high:'高意向客户',today:'今日跟进',overdue:'逾期跟进',pending:'待成交机会',repurchase:'潜在复购',marketing:'营销机会'}[catFilter]}</b>
           <button onClick={()=> setCatFilter('all')} className="ml-2 text-gray-400 hover:text-gray-600">✕ 清除</button>
@@ -1611,7 +1708,7 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <div className="text-[11px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 间隔 5 秒入队 · 发出由「待发」队列完成</div>
               <div>
-                <div className="text-xs font-medium text-gray-700 mb-1">入队名单（{batchTargets.length}）</div>
+                <div className="text-xs font-medium text-gray-700 mb-1">入队名单（{batchTargets.length}）· 同邮箱已去重</div>
                 <div className="max-h-36 overflow-y-auto border rounded-lg divide-y">
                   {batchTargets.map(c=>(
                     <div key={c.id} className="px-2 py-1.5 text-xs flex items-center gap-2">
@@ -1620,6 +1717,23 @@ const handleBatchAiTpl = useCallback(async () => {
                       <span className="text-gray-300 shrink-0">{c.level||'C'}</span>
                     </div>
                   ))}
+                </div>
+                {/* 预览：仅展示将渲染的主题/正文片段，不改变发送逻辑 */}
+                <div className="mt-2 text-[11px] text-gray-500">
+                  <div className="font-medium text-gray-700 mb-1">发送预览（前3人，模板变量已替换；实际仍按会话/附件规则入队）</div>
+                  {batchTargets.slice(0,3).map(c=>{
+                    const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
+                    const name = (c.contactName||c.title||'there').split(' ')[0]
+                    const subj = (batchSubject||'').replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
+                    const body = (batchBody||'').replace(/\{\{product\}\}/g, product).replace(/\{\{first_name\}\}/g, name)
+                    return (
+                      <div key={'pv'+c.id} className="border rounded-lg p-2 mb-1 bg-gray-50">
+                        <div className="font-medium">{c.email}</div>
+                        <div className="text-gray-700">主题：{subj}</div>
+                        <div className="text-gray-500 line-clamp-2 whitespace-pre-wrap">{body.slice(0,160)}…</div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
