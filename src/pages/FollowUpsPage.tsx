@@ -643,7 +643,16 @@ export default function FollowUpsPage() {
   }, [batchTargets])
 
   const openBatchModal = useCallback(async () => {
-    const targets = catFiltered.filter(x=> selectedIds.has(x.c.id) && x.c.email).map(x=> x.c)
+    const seen = new Set<string>()
+    const targets = catFiltered
+      .filter(x=> selectedIds.has(x.c.id) && x.c.email)
+      .map(x=> x.c)
+      .filter(c=>{
+        const key = String(c.email||'').toLowerCase().trim() || c.id
+        if(seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
     if(!targets.length) return alert('请先勾选有邮箱的客户')
     setBatchTargets(targets)
     setBatchResult(null)
@@ -682,11 +691,24 @@ const handleBatchAiTpl = useCallback(async () => {
 
   const handleBatchSend = useCallback(async () => {
     if(!batchTargets.length) return
+    if(batchSending) return
+    // 去重：同邮箱/同 id 只发一次（防全选时重复客户档案）
+    const seen = new Set<string>()
+    const uniq: Customer[] = []
+    for(const c of batchTargets){
+      const key = String(c.email||'').toLowerCase().trim() || c.id
+      if(seen.has(key)) continue
+      seen.add(key)
+      uniq.push(c)
+    }
+    if(uniq.length < batchTargets.length){
+      setIntellectNote(`名单去重：${batchTargets.length} → ${uniq.length}（同邮箱只保留一条）`)
+    }
     const used = getTodaySendCount()
     if(used >= BATCH_SEND.dailyLimit) return alert('今日批量已达上限 '+BATCH_SEND.dailyLimit+' 封，请明天再发')
     const remain = BATCH_SEND.dailyLimit - used
-    if(batchTargets.length > remain && !confirm('今日剩余额度 '+remain+'，仅入队前 '+remain+' 封，继续？')) return
-    const list2 = batchTargets.slice(0, remain)
+    if(uniq.length > remain && !confirm('今日剩余额度 '+remain+'，仅入队前 '+remain+' 封，继续？')) return
+    const list2 = uniq.slice(0, remain)
     const accs = await listAccounts()
     if(!accs.length) return alert('请先绑定邮箱账号')
     const acc = accs[0]
@@ -708,6 +730,8 @@ const handleBatchAiTpl = useCallback(async () => {
     let threaded = 0
     let subjectOnly = 0
     let newMail = 0
+    const dayKey = new Date().toISOString().slice(0,10)
+    const enqueuedKeys = new Set<string>()
     for(let i=0;i<list2.length;i++){
       const c = list2[i]
       const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
@@ -729,15 +753,19 @@ const handleBatchAiTpl = useCallback(async () => {
         const mid = hasHistory && th.messageId ? th.messageId : undefined
         let subj: string
         if(hasHistory && th.subject){
-          subj = normalizeReplySubject(th.subject) // Re: 历史主题，禁止 Re: 模板主题
+          subj = normalizeReplySubject(th.subject)
         } else if(hasHistory && th.messageId){
-          subj = normalizeReplySubject(subject) // 仅有 Message-ID 时用模板主题 + Re:
+          subj = normalizeReplySubject(subject)
         } else {
           subj = subject
         }
         if(hasHistory && mid) threaded++
         else if(hasHistory) subjectOnly++
         else newMail++
+        // 稳定幂等键：同一天 + 同客户 + 同主题，服务端/本地都不重复入队
+        const idem = `batch-${c.id}-${dayKey}-${subj.slice(0,40)}`
+        if(enqueuedKeys.has(idem)){ skipped++; continue }
+        enqueuedKeys.add(idem)
         const isImg = !!latestAtt && (String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||''))
         let html = textToHtml(body)
         const atts: any[] = []
@@ -748,7 +776,7 @@ const handleBatchAiTpl = useCallback(async () => {
             html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+latestAtt.filename+'" style="max-width:360px;border-radius:6px"/></p>'
           }
         }
-        await enqueueMail(acc.id, c.email || '', subj, body, 'batch-'+c.id+'-'+Date.now(), false, {
+        await enqueueMail(acc.id, c.email || '', subj, body, idem, false, {
           html,
           sendAt,
           inReplyTo: mid,
@@ -775,7 +803,7 @@ const handleBatchAiTpl = useCallback(async () => {
     setBatchSkipped(skipped)
     setBatchResult({ ok: list2.length-errors-skipped, errors, threaded, subjectOnly, newMail })
     await load()
-  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts])
+  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },

@@ -3170,6 +3170,15 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const id = crypto.randomUUID()
   const idem = idempotencyKey || id
+  // 幂等：同 key 已存在则不重复入队（防前端双击/重试造成重复发送）
+  if(idempotencyKey){
+    try{
+      const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=? AND username=? LIMIT 1',[idempotencyKey, req.user])
+      if(ex.length){
+        return res.json({ ok:true, id: ex[0].id, status: ex[0].status, deduped:true })
+      }
+    }catch{}
+  }
   let sendAt = null
   if(sendAtRaw){
     const t = new Date(sendAtRaw)
