@@ -855,7 +855,7 @@ const handleBatchAiTpl = useCallback(async () => {
 
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
-    const ids = selectedIds.size ? [...selectedIds] : []
+    const ids = [...new Set([...selectedIds, ...boardSelected])]
     const targets = customers.filter(c=> ids.includes(c.id) && c.email)
     if(!targets.length) return alert('请先勾选客户（雷达或跟进表）')
     if(!confirm(`为 ${targets.length} 人生成 AI 跟进草稿（只生成，不发送）？`)) return
@@ -881,7 +881,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }finally{
       setAiDraftBusy(false)
     }
-  }, [customers, selectedIds])
+  }, [customers, selectedIds, boardSelected])
 
   /** 发送日历：只读合并 outbox + 自动序列 next_due */
   const openSendCalendar = useCallback(async ()=>{
