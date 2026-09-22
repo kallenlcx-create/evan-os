@@ -4,7 +4,7 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders, probeSeqServer } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders, probeSeqServer, getQuoteTemplates, deleteSeqTemplate } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
@@ -13,6 +13,8 @@ import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManual
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusLabel, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
+import FilterBar from '../components/FollowFilterBar'
+import { applyFollowFilters, bucketPresetChips, exportFollowRowsCsv, loadFilterPresets, upsertFilterPreset, removeFilterPreset, type FilterChip, type FilterPreset, type FilterCtx } from '../services/followFilters'
 void MANUAL_BUCKETS
 void removeManualBucket
 void removeManualBuckets
@@ -24,6 +26,16 @@ const TEMPLATES = [
   { id: 'quote', name: '报价', subject: 'Quote – {{product}} {{qty}} pcs', body: 'Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Mold / Setup fee: {{mold_fee}}\n• Total: {{final_cost}}\n• Lead time: {{lead_time}}\n\nFeel free to adjust quantity or specs to fit your budget.\n\nBest regards,\nEvan' },
   { id: 'new_product', name: '新品推荐', subject: 'New products you might like', body: 'Hi {{first_name}},\n\nWe\'ve launched new designs that I think would be perfect for you.\n\nWould you like to see the catalog?\n\nBest regards,\nEvan' },
 ]
+
+function PresetNameInput({ onSave, onCancel }: { onSave: (n: string)=>void; onCancel: ()=>void }){
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input autoFocus placeholder="预设名" className="px-2 py-0.5 border rounded text-[11px] w-24"
+        onKeyDown={(e)=>{ if(e.key==='Enter'){ const n=(e.target as HTMLInputElement).value.trim(); if(n) onSave(n) } if(e.key==='Escape') onCancel() }} />
+      <button onClick={(e)=>{ const inp=(e.currentTarget.previousSibling as HTMLInputElement); const n=inp?.value?.trim(); if(n) onSave(n) }} className="px-1.5 py-0.5 bg-blue-600 text-white rounded">存</button>
+    </span>
+  )
+}
 
 export default function FollowUpsPage() {
   const navigate = useNavigate()
@@ -196,6 +208,22 @@ export default function FollowUpsPage() {
   const [sendEnd, setSendEnd] = useState(20)
   const [skipHolidays, setSkipHolidays] = useState(true)
   const [showTplModal, setShowTplModal] = useState(false)
+  const [quoteTpls, setQuoteTpls] = useState<any[]>([])
+  const [boardChips, setBoardChips] = useState<FilterChip[]>([])
+  const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(()=> loadFilterPresets())
+  const [showPresetName, setShowPresetName] = useState(false)
+  const [newQuoteName, setNewQuoteName] = useState('')
+  const [newQuoteSubject, setNewQuoteSubject] = useState('Quote – {{product}} {{qty}} pcs')
+  const [newQuoteBody, setNewQuoteBody] = useState('Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Lead time: {{lead_time}}\n\nBest regards,\nEvan')
+  const [quoteEdit, setQuoteEdit] = useState<any>(null)
+
+  /** 发送/批量用模板：内置 + 服务器报价模板（可添加） */
+  const sendTemplates = useMemo(()=>{
+    const server = quoteTpls.map(t=>({ id:String(t.id), name:String(t.name||'报价'), subject:String(t.subject||''), body:String(t.body||''), fromServer:true }))
+    const serverNames = new Set(server.map(t=> t.name))
+    const builtin = TEMPLATES.filter(t=> !serverNames.has(t.name))
+    return [...builtin, ...server]
+  },[quoteTpls])
   const [tplEdit, setTplEdit] = useState<any>(null)
   const loadSequences = useCallback(async () => {
     try{
@@ -205,6 +233,10 @@ export default function FollowUpsPage() {
       const t = await getSeqTemplates()
       const tpls = t.templates || []
       setSeqTemplates(tpls)
+      try{
+        const qt = await getQuoteTemplates()
+        setQuoteTpls(qt.templates || [])
+      }catch{ setQuoteTpls([]) }
       const c = await getSeqConfig()
       if(c.intervals) setSeqIntervals(c.intervals)
       if(c.sendStart != null) setSendStart(c.sendStart)
@@ -411,8 +443,8 @@ export default function FollowUpsPage() {
   const openSendModal = useCallback(async (c: Customer) => {
     setSendTarget(c)
     const product = c.portrait?.products?.[0] || 'Challenge Coin'
-    const tpl = TEMPLATES[0]
-    setSendTemplate(tpl)
+    const tpl = sendTemplates[0] || TEMPLATES[0]
+    setSendTemplate(tpl as any)
     setSendSubject(tpl.subject.replace(/\{\{product\}\}/g, product))
     setSendBody(tpl.body.replace(/\{\{first_name\}\}/g, (c.contactName || c.title || 'there').split(' ')[0]).replace(/\{\{product\}\}/g, product))
     setShowSendModal(true)
@@ -436,7 +468,7 @@ export default function FollowUpsPage() {
       }
     }catch{ setThreadInfo({ found:false, subject:'', messageId:'' }); setUseThreadReply(false) }
     finally{ setThreadLoading(false) }
-  }, [])
+  }, [sendTemplates])
 
   const pickedAttList = useCallback(()=>{
     return custAtts.filter(a=> pickedAttKeys.has(attKey(a))).map(a=>({
@@ -532,7 +564,7 @@ export default function FollowUpsPage() {
         // 报价模板 / 正文含报价词 → 自动标已报价
         try{
           const q = detectQuoteFromText(`${sendSubject}\n${sendBody}`)
-          const isQuoteTpl = sendTemplate?.id === 'quote' || sendTemplate?.id === 'quote_follow'
+          const isQuoteTpl = sendTemplate?.id === 'quote' || sendTemplate?.id === 'quote_follow' || String(sendTemplate?.name||'').includes('报价') || String(sendTemplate?.name||'').toLowerCase().includes('quote')
           if(isQuoteTpl || q.status === 'sent' || q.status === 'accepted'){
             await db.customers.update(sendTarget.id, {
               quoteStatus: q.status === 'accepted' ? 'accepted' : 'sent',
@@ -657,7 +689,7 @@ export default function FollowUpsPage() {
 
   // ====== 批量发跟进：先弹窗看名单+模板，再入队 ======
   const applyBatchTpl = useCallback((tplId: string, sample?: Customer) => {
-    const tpl = TEMPLATES.find(t=> t.id===tplId) || TEMPLATES[0]
+    const tpl = sendTemplates.find(t=> t.id===tplId) || sendTemplates[0] || TEMPLATES[0]
     const c = sample || batchTargets[0]
     const product = ((c?.portrait as any)?.products?.[0]) || 'Challenge Coin'
     const name = (c?.contactName || c?.title || 'there').split(' ')[0]
@@ -680,7 +712,7 @@ export default function FollowUpsPage() {
     if(!targets.length) return alert('请先勾选有邮箱的客户')
     setBatchTargets(targets)
     setBatchResult(null)
-    applyBatchTpl(TEMPLATES[0].id, targets[0])
+    applyBatchTpl(sendTemplates[0]?.id || TEMPLATES[0].id, targets[0])
     setShowBatchModal(true)
     // 预加载各客户附件（最多每人 2 个）
     const attMap: Record<string, any[]> = {}
@@ -810,12 +842,12 @@ const handleBatchAiTpl = useCallback(async () => {
         bumpTodaySendCount(1)
         try{
           const qd = detectQuoteFromText(subject + '\n' + body)
-          const isQt = batchTplId === 'quote' || batchTplId === 'quote_follow' || qd.status==='sent' || qd.status==='accepted'
+          const isQt = batchTplId === 'quote' || batchTplId === 'quote_follow' || String(sendTemplates.find(t=>t.id===batchTplId)?.name||'').includes('报价') || qd.status==='sent' || qd.status==='accepted'
           if(isQt){
             await db.customers.update(c.id, {
               quoteStatus: qd.status==='accepted' ? 'accepted' : 'sent',
               quoteAt: sendAt || new Date().toISOString(),
-              quoteMatched: batchTplId==='quote' ? '模板:报价' : (qd.matched||'报价'),
+              quoteMatched: (batchTplId==='quote' || String(sendTemplates.find(t=>t.id===batchTplId)?.name||'').includes('报价')) ? '模板:报价' : (qd.matched||'报价'),
               updatedAt: new Date().toISOString(),
             } as any)
           }
@@ -849,6 +881,23 @@ const handleBatchAiTpl = useCallback(async () => {
     follow: { label:'跟进', cls:'bg-blue-50 text-blue-600' },
     dormant: { label:'沉寂', cls:'bg-gray-100 text-gray-500' },
     active: { label:'活跃', cls:'bg-teal-50 text-teal-700' },
+  }
+
+
+
+  const filterCtx: FilterCtx = useMemo(()=>({
+    manualMap: manualMap as any,
+    todaySet: followIndex.todaySet,
+    overdueSet: followIndex.overdueSet,
+    orderedSet: followIndex.orderedSet,
+    inquiryDate: (id: string)=> inquiries.find(r=> r.customerId===id)?.inquiryDate,
+  }),[manualMap, followIndex, inquiries])
+
+  const applyBucketToBoard = (key: string) => {
+    setBoardChips(bucketPresetChips(key))
+    setBoardQ('')
+    setBoardPage(1)
+    setMainView('board')
   }
 
   /** AI 跟进入队（复用生成+挂会话逻辑；不改变发送管道） */
@@ -1038,6 +1087,7 @@ const handleBatchAiTpl = useCallback(async () => {
           className="px-2 py-1 rounded-full text-xs bg-white border disabled:opacity-50"
           title="扫描邮件回复、同步跟进方式/步骤/销售阶段，并联动自动序列"
         >{boardBusy?'同步中…':'🔄 同步跟进档案'}</button>
+        <button onClick={()=> setShowTplModal(true)} className="px-2 py-1 rounded-full text-xs bg-amber-50 border border-amber-200 text-amber-800" title="7步文案 · 每步间隔 · 报价模板（可添加）">📝 模板+间隔</button>
         <button onClick={()=> setShowFollowRules(v=>!v)} className="px-2 py-1 rounded-full text-xs bg-white border">⚙️ 跟进规则</button>
       </div>
       {showFollowRules && (
@@ -1095,6 +1145,12 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="text-xs text-gray-500">{c.label}</div>
             <div className={`text-lg font-bold ${c.color}`}>{c.count}</div>
             <div className="text-[10px] text-gray-300 mt-0.5">每页 {npp} 条</div>
+            <div
+              role="button"
+              onClick={(e)=>{ e.stopPropagation(); applyBucketToBoard(c.key) }}
+              className="text-[10px] text-blue-500 hover:underline mt-0.5"
+              title="把该板块写入跟进表筛选 chips"
+            >→ 跟进表筛选</div>
           </button>
           )
         })}
@@ -1294,7 +1350,7 @@ const handleBatchAiTpl = useCallback(async () => {
           inquiryDate: inqByCust.get(c.id)?.inquiryDate,
           emails: mailList,
         })
-        const rows = customers.filter(c=>{
+        const rows0 = customers.filter(c=>{
           if(boardHideNoise && isBoardNoiseEmail(c.email)) return false
           if((c.tags||[]).map(String).includes('噪声') && boardHideNoise) return false
           const st = salesStageOf(c)
@@ -1329,6 +1385,7 @@ const handleBatchAiTpl = useCallback(async () => {
           }
           return true
         })
+        const rows = applyFollowFilters(rows0, boardChips, '', filterCtx) as typeof rows0
         const LEVEL_RANK: Record<string, number> = { 'A+':5, 'A':4, 'B':3, 'C':2, 'D':1 }
         const STAGE_RANK: Record<string, number> = { ordered:3, following:2, cancelled:1 }
         const replyRank = (c: Customer) => String((c as any).hasReply||'')==='yes' ? 1 : 0
@@ -1470,6 +1527,30 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <span className="font-semibold text-base">📋 跟进档案表</span>
               <span className="text-gray-500">共 {rows.length} 人</span>
+              <button onClick={()=> setShowTplModal(true)} className="px-2 py-1 text-xs border rounded-lg hover:border-blue-300" title="编辑7步文案、间隔天数、报价模板">📝 模板+间隔</button>
+              <button onClick={()=> exportFollowRowsCsv(rows, `跟进表筛选-${new Date().toISOString().slice(0,10)}.csv`)} className="px-2 py-1 text-xs border rounded-lg hover:border-blue-300" title="导出当前筛选结果为 CSV">⬇ 导出筛选</button>
+            </div>
+            <FilterBar search={boardQ} onSearch={(v)=>{ setBoardQ(v); setBoardPage(1) }} chips={boardChips} onChips={(c)=>{ setBoardChips(c); setBoardPage(1) }} />
+            <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+              <span className="text-gray-400">六板块预设：</span>
+              {([['high','高意向'],['today','今日'],['overdue','逾期'],['pending','待成交'],['repurchase','复购'],['marketing','营销']] as const).map(([k,l])=>(
+                <button key={k} onClick={()=> applyBucketToBoard(k)} className="px-2 py-0.5 border rounded-full bg-white hover:border-blue-300">{l}</button>
+              ))}
+              <span className="mx-1 text-gray-300">|</span>
+              {filterPresets.map(p=>(
+                <span key={p.id} className="inline-flex items-center gap-0.5 px-2 py-0.5 border rounded-full bg-white">
+                  <button onClick={()=>{ setBoardChips(p.chips); if(p.search!=null) setBoardQ(p.search); setBoardPage(1) }} className="hover:text-blue-600">{p.name}</button>
+                  <button onClick={()=> setFilterPresets(removeFilterPreset(p.id))} className="text-gray-400 hover:text-rose-500">×</button>
+                </span>
+              ))}
+              {(boardChips.length>0 || boardQ.trim()) && (
+                <button onClick={()=> setShowPresetName(true)} className="px-2 py-0.5 border rounded-full text-blue-600 hover:border-blue-300">★ 存预设</button>
+              )}
+              {showPresetName && (
+                <PresetNameInput onSave={(name)=>{ setFilterPresets(upsertFilterPreset(name, boardChips, boardQ)); setShowPresetName(false) }} onCancel={()=> setShowPresetName(false)} />
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-sm">
               <button
                 onClick={()=> setBoardFiltersOpen(v=>!v)}
                 className={`px-2 py-1 border rounded text-sm ${boardFiltersOpen?'bg-blue-50 border-blue-300 text-blue-700':'bg-white'}`}
@@ -1946,7 +2027,7 @@ const handleBatchAiTpl = useCallback(async () => {
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <select value={batchTplId} onChange={e=> applyBatchTpl(e.target.value)} className="px-2 py-1.5 border rounded-lg text-xs">
-                  {TEMPLATES.map(t=> <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {sendTemplates.map(t=> <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
                 <button onClick={()=> void handleBatchAiTpl()} disabled={batchAiBusy} className="px-2 py-1.5 bg-purple-600 text-white rounded-lg text-xs disabled:opacity-50">
                   {batchAiBusy ? 'AI 生成中…' : '✨ AI 生成模板'}
@@ -2043,6 +2124,41 @@ const handleBatchAiTpl = useCallback(async () => {
                   <label className="flex items-center gap-1"><input type="checkbox" checked={skipHolidays} onChange={e=> setSkipHolidays(e.target.checked)} className="accent-blue-600" /> 美国节假日避让</label>
                 </div>
               </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-700 mb-1">报价模板（手动/批量发报价用；发送弹窗「报价」下拉）</div>
+                <div className="text-[11px] text-gray-400 mb-2">在此添加或修改报价模板。保存后发送弹窗 / 批量发跟进 的模板下拉会出现它。</div>
+                <div className="space-y-2 mb-2">
+                  {quoteTpls.length===0 && <div className="text-[11px] text-gray-400">服务器暂无报价模板，点下方「添加报价模板」创建。</div>}
+                  {quoteTpls.map(t=>(
+                    <div key={t.id} className="border rounded-xl p-2 bg-amber-50/40">
+                      <div className="flex items-center gap-2 mb-1">
+                        <input value={quoteEdit?.id===t.id ? quoteEdit.name : t.name} onChange={e=> setQuoteEdit({ id:t.id, name:e.target.value, subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body: quoteEdit?.id===t.id?quoteEdit.body:t.body })} className="px-2 py-1 border rounded text-xs font-semibold w-32" />
+                        <span className="text-[10px] text-gray-400">kind=quote</span>
+                        <button onClick={async()=>{ if(!confirm('删除报价模板「'+t.name+'」？')) return; try{ await deleteSeqTemplate(t.id); setQuoteEdit(null); await loadSequences(); }catch(e:any){ alert(String(e.message||e)) } }} className="ml-auto px-2 py-1 border rounded text-[11px] text-rose-600">删除</button>
+                      </div>
+                      <input value={quoteEdit?.id===t.id ? quoteEdit.subject : t.subject} onChange={e=> setQuoteEdit({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, subject:e.target.value, body: quoteEdit?.id===t.id?quoteEdit.body:t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                      <textarea value={quoteEdit?.id===t.id ? quoteEdit.body : t.body} onChange={e=> setQuoteEdit({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body:e.target.value })} rows={4} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                      <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, kind:'quote', subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body: quoteEdit?.id===t.id?quoteEdit.body:t.body }); setQuoteEdit(null); await loadSequences(); alert('报价模板已保存') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">保存报价模板</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="border rounded-xl p-2">
+                  <div className="text-xs font-semibold mb-1">＋ 添加报价模板</div>
+                  <input value={newQuoteName} onChange={e=> setNewQuoteName(e.target.value)} placeholder="名称，如：报价-硬币" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                  <input value={newQuoteSubject} onChange={e=> setNewQuoteSubject(e.target.value)} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                  <textarea value={newQuoteBody} onChange={e=> setNewQuoteBody(e.target.value)} rows={4} placeholder="正文，支持 {{first_name}} {{product}} {{qty}} {{unit_price}} 等" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                  <button onClick={async()=>{
+                    const name = newQuoteName.trim() || '报价'
+                    try{
+                      await saveSeqTemplate({ id: 'quote-'+Date.now(), name, kind:'quote', subject: newQuoteSubject, body: newQuoteBody })
+                      setNewQuoteName('')
+                      await loadSequences()
+                      alert('已添加报价模板「'+name+'」，发送弹窗/批量下拉可选')
+                    }catch(e:any){ alert(String(e.message||e)) }
+                  }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">添加报价模板</button>
+                </div>
+              </div>
+              <div className="pt-2 border-t text-xs font-semibold text-gray-700">自动跟进 7 步文案（也用于判断跟进状态相似度）</div>
               <div className="space-y-2">
                 {seqTemplates.map(t=>(
                   <div key={t.id} className="border rounded-xl p-2">
@@ -2068,7 +2184,7 @@ const handleBatchAiTpl = useCallback(async () => {
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <div className="flex gap-1 flex-wrap">
-                {TEMPLATES.map(t => (
+                {sendTemplates.map(t => (
                   <button key={t.id} onClick={() => {
                     setSendTemplate(t)
                     const product = sendTarget.portrait?.products?.[0] || 'Challenge Coin'

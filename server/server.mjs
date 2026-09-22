@@ -3406,23 +3406,24 @@ async function getIntervals(username){
 async function seedDefaultTemplates(username){
   try{
     const [rows] = await pool.query('SELECT COUNT(*) AS c FROM followup_templates WHERE username=? AND kind=?',[username, 'auto'])
-    if(Number(rows[0]?.c)) return
-    const now = sqlNow()
-    for(const s of DEFAULT_STEP_COPY){
-      await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)`,
-        [`auto-${username}-${s.n}`, username, `自动跟进${s.n}`, 'auto',
-         'Following up: {{product}} quotation',
-         `Hi {{first_name}},\n\n${s.opener}\n\nOur {{product}} can be ready in about 12-15 days after design confirmation.\n\nBest regards,\nEvan`, now])
+    if(!Number(rows[0]?.c)){
+      const now = sqlNow()
+      for(const st of DEFAULT_STEP_COPY){
+        await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)`,
+          [`auto-${username}-${st.n}`, username, `自动跟进${st.n}`, 'auto',
+           'Following up: {{product}} quotation',
+           `Hi {{first_name}},\n\n${st.opener}\n\nOur {{product}} can be ready in about 12-15 days after design confirmation.\n\nBest regards,\nEvan`, now])
+      }
     }
-    // 独立「报价」模板（用于手动/批量发报价）
+    // 始终确保「报价」模板存在（即使 auto 已种子）
     try{
-      const [q] = await pool.query('SELECT id FROM followup_templates WHERE username=? AND id=?',[username, `quote-${username}`])
+      const [q] = await pool.query('SELECT id FROM followup_templates WHERE username=? AND kind=?',[username, 'quote'])
       if(!q.length){
         await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)`,
           [`quote-${username}`, username, '报价', 'quote',
            'Quote – {{product}} {{qty}} pcs',
            'Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Mold / Setup fee: {{mold_fee}}\n• Total: {{final_cost}}\n• Lead time: {{lead_time}}\n\nFeel free to adjust quantity or specs to fit your budget.\n\nBest regards,\nEvan',
-           now])
+           sqlNow()])
       }
     }catch{}
   }catch(e){ console.log('[seq] seed skip:', String(e.message||e).slice(0,80)) }
@@ -3465,7 +3466,7 @@ app.put('/email/seq-templates', auth, wrap(async (req,res)=>{
   const tid = id || `tpl-${Date.now()}-${Math.floor(Math.random()*1e4)}`
   await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)
     ON DUPLICATE KEY UPDATE name=VALUES(name), kind=VALUES(kind), subject=VALUES(subject), body=VALUES(body), updated_at=VALUES(updated_at)`,
-    [tid, req.user, name || '未命名', kind === 'marketing' ? 'marketing' : 'auto', subject || '', body || '', sqlNow()])
+    [tid, req.user, name || '未命名', kind === 'marketing' ? 'marketing' : kind === 'quote' ? 'quote' : kind === 'manual' ? 'manual' : 'auto', subject || '', body || '', sqlNow()])
   res.json({ ok:true, id: tid })
 }))
 app.delete('/email/seq-templates/:id', auth, wrap(async (req,res)=>{
