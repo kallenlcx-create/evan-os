@@ -10,7 +10,7 @@ import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, addManualBuckets, type ManualBucket } from '../services/manualBuckets'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusLabel, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 void MANUAL_BUCKETS
@@ -21,6 +21,7 @@ void removeManualBuckets
 const TEMPLATES = [
   { id: 'check_in', name: '常规问候', subject: 'Checking in - {{product}}', body: 'Hi {{first_name}},\n\nJust wanted to check in and see how things are going with your {{product}} project.\n\nBest regards,\nEvan' },
   { id: 'quote_follow', name: '报价跟进', subject: 'Following up on our quote', body: 'Hi {{first_name}},\n\nI wanted to follow up on the quote we sent. Do you have any questions?\n\nBest regards,\nEvan' },
+  { id: 'quote', name: '报价', subject: 'Quote – {{product}} {{qty}} pcs', body: 'Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Mold / Setup fee: {{mold_fee}}\n• Total: {{final_cost}}\n• Lead time: {{lead_time}}\n\nFeel free to adjust quantity or specs to fit your budget.\n\nBest regards,\nEvan' },
   { id: 'new_product', name: '新品推荐', subject: 'New products you might like', body: 'Hi {{first_name}},\n\nWe\'ve launched new designs that I think would be perfect for you.\n\nWould you like to see the catalog?\n\nBest regards,\nEvan' },
 ]
 
@@ -528,6 +529,19 @@ export default function FollowUpsPage() {
           updatedAt: new Date().toISOString(),
           lastContactAt: new Date().toISOString(),
         } as any)
+        // 报价模板 / 正文含报价词 → 自动标已报价
+        try{
+          const q = detectQuoteFromText(`${sendSubject}\n${sendBody}`)
+          const isQuoteTpl = sendTemplate?.id === 'quote' || sendTemplate?.id === 'quote_follow'
+          if(isQuoteTpl || q.status === 'sent' || q.status === 'accepted'){
+            await db.customers.update(sendTarget.id, {
+              quoteStatus: q.status === 'accepted' ? 'accepted' : 'sent',
+              quoteAt: new Date().toISOString(),
+              quoteMatched: isQuoteTpl ? `模板:${sendTemplate.name}` : (q.matched || '报价'),
+              updatedAt: new Date().toISOString(),
+            } as any)
+          }
+        }catch{}
         emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: sendTarget.id, action: 'followed_up' })
         alert(mid ? '已在最新会话中回复发出（含 In-Reply-To）' : (useThreadReply && threadInfo.found && threadInfo.subject ? '已按历史主题发出（库中暂无 Message-ID，可能不入线程）' : '邮件已发送！'))
         setShowSendModal(false)
@@ -794,6 +808,18 @@ const handleBatchAiTpl = useCallback(async () => {
           attachments: atts.length ? atts : undefined,
         })
         bumpTodaySendCount(1)
+        try{
+          const qd = detectQuoteFromText(subject + '\n' + body)
+          const isQt = batchTplId === 'quote' || batchTplId === 'quote_follow' || qd.status==='sent' || qd.status==='accepted'
+          if(isQt){
+            await db.customers.update(c.id, {
+              quoteStatus: qd.status==='accepted' ? 'accepted' : 'sent',
+              quoteAt: sendAt || new Date().toISOString(),
+              quoteMatched: batchTplId==='quote' ? '模板:报价' : (qd.matched||'报价'),
+              updatedAt: new Date().toISOString(),
+            } as any)
+          }
+        }catch{}
         await db.followUps.put({
           id: 'fu-batch-'+Date.now()+'-'+c.id,
           customerId: c.id,
@@ -1536,6 +1562,7 @@ const handleBatchAiTpl = useCallback(async () => {
                       { key:'name', label:'客户', w:'name', sort:'name' },
                       { key:'created', label:'创建时间', w:'created', sort:'created' },
                       { key:'inq', label:'询盘号', w:'inq' },
+                      { key:'quote', label:'报价', w:'quote', sort:'quote' },
                       { key:'level', label:'等级', w:'level', sort:'level' },
                       { key:'reply', label:'回复', w:'reply', sort:'reply' },
                       { key:'mode', label:'跟进方式', w:'mode' },
@@ -1616,6 +1643,17 @@ const handleBatchAiTpl = useCallback(async () => {
                                 </div>
                                 {inq?.completeness === 'L0' && <div className="text-[10px] text-amber-600">待补信息</div>}
                               </div>
+                            )
+                          })()}
+                        </td>
+                        <td className="p-2">
+                          {(()=>{
+                            const qs = quoteStatusOf(c)
+                            const qAt = String((c as any).quoteAt||'').slice(0,10)
+                            return (
+                              <span className={`px-2 py-0.5 rounded text-xs ${quoteStatusClass(qs)}`} title={(c as any).quoteMatched||''}>
+                                {quoteStatusLabel(qs)}{qs!=='none' && qAt ? ` ${qAt.slice(5)}` : ''}
+                              </span>
                             )
                           })()}
                         </td>

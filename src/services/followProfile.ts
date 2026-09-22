@@ -10,6 +10,8 @@ import { isOrderedCustomer } from './orderScan'
 
 export type FollowMode = 'auto' | 'manual'
 export type SalesStage = 'following' | 'ordered' | 'cancelled'
+/** 报价状态：未报价 / 已报价 / 谈价中 / 已接受 */
+export type QuoteStatus = 'none' | 'sent' | 'negotiating' | 'accepted'
 
 export type FollowStepTemplate = {
   n: number
@@ -26,6 +28,91 @@ export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
   { n: 6, name: '最后跟进', keywords: ['last check', "don't clutter", 'come back', 'clutter your inbox'] },
   { n: 7, name: '收口', keywords: ['closing the loop', 'pick it right up', '收口', 'closing the loop on my side'] },
 ]
+
+/** 报价识别关键词（我方发出=已报价；客户回砍价=谈价；接受=已接受） */
+export const QUOTE_SENT_KW = [
+  'quotation', 'please find our quote', 'quote attached', 'price list',
+  'unit price', 'final cost', 'mold fee', 'total us$', '报价单', '报价如下',
+  'our quotation', 'attached is the quote',
+]
+export const QUOTE_NEGO_KW = [
+  'too expensive', 'too high', 'best price', 'can you do $', 'discount',
+  'cheaper', 'out of budget', '太贵', '便宜', '折扣', '砍价',
+]
+export const QUOTE_ACCEPT_KW = [
+  'approved', 'proceed with', "let's move forward", 'we accept',
+  'please send invoice', 'payment sent', 'ok to order', '确认报价', '可以下单',
+]
+
+const RANK: Record<QuoteStatus, number> = { none: 0, sent: 1, negotiating: 2, accepted: 3 }
+
+export function detectQuoteFromText(text: string): { status: QuoteStatus; matched: string } {
+  const t = String(text||'').toLowerCase()
+  if(!t) return { status: 'none', matched: '' }
+  // 接受 / 谈价 优先于单纯「已发报价」
+  for(const k of QUOTE_ACCEPT_KW){
+    if(t.includes(k)) return { status: 'accepted', matched: k }
+  }
+  for(const k of QUOTE_NEGO_KW){
+    if(t.includes(k)) return { status: 'negotiating', matched: k }
+  }
+  for(const k of QUOTE_SENT_KW){
+    if(t.includes(k)) return { status: 'sent', matched: k }
+  }
+  return { status: 'none', matched: '' }
+}
+
+export function quoteStatusOf(c: Customer): QuoteStatus {
+  const q = String((c as any).quoteStatus || '')
+  if(q === 'none' || q === 'sent' || q === 'negotiating' || q === 'accepted') return q
+  return 'none'
+}
+
+export function quoteStatusLabel(s: QuoteStatus){
+  return s === 'sent' ? '已报价' : s === 'negotiating' ? '谈价中' : s === 'accepted' ? '已接受' : '未报价'
+}
+
+export function quoteStatusClass(s: QuoteStatus){
+  return s === 'sent' ? 'bg-blue-50 text-blue-700'
+    : s === 'negotiating' ? 'bg-orange-50 text-orange-700'
+    : s === 'accepted' ? 'bg-green-100 text-green-700'
+    : 'bg-gray-100 text-gray-500'
+}
+
+/** 扫描客户邮件，识别报价状态（取最高状态） */
+export function detectQuoteFromMails(c: Customer, emails: EmailMessage[], selfAddrs: string[] = ['evan@maxemblem.com']){
+  const addrs = new Set(customerAddrs(c))
+  let best: QuoteStatus = 'none'
+  let matched = ''
+  let quoteAt = ''
+  for(const e of emails){
+    const from = extractAddr(e.from).toLowerCase()
+    const to = extractAddr(e.to||'').toLowerCase()
+    const involves = addrs.has(from) || [...addrs].some(a=> to.includes(a))
+    if(!involves) continue
+    const isSent = selfAddrs.some(s=> from.includes(s)) || e.folder === 'sent'
+    const text = `${e.subject||''}\n${e.text||''}`
+    // 仅我方发出的报价词 → sent；客户谈价/接受
+    let st: QuoteStatus = 'none'
+    let hit = ''
+    if(isSent){
+      const d = detectQuoteFromText(text)
+      st = d.status === 'none' ? 'none' : (d.status === 'negotiating' ? 'sent' : d.status)
+      // 我方邮件里谈价话术不算 negotiating
+      if(d.status === 'accepted' || d.status === 'sent' || d.status === 'negotiating'){
+        if(d.status === 'negotiating') { st = 'sent'; hit = d.matched }
+        else { st = d.status; hit = d.matched }
+        if(st === 'sent' && RANK[best] < 1){ quoteAt = e.date || quoteAt }
+      }
+    } else {
+      const d = detectQuoteFromText(text)
+      st = d.status
+      hit = d.matched
+    }
+    if(RANK[st] > RANK[best]){ best = st; matched = hit || matched }
+  }
+  return { status: best, matched, quoteAt }
+}
 
 const STOP = new Set(['your','you','the','and','for','with','from','this','that','have','will','best','regards','dear','hello','please','just','would','could','about','email','thanks','thank','evan','maxemblem','following','follow','check','checking'])
 
@@ -131,6 +218,7 @@ export type FollowBoardStats = {
   stepsUpdated: number
   highQueued: number
   ordersStopped: number
+  quotesUpdated: number
   note: string
 }
 
@@ -225,7 +313,7 @@ export async function runFollowBoardSync(opts?: {
   const templates = fromUser.length ? fromUser : ((cfg as any).followStepTemplates as FollowStepTemplate[] | undefined)
   const th = (cfg as any).followSimThreshold || 0.6
   const ts = new Date().toISOString()
-  let replies = 0, modeChanged = 0, stepsUpdated = 0, highQueued = 0, ordersStopped = 0
+  let replies = 0, modeChanged = 0, stepsUpdated = 0, highQueued = 0, ordersStopped = 0, quotesUpdated = 0
   const scanned = customers.length
 
   for(const c of customers){
@@ -311,6 +399,17 @@ export async function runFollowBoardSync(opts?: {
       followStepMatched,
       updatedAt: ts,
     }
+    // 报价状态：邮件上下文自动识别（只升不降）
+    try{
+      const q = detectQuoteFromMails(c, emails)
+      const prevQ = quoteStatusOf(c)
+      if(q.status !== 'none' && RANK[q.status] >= RANK[prevQ]){
+        patch.quoteStatus = q.status
+        patch.quoteMatched = q.matched
+        if(q.quoteAt || !(c as any).quoteAt) patch.quoteAt = (c as any).quoteAt || q.quoteAt || ts
+        quotesUpdated++
+      }
+    }catch{}
     // 回填业务创建时间（询盘日 / 邮件最早往来）
     const mailBiz = businessCreatedAt(c, { emails })
     const prevInq = String((c as any).inquiryAt||'').slice(0,10)
@@ -324,8 +423,8 @@ export async function runFollowBoardSync(opts?: {
   }
 
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))
-  const note = `跟进档案：扫描 ${scanned} · 回复 ${replies} · 转手动 ${modeChanged} · 步号更新 ${stepsUpdated} · 高意向+${highQueued}${ordersStopped?` · 停序列 ${ordersStopped}`:''}`
-  return { scanned, replies, modeChanged, stepsUpdated, highQueued, ordersStopped, note }
+  const note = `跟进档案：扫描 ${scanned} · 回复 ${replies} · 转手动 ${modeChanged} · 步号 ${stepsUpdated} · 报价 ${quotesUpdated} · 高意向+${highQueued}${ordersStopped?` · 停序列 ${ordersStopped}`:''}`
+  return { scanned, replies, modeChanged, stepsUpdated, highQueued, ordersStopped, quotesUpdated, note }
 }
 
 /** 客户侧改「跟进方式」时联动自动序列 */

@@ -3414,6 +3414,17 @@ async function seedDefaultTemplates(username){
          'Following up: {{product}} quotation',
          `Hi {{first_name}},\n\n${s.opener}\n\nOur {{product}} can be ready in about 12-15 days after design confirmation.\n\nBest regards,\nEvan`, now])
     }
+    // 独立「报价」模板（用于手动/批量发报价）
+    try{
+      const [q] = await pool.query('SELECT id FROM followup_templates WHERE username=? AND id=?',[username, `quote-${username}`])
+      if(!q.length){
+        await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)`,
+          [`quote-${username}`, username, '报价', 'quote',
+           'Quote – {{product}} {{qty}} pcs',
+           'Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Mold / Setup fee: {{mold_fee}}\n• Total: {{final_cost}}\n• Lead time: {{lead_time}}\n\nFeel free to adjust quantity or specs to fit your budget.\n\nBest regards,\nEvan',
+           now])
+      }
+    }catch{}
   }catch(e){ console.log('[seq] seed skip:', String(e.message||e).slice(0,80)) }
 }
 // 序列配置：GET/PUT /email/seq-config {intervals, sendStart, sendEnd, skipHolidays}
