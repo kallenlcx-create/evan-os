@@ -11,6 +11,7 @@ import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, businessCreatedAt } from '../services/followProfile'
 import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
+import { PRODUCT_TAGS, runProductClassify, formatProductResult } from '../services/productClassify'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -488,6 +489,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       const align = await syncOrderedCustomersFollowUps({ purge: true })
       note += ' · 订单+' + os.ordersAdded + ' 已下单' + os.customersTagged + ' 重复' + os.duplicates
       note += ` · 清误标${align.purged}/真实已下单${align.ordered}/关跟进${align.followUpsClosed}`
+      const pr = await runProductClassify()
+      note += ' · ' + formatProductResult(pr)
       setIntelNote(note)
       await load()
     }catch(e:any){ setIntelNote('自动分类失败：'+String(e.message||e).slice(0,100)) }
@@ -880,6 +883,17 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <div className="absolute z-30 left-0 top-8 w-72 bg-white border rounded-2xl shadow-lg p-2 space-y-1 text-xs">
               <div className="text-[10px] text-gray-400 px-1">智能与数据（低频）</div>
               <button onClick={()=>{ setMoreOpen(false); void handleDailyClassify() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🏷️ 自动分类</button>
+              <button onClick={async()=>{
+                setMoreOpen(false)
+                setIntelBusy('prod')
+                setIntelNote('产品分类中…（读邮件识别 Patch/Pin/Coin/Medal/Keychain，可多标签）')
+                try{
+                  const pr = await runProductClassify()
+                  setIntelNote(formatProductResult(pr))
+                  await load()
+                }catch(e:any){ setIntelNote('产品分类失败：'+String(e.message||e).slice(0,100)) }
+                finally{ setIntelBusy('') }
+              }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🧩 产品分类（多标签）</button>
               <button onClick={()=>{ setMoreOpen(false); void handleAiInsight() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🔍 AI洞察</button>
               <button onClick={()=>{ setMoreOpen(false); void handleBatchPortrait({ force: true }) }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🤖 批量AI画像</button>
               <button onClick={()=>{ setMoreOpen(false); void handlePurchaseLoop() }} disabled={!!intelBusy} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 disabled:opacity-50">🔁 复购开发</button>
@@ -1315,6 +1329,15 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       <div className="flex gap-1 flex-wrap items-center">
         <span className="text-[11px] text-gray-400">🏷️ 标签：</span>
         <button onClick={()=> setTagFilter('all')} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter==='all'?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>全部</button>
+        {PRODUCT_TAGS.map(p=>{
+          const n = list.filter(c=> (c.tags||[]).includes(p) || ((c as any).productTags||[]).includes(p)).length
+          return (
+            <button key={p} onClick={()=> setTagFilter(tagFilter===p?'all':p)}
+              className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter===p?'bg-amber-600 text-white':'bg-amber-50 text-amber-700 border-amber-200'}`}
+              title="产品标签；多品类客户可同时有多个"
+            >{p} {n}</button>
+          )
+        })}
         {allTags.map(([t, n])=>(
           <button key={t} onClick={()=> setTagFilter(tagFilter===t?'all':t)} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter===t?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>{t} {n}</button>
         ))}
