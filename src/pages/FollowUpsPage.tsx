@@ -113,6 +113,16 @@ export default function FollowUpsPage() {
   const [showFollowRules, setShowFollowRules] = useState(false)
   const [boardPage, setBoardPage] = useState(1)
   const [aiReplyBusy, setAiReplyBusy] = useState<string>('')
+  /** 批量 AI 草稿：只生成不发送 */
+  const [aiDrafts, setAiDrafts] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; note?: string }>>([])
+  const [showAiDrafts, setShowAiDrafts] = useState(false)
+  const [aiDraftBusy, setAiDraftBusy] = useState(false)
+  /** 发送日历（只读 outbox + 序列） */
+  const [showSendCal, setShowSendCal] = useState(false)
+  const [sendCalBusy, setSendCalBusy] = useState(false)
+  const [outboxList, setOutboxList] = useState<any[]>([])
+  const [sendCalNote, setSendCalNote] = useState('')
+  void outboxList
   const [copiedEmail, setCopiedEmail] = useState('')
   const [boardHideNoise, setBoardHideNoise] = useState(true)
   const [boardSelected, setBoardSelected] = useState<Set<string>>(new Set())
@@ -843,6 +853,68 @@ const handleBatchAiTpl = useCallback(async () => {
     finally{ setAiReplyBusy('') }
   }, [load, loadSequences])
 
+  /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
+  const handleBatchAiDrafts = useCallback(async () => {
+    const ids = selectedIds.size ? [...selectedIds] : []
+    const targets = customers.filter(c=> ids.includes(c.id) && c.email)
+    if(!targets.length) return alert('请先勾选客户（雷达或跟进表）')
+    if(!confirm(`为 ${targets.length} 人生成 AI 跟进草稿（只生成，不发送）？`)) return
+    setAiDraftBusy(true)
+    setAiDrafts([])
+    setShowAiDrafts(true)
+    const out: Array<{ id: string; email: string; name: string; subject: string; body: string; note?: string }> = []
+    try{
+      const mails = await db.emails.toArray()
+      for(let i=0;i<targets.length;i++){
+        const c = targets[i]
+        setIntellectNote(`AI草稿 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
+        try{
+          const gen = await generateAiFollowReply(c, mails)
+          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: gen.subject, body: gen.body, note: 'AI草稿·未发送' })
+        }catch(e:any){
+          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: '(生成失败)', body: String(e?.message||e).slice(0,120), note: '失败' })
+        }
+        setAiDrafts([...out])
+        if(i < targets.length-1) await new Promise(r=> setTimeout(r, 800))
+      }
+      setIntellectNote(`AI草稿完成 ${out.filter(x=> x.note!=='失败').length}/${targets.length}，已打开草稿箱（未发送）`)
+    }finally{
+      setAiDraftBusy(false)
+    }
+  }, [customers, selectedIds])
+
+  /** 发送日历：只读合并 outbox + 自动序列 next_due */
+  const openSendCalendar = useCallback(async ()=>{
+    setSendCalBusy(true)
+    setSendCalNote('加载中…')
+    try{
+      const { getOutbox } = await import('../repositories/emailRepository')
+      const ob = await getOutbox().catch(()=>[] as any[])
+      setOutboxList(ob || [])
+      const days = new Map<string, { outbox: any[]; seq: any[] }>()
+      const put = (day: string, key: 'outbox'|'seq', item: any)=>{
+        const d = day || '未定时'
+        const cur = days.get(d) || { outbox: [], seq: [] }
+        cur[key].push(item)
+        days.set(d, cur)
+      }
+      for(const o of ob){
+        const day = String(o.send_at || o.created_at || '').slice(0,10) || '未定时'
+        put(day, 'outbox', o)
+      }
+      for(const s of sequences){
+        if(s.mode !== 'auto') continue
+        const day = String(s.next_due_at||'').slice(0,10) || '未定时'
+        put(day, 'seq', s)
+      }
+      ;(window as any).__sendCalDays = [...days.entries()].sort((a,b)=> a[0].localeCompare(b[0]))
+      setSendCalNote('')
+      setShowSendCal(true)
+    }catch(e:any){
+      setSendCalNote('加载失败：'+String(e.message||e).slice(0,80))
+    }finally{ setSendCalBusy(false) }
+  }, [sequences])
+
   const cats = [
     { key: 'high', label: '高意向客户', icon: Flame, count: stats.high, color: 'text-red-500', bg: 'bg-red-50' },
     { key: 'today', label: '今日跟进', icon: Clock, count: stats.today, color: 'text-blue-500', bg: 'bg-blue-50' },
@@ -919,6 +991,8 @@ const handleBatchAiTpl = useCallback(async () => {
       <div className="flex items-center gap-2 flex-wrap -mt-1">
         <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
         <button onClick={()=> setMainView('board')} className={`px-3 py-1 rounded-full text-xs ${mainView==='board'?'bg-blue-600 text-white':'bg-white border'}`}>📋 跟进表</button>
+        <button onClick={()=> void openSendCalendar()} disabled={sendCalBusy} className="px-2 py-1 rounded-full text-xs bg-white border disabled:opacity-50" title="只读：outbox 待发/已发 + 自动序列 next_due，按日展示">📅 发送日历</button>
+        <button onClick={()=> void handleBatchAiDrafts()} disabled={aiDraftBusy || !!aiReplyBusy} className="px-2 py-1 rounded-full text-xs bg-purple-50 border border-purple-200 text-purple-700 disabled:opacity-50" title="对勾选客户生成 AI 跟进草稿（只生成不发送）">✍️ 批量AI草稿</button>
         <button
           onClick={async()=>{
             setBoardBusy(true)
@@ -1054,6 +1128,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 title={`间隔 5s/封 · 今日配额 ${getTodaySendCount()}/${BATCH_SEND.dailyLimit}`}>
                 {batchSending ? `批量发送 ${batchProgress.done}/${batchProgress.total}` : `📣 批量发跟进（${selectedIds.size}）`}
               </button>
+              <button onClick={()=> void handleBatchAiDrafts()} disabled={aiDraftBusy || batchSending} className="px-2 py-1 border rounded-lg text-purple-600 disabled:opacity-50" title="只生成草稿，不入队不发送">✍️ AI草稿</button>
               <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
               <button onClick={()=> setSelectedIds(new Set())} className="px-2 py-1 text-gray-400">清空</button>
             </div>
@@ -1692,6 +1767,101 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="px-5 py-3 border-t flex justify-end gap-2">
               <button onClick={()=> setShowPreview(false)} className="px-4 py-2 border rounded-lg text-xs">返回修改</button>
               <button onClick={async()=>{ setShowPreview(false); /* 发送走 handleSend */ }} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs">关闭预览，点发送</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 发送日历（只读） */}
+      {showSendCal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowSendCal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">📅 发送日历（只读 · outbox + 自动序列）</div>
+              <button onClick={()=> setShowSendCal(false)} className="p-1 hover:bg-gray-100 rounded">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3 text-xs">
+              <div className="text-[11px] text-gray-500">不修改发送。取消/重试请到邮件中心「待发」。序列由服务器按窗口自动发出。</div>
+              {sendCalNote && <div className="text-amber-700">{sendCalNote}</div>}
+              {(() => {
+                const days: Array<[string, { outbox: any[]; seq: any[] }]> = (window as any).__sendCalDays || []
+                if(!days.length) return <div className="text-gray-400 py-6 text-center">暂无待发 outbox 或到期序列</div>
+                return days.map(([day, g])=>(
+                  <div key={day} className="border rounded-xl p-3">
+                    <div className="font-semibold text-gray-800 mb-2">📆 {day}</div>
+                    {g.outbox.length>0 && (
+                      <div className="mb-2">
+                        <div className="text-[11px] text-gray-500 mb-1">待发 outbox（{g.outbox.length}）</div>
+                        {g.outbox.slice(0, 30).map(o=>(
+                          <div key={o.id} className="flex items-center gap-2 py-1 border-b last:border-0">
+                            <span className={`px-1.5 rounded ${o.status==='sent'?'bg-green-100 text-green-700':o.status==='failed'?'bg-red-100 text-red-600':'bg-yellow-50 text-yellow-700'}`}>{o.status||'queued'}</span>
+                            <span className="truncate flex-1">{o.to_list||o.to}</span>
+                            <span className="truncate max-w-[200px] text-gray-500">{o.subject}</span>
+                          </div>
+                        ))}
+                        {g.outbox.length>30 && <div className="text-[10px] text-gray-400">… 共 {g.outbox.length} 条</div>}
+                      </div>
+                    )}
+                    {g.seq.length>0 && (
+                      <div>
+                        <div className="text-[11px] text-gray-500 mb-1">自动序列到期（{g.seq.length}）· 服务器窗口内发出</div>
+                        {g.seq.slice(0, 30).map((s: any)=>(
+                          <div key={s.customer_id} className="flex items-center gap-2 py-1 border-b last:border-0">
+                            <span className="px-1.5 rounded bg-purple-50 text-purple-700">序列</span>
+                            <span className="truncate flex-1">{s.customer?.title || s.email}</span>
+                            <span className="text-gray-500">第 {Math.min(s.current_step||1,7)}/7 步</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))
+              })()}
+            </div>
+            <div className="px-5 py-3 border-t flex justify-end">
+              <button onClick={()=> setShowSendCal(false)} className="px-4 py-2 border rounded-lg text-xs">关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量 AI 草稿（只生成不发送） */}
+      {showAiDrafts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> !aiDraftBusy && setShowAiDrafts(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">✍️ 批量 AI 草稿（{aiDrafts.length}）· 只生成，不发送</div>
+              <button onClick={()=> setShowAiDrafts(false)} disabled={aiDraftBusy} className="p-1 hover:bg-gray-100 rounded">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3 text-xs">
+              <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">
+                草稿<strong>不会</strong>进入待发/不会自动发送。可「复制」后到邮箱手工发出，或自行粘贴到邮件中心撰写。
+              </div>
+              {aiDraftBusy && <div className="text-purple-700">生成中…</div>}
+              {aiDrafts.map(d=>(
+                <div key={d.id} className="border rounded-xl p-3 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{d.name || d.email}</span>
+                    <span className="text-gray-400 truncate">{d.email}</span>
+                    {d.note && <span className="ml-auto text-[10px] px-1.5 rounded bg-gray-100">{d.note}</span>}
+                  </div>
+                  <div><b>主题：</b>{d.subject}</div>
+                  <div className="text-gray-700 whitespace-pre-wrap bg-gray-50 rounded p-2 max-h-40 overflow-auto">{d.body}</div>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={async()=>{ try{ await navigator.clipboard.writeText(`Subject: ${d.subject}\n\n${d.body}`) }catch{}; setIntellectNote(`已复制草稿：${d.email}`) }} className="px-2 py-1 border rounded text-[11px]">复制全文</button>
+                    <button onClick={async()=>{ try{ await navigator.clipboard.writeText(d.body) }catch{} }} className="px-2 py-1 border rounded text-[11px]">复制正文</button>
+                  </div>
+                </div>
+              ))}
+              {!aiDrafts.length && !aiDraftBusy && <div className="text-gray-400 py-8 text-center">无草稿</div>}
+            </div>
+            <div className="px-5 py-3 border-t flex justify-end gap-2">
+              <button onClick={async()=>{
+                const all = aiDrafts.map(d=> `To: ${d.email}\nSubject: ${d.subject}\n\n${d.body}`).join('\n\n----\n\n')
+                try{ await navigator.clipboard.writeText(all) }catch{}
+                setIntellectNote(`已复制全部草稿 ${aiDrafts.length} 条`)
+              }} className="px-4 py-2 border rounded-lg text-xs">复制全部</button>
+              <button onClick={()=> setShowAiDrafts(false)} className="px-4 py-2 bg-gray-900 text-white rounded-lg text-xs">关闭</button>
             </div>
           </div>
         </div>
