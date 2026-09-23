@@ -931,6 +931,51 @@ const handleBatchAiTpl = useCallback(async () => {
     finally{ setAiReplyBusy('') }
   }, [load, loadSequences])
 
+  /** 批量 AI 回复：逐个生成并入队，挂在各自最新会话最下方 */
+  const [batchAiReplyBusy, setBatchAiReplyBusy] = useState(false)
+  const handleBatchAiReply = useCallback(async () => {
+    const ids = [...new Set([...selectedIds, ...boardSelected])]
+    const targets = customers.filter(c=> ids.includes(c.id) && c.email)
+    if(!targets.length) return alert('请先勾选客户（雷达或跟进表）')
+    if(targets.length > 30 && !confirm(`将对 ${targets.length} 人逐个 AI 生成并入队（有往来会挂到最新会话最下方）？人多较慢，建议一次 ≤30。`)) return
+    if(targets.length <= 30 && !confirm(`为 ${targets.length} 人 AI 生成跟进并入队发送？\n有邮件来往 → 挂到该客户最新会话最下方；无来往 → 新邮件。`)) return
+    const { getAiSettings } = await import('../config/aiProviders')
+    const ai = getAiSettings()
+    if(!(ai.apiKey || ai.proxyUrl) && !confirm('未配置 AI Key，生成可能失败。继续？')) return
+    setBatchAiReplyBusy(true)
+    const accs = await listAccounts()
+    if(!accs.length){ alert('请先绑定邮箱'); setBatchAiReplyBusy(false); return }
+    const mails = await db.emails.toArray()
+    const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
+    const { textToHtml } = await import('../utils/mailHtml')
+    let ok = 0, fail = 0, threaded = 0
+    try{
+      for(let i=0;i<targets.length;i++){
+        const c = targets[i]
+        setIntellectNote(`批量AI回复 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
+        try{
+          const gen = await generateAiFollowReply(c, mails)
+          const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
+          const mid = th.found && th.messageId ? th.messageId : undefined
+          await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
+            html: textToHtml(gen.body),
+            inReplyTo: mid,
+            references: mid,
+          })
+          await setCustomerFollowMode(c, 'manual', 'user')
+          ok++
+          if(mid) threaded++
+        }catch{ fail++ }
+        if(i < targets.length-1) await new Promise(r=> setTimeout(r, 1000))
+      }
+      setIntellectNote(`批量AI回复已入队 ${ok}/${targets.length}${fail?`，失败 ${fail}`:''} · 挂会话 ${threaded} · 邮件中心→待发查看`)
+      await loadSequences()
+      await load()
+    }finally{
+      setBatchAiReplyBusy(false)
+    }
+  }, [customers, selectedIds, boardSelected, load, loadSequences])
+
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
@@ -1214,6 +1259,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 {batchSending ? `批量发送 ${batchProgress.done}/${batchProgress.total}` : `📣 批量发跟进（${selectedIds.size}）`}
               </button>
               <button onClick={()=> void handleBatchAiDrafts()} disabled={aiDraftBusy || batchSending} className="px-2 py-1 border rounded-lg text-purple-600 disabled:opacity-50" title="只生成草稿，不入队不发送">✍️ AI草稿</button>
+              <button onClick={()=> void handleBatchAiReply()} disabled={batchAiReplyBusy || batchSending || aiDraftBusy} className="px-2 py-1 border rounded-lg bg-purple-600 text-white disabled:opacity-50" title="AI 生成并入队；有往来挂最新会话最下方">🤖 批量AI回复</button>
               <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
               <button onClick={()=> setSelectedIds(new Set())} className="px-2 py-1 text-gray-400">清空</button>
             </div>
@@ -1474,6 +1520,10 @@ const handleBatchAiTpl = useCallback(async () => {
         const applyBoardBulk = async (kind: string) => {
           if(!selectedCustomers.length) return alert('请先勾选客户')
           const n = selectedCustomers.length
+          if(kind==='ai-reply'){
+            await handleBatchAiReply()
+            return
+          }
           if(kind==='copy-emails'){
             const list = selectedCustomers.map(c=> c.email).filter(Boolean).join('\n')
             try{ await navigator.clipboard.writeText(list) }catch{}
@@ -1623,6 +1673,12 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> void applyBoardBulk('seq-start')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-purple-600 rounded disabled:opacity-50">批量启动序列</button>
                 <button onClick={()=> void applyBoardBulk('seq-stop')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-gray-700 rounded disabled:opacity-50">批量停自动</button>
                 <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
+                <button
+                  onClick={()=> void applyBoardBulk('ai-reply')}
+                  disabled={!!boardBulkBusy || batchAiReplyBusy || aiDraftBusy || !!aiReplyBusy}
+                  className="px-2 py-1 bg-purple-500 rounded disabled:opacity-50"
+                  title="AI 生成英文跟进并入队；有往来挂到该客户最新会话最下方"
+                >{batchAiReplyBusy ? 'AI回复中…' : '🤖 批量AI回复'}</button>
                 <button onClick={()=> setBoardSelected(new Set())} className="px-2 py-1 text-white/80">取消选择</button>
                 {boardBulkBusy && <span className="opacity-90">处理中…</span>}
               </div>
