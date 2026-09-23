@@ -77,14 +77,23 @@ export default function CustomersPage(){
   // 全部自定义标签（去掉系统派生 + 产品标签，产品单独一排，避免重复）
   const allTags = useMemo(()=>{
     const m = new Map<string, number>()
-    const productSet = new Set<string>(PRODUCT_TAGS as readonly string[])
+    const productSet = new Set<string>((PRODUCT_TAGS as readonly string[]).map(x=> x.toLowerCase()))
     for(const c of list) for(const t of (c.tags || [])){
-      const tag = String(t)
+      const tag = String(t).trim()
+      if(!tag) continue
       if(SYSTEM_TAG_SET.has(tag)) continue
-      if(productSet.has(tag)) continue
-      m.set(tag, (m.get(tag) || 0) + 1)
+      // 产品标只在一排展示：大小写/空白不同的 Pin/pin 也合并排除
+      if(productSet.has(tag.toLowerCase())) continue
+      const key = tag
+      m.set(key, (m.get(key) || 0) + 1)
     }
-    return [...m.entries()].sort((a,b)=> b[1]-a[1])
+    // 合并仅大小写不同的重复标签
+    const merged = new Map<string, number>()
+    for(const [t, n] of m){
+      const k = [...merged.keys()].find(x=> x.toLowerCase() === t.toLowerCase()) || t
+      merged.set(k, (merged.get(k) || 0) + n)
+    }
+    return [...merged.entries()].sort((a,b)=> b[1]-a[1])
   },[list])
   const levelCounts = useMemo(()=>{
     const acc: Record<string, number> = { all: list.length, key: 0 }
@@ -1335,7 +1344,10 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <span className="text-[11px] text-gray-400">🏷️ 标签：</span>
         <button onClick={()=> setTagFilter('all')} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter==='all'?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>全部</button>
         {PRODUCT_TAGS.map(p=>{
-          const n = list.filter(c=> (c.tags||[]).includes(p) || ((c as any).productTags||[]).includes(p)).length
+          const n = list.filter(c=>{
+            const tags = [...(c.tags||[]), ...((c as any).productTags||[])].map(x=> String(x).trim().toLowerCase())
+            return tags.includes(String(p).toLowerCase())
+          }).length
           return (
             <button key={p} onClick={()=> setTagFilter(tagFilter===p?'all':p)}
               className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter===p?'bg-amber-600 text-white':'bg-amber-50 text-amber-700 border-amber-200'}`}

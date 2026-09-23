@@ -70,7 +70,7 @@ export interface SyncTransport {
 export const httpTransport: SyncTransport = {
   async login(serverUrl, username, password) {
     const hdr: Record<string,string> = { 'Content-Type': 'application/json' }
-    if(serverUrl.includes('loca.lt')) hdr['Bypass-Tunnel-Reminder']='true'
+    hdr['Bypass-Tunnel-Reminder']='true'
     const r = await fetch(`${serverUrl}/login`, {
       method: 'POST',
       headers: hdr,
@@ -116,9 +116,8 @@ export const httpTransport: SyncTransport = {
   },
 }
 
-function jsonHeaders(token: string, serverUrl?: string): Record<string, string> {
-  const h: Record<string,string> = { 'Content-Type': 'application/json', 'x-evan-token': token }
-  if(serverUrl && serverUrl.includes('loca.lt')) h['Bypass-Tunnel-Reminder']='true'
+function jsonHeaders(token: string, _serverUrl?: string): Record<string, string> {
+  const h: Record<string,string> = { 'Content-Type': 'application/json', 'x-evan-token': token, 'Bypass-Tunnel-Reminder': 'true' }
   return h
 }
 

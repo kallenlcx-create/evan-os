@@ -762,8 +762,11 @@ const handleBatchAiTpl = useCallback(async () => {
     const remain = BATCH_SEND.dailyLimit - used
     if(uniq.length > remain && !confirm('今日剩余额度 '+remain+'，仅入队前 '+remain+' 封，继续？')) return
     const list2 = uniq.slice(0, remain)
+    const { serverHeaders } = await import('../repositories/emailRepository')
+    const sh = await serverHeaders()
+    if(!sh) return alert('请先到「云同步」登录（服务器 https://win-8c09k6b093h.tail73fe40.ts.net + Evan 账号），否则无法入队发送')
     const accs = await listAccounts()
-    if(!accs.length) return alert('请先绑定邮箱账号')
+    if(!accs.length) return alert('请先绑定邮箱账号（云同步→邮箱账号）')
     const acc = accs[0]
     if(!batchSubject.trim() || !batchBody.trim()) return alert('请填写主题和正文')
     let sendAt: string | null = null
@@ -880,7 +883,9 @@ const handleBatchAiTpl = useCallback(async () => {
     } else if(skipped > 0 && errors === 0){
       setIntellectNote(`0 封入队：${skipped} 人因「无附件不发」被跳过。请改选「无附件也发」，或先给客户补附件。`)
     } else {
-      setIntellectNote(`入队失败 ${errors} 封${errList.length?'：'+errList[0]:''}。请检查云同步登录与 server.mjs。`)
+      const detail = errList[0] || '未知错误'
+      setIntellectNote(`入队失败 ${errors} 封：${detail}`)
+      alert('批量入队失败\n' + errList.slice(0,3).join('\n') + '\n\n请把此弹窗全文发给开发排查。')
     }
     await load()
   }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending])

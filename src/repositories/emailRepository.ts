@@ -23,8 +23,11 @@ export const PROVIDER_PRESETS: Record<string, { imap:{host:string,port:number,ss
 }
 
 export function bypassHeaders(h:{url:string,token:string}){
-  const hdr: Record<string,string> = { 'x-evan-token': h.token }
-  if(h.url.includes('loca.lt')) hdr['Bypass-Tunnel-Reminder']='true'
+  const hdr: Record<string,string> = {
+    'x-evan-token': h.token,
+    // Tailscale/Funnel/loca.lt 拦截页需要此头，否则 POST 可能变成 200 HTML 假成功
+    'Bypass-Tunnel-Reminder': 'true',
+  }
   return hdr
 }
 
