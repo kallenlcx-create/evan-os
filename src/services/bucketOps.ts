@@ -7,23 +7,18 @@ import {
   removeManualBuckets,
   loadManualBuckets,
   loadManualBucketsAsync,
+  bucketOptOutSet,
+  isBucketOptOut,
   type ManualBucket,
   MANUAL_BUCKETS,
 } from './manualBuckets'
+export { bucketOptOutSet, isBucketOptOut }
 
 const AI_TIER_FOR: Partial<Record<ManualBucket, string>> = {
   high: 'high',
   pending: 'pending',
   repurchase: 'repurchase',
   marketing: 'marketing',
-}
-
-export function bucketOptOutSet(c: Customer | any): Set<string> {
-  const o = (c as any)?.bucketOptOut
-  if (!o) return new Set()
-  if (Array.isArray(o)) return new Set(o.map(String))
-  if (typeof o === 'object') return new Set(Object.keys(o).filter(k => (o as any)[k]).map(String))
-  return new Set()
 }
 
 function withOptOut(c: Customer | any, key: ManualBucket, on: boolean) {
@@ -46,11 +41,10 @@ export function isInBucket(
     orderedSet?: Set<string>
   },
 ): boolean {
-  const opt = bucketOptOutSet(c)
+  // 用户点过「移出」→ 一律不算（禁止系统手动板块绕过）
+  if (isBucketOptOut(c, key)) return false
   const mb = (ctx?.manualMap?.[c.id as string]?.buckets || []).map(String)
-  // 手动放入优先（重新移入会清掉 opt-out）
   if (mb.includes(key)) return true
-  if (opt.has(key)) return false
   const t = String((c as any).aiTier || '')
   const tags = (c.tags || []).map(String)
   const ordered = tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
@@ -193,4 +187,27 @@ export async function applyCustomerTags(opts: {
   }
   notifyAll()
   return { changed }
+}
+
+/** 六桶人数：与列表 isInBucket 同一规则，卡片数字 = 列表条数 */
+export function countBuckets(
+  customers: any[],
+  ctx: {
+    manualMap?: Record<string, { buckets?: string[] }>
+    todaySet?: Set<string>
+    overdueSet?: Set<string>
+    orderedSet?: Set<string>
+  },
+): Record<'high'|'today'|'overdue'|'pending'|'repurchase'|'marketing', number> {
+  const out = { high: 0, today: 0, overdue: 0, pending: 0, repurchase: 0, marketing: 0 } as any
+  const keys = ['high','today','overdue','pending','repurchase','marketing'] as const
+  for (const c of customers) {
+    const tags = (c.tags || []).map(String)
+    if (tags.includes('噪声')) continue
+    if (String((c as any).salesStage || '') === 'cancelled') continue
+    for (const k of keys) {
+      if (isInBucket(c, k, ctx as any)) out[k]++
+    }
+  }
+  return out
 }

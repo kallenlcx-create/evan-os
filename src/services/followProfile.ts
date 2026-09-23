@@ -3,7 +3,7 @@
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
 import { loadIntellectConfig } from './customerDailyClassify'
-import { addManualBuckets } from './manualBuckets'
+import { addManualBuckets, isBucketOptOut } from './manualBuckets'
 import { isNoiseEmailAddress } from '../utils/emailHelpers'
 import { startSequence, patchSequence, listAccounts } from '../repositories/emailRepository'
 import { isOrderedCustomer } from './orderScan'
@@ -392,7 +392,7 @@ export async function runFollowBoardSync(opts?: {
         try { await patchSequence(c.id, { mode: 'manual' }) } catch { /* server optional */ }
       }
     }
-    if (hasReply && (cfg as any).followReplyToHigh !== false) {
+    if (hasReply && (cfg as any).followReplyToHigh !== false && !isBucketOptOut(c, 'high')) {
       if (!(c as any).aiTier || (c as any).aiTier !== 'high') {
         try {
           await db.customers.update(c.id, { aiTier: 'high', aiReason: '有客户回复', aiCheckedAt: ts } as any)

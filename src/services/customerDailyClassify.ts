@@ -3,6 +3,7 @@
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
 import { isNoiseEmailAddress } from '../utils/emailHelpers'
+import { isBucketOptOut } from './manualBuckets'
 
 export type IntellectConfig = {
   autoDailyClassify: boolean
@@ -327,11 +328,19 @@ export async function syncTiersFromRules(opts?: { ids?: Set<string> }){
     } else if(days <= 30){
       tier = 'follow'; reason = `近${days}天往来`
     }
-    await db.customers.update(c.id, {
-      aiTier: tier,
-      aiReason: reason,
-      aiCheckedAt: new Date().toISOString(),
-    } as any)
+    // 用户移出过的桶不要再写回 aiTier
+    const optMap: Record<string, string> = { high: 'high', pending: 'pending', repurchase: 'repurchase', marketing: 'marketing' }
+    const optKey = optMap[String(tier)]
+    if (optKey && isBucketOptOut(c, optKey)) {
+      // 保留为空/原状，只刷新检查时间
+      await db.customers.update(c.id, { aiCheckedAt: new Date().toISOString() } as any)
+    } else {
+      await db.customers.update(c.id, {
+        aiTier: tier,
+        aiReason: reason,
+        aiCheckedAt: new Date().toISOString(),
+      } as any)
+    }
     n++
   }
   window.dispatchEvent(new CustomEvent('evan-customers-updated'))

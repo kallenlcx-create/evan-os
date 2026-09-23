@@ -4,7 +4,7 @@ import type { Customer, EmailMessage } from '../types'
 import { chatOnce } from './aiChat'
 import { loadIntellectConfig, syncTiersFromRules } from './customerDailyClassify'
 import { listPurchaseOrders } from './orderScan'
-import { addManualBuckets } from './manualBuckets'
+import { addManualBuckets, isBucketOptOut } from './manualBuckets'
 import {
   coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile,
   isFillableDim,
@@ -381,7 +381,7 @@ ${mailText||'无'}
       purchaseSummary: `订单 ${os.length} 次 · ${(products.join('/')||'—')} · 距上次 ${daysSince} 天 · 周期约 ${cycle||'—'} 天`,
       purchaseIntelAt: new Date().toISOString(),
     }
-    if(repurchaseHit && !suppressed){
+    if(repurchaseHit && !suppressed && !isBucketOptOut(c, 'repurchase')){
       patch.aiTier = 'repurchase'
       patch.aiReason = nbaReason || 'AI：复购机会'
       try{

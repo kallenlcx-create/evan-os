@@ -218,3 +218,16 @@ export function isLikelyNoiseCustomer(c: { email?: string; title?: string; tags?
   return /(^|@)(noreply|no-reply|donotreply|mailer-daemon|postmaster|bounce)/.test(addr)
     || /@(youtube|quora|announce\.fiverr|flipboard)\./.test(addr)
 }
+
+/** 用户点过「移出」的板块：系统自动入桶不得再写回 */
+export function bucketOptOutSet(c: any): Set<string> {
+  const o = c?.bucketOptOut
+  if (!o) return new Set()
+  if (Array.isArray(o)) return new Set(o.map(String))
+  if (typeof o === 'object') return new Set(Object.keys(o).filter(k => o[k]).map(String))
+  return new Set()
+}
+
+export function isBucketOptOut(c: any, key: ManualBucket | string): boolean {
+  return bucketOptOutSet(c).has(String(key))
+}

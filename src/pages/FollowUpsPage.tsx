@@ -9,8 +9,8 @@ import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
-import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, addManualBuckets, type ManualBucket } from '../services/manualBuckets'
-import { applyBuckets, applyCustomerTags, isInBucket } from '../services/bucketOps'
+import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
+import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusLabel, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
@@ -367,33 +367,22 @@ export default function FollowUpsPage() {
   }, [customers, emailIndex])
 
   const stats = useMemo(() => {
-    const manualCount = (b: ManualBucket) => {
-      let n = 0
-      for (const v of Object.values(manualMap)) if ((v.buckets || []).includes(b)) n++
-      return n
-    }
-    let high = 0, pending = 0, repurchase = 0, marketing = 0
     const bctx0 = { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet }
-    const inM = (id: string, b: string) => (manualMap[id]?.buckets||[]).includes(b as any)
-    for (const c of customers) {
-      if (isInBucket(c, 'high', bctx0 as any) || inM(c.id, 'high')) high++
-      if (isInBucket(c, 'pending', bctx0 as any) || inM(c.id, 'pending')) pending++
-      if (isInBucket(c, 'repurchase', bctx0 as any) || inM(c.id, 'repurchase')) repurchase++
-      if (isInBucket(c, 'marketing', bctx0 as any) || inM(c.id, 'marketing')) marketing++
-    }
+    // 卡片数字与列表同源，避免「卡 48 / 列表 0」
+    const n = countBuckets(customers, bctx0 as any)
     return {
-      high: high + manualCount('high'),
-      today: followIndex.todaySet.size + manualCount('today'),
-      overdue: followIndex.overdueSet.size + manualCount('overdue'),
-      pendingDeals: pending + manualCount('pending'),
-      repurchase: repurchase + manualCount('repurchase'),
-      marketing: marketing + manualCount('marketing'),
+      high: n.high,
+      today: n.today,
+      overdue: n.overdue,
+      pendingDeals: n.pending,
+      repurchase: n.repurchase,
+      marketing: n.marketing,
     }
   }, [customers, followIndex, manualMap])
 
   const catFiltered = useMemo(() => {
     const ts = (iso: string) => { const t = new Date(iso).getTime(); return Number.isFinite(t) ? t : 0 }
-    const inManual = (c: Customer, b: ManualBucket) => (manualMap[c.id]?.buckets || []).includes(b)
+    void 0
     const tierOf = (c: Customer) => (c as any).aiTier as string | undefined
     const out: { c: Customer; days: number; stage: string }[] = []
     for (const c of customers) {
@@ -406,12 +395,12 @@ export default function FollowUpsPage() {
       const st = c.stage || 'lead'
       let hit = false
       const bctx = { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet }
-      if (catFilter === 'high') hit = isInBucket(c, 'high', bctx as any) || inManual(c, 'high')
-      else if (catFilter === 'today') hit = isInBucket(c, 'today', bctx as any) || inManual(c, 'today')
-      else if (catFilter === 'overdue') hit = isInBucket(c, 'overdue', bctx as any) || inManual(c, 'overdue')
-      else if (catFilter === 'pending') hit = isInBucket(c, 'pending', bctx as any) || inManual(c, 'pending')
-      else if (catFilter === 'repurchase') hit = isInBucket(c, 'repurchase', bctx as any) || inManual(c, 'repurchase') || (followIndex.orderedSet.has(c.id) && days >= 30 && !((c as any).bucketOptOut && ((c as any).bucketOptOut.repurchase || (c as any).bucketOptOut.includes?.('repurchase'))))
-      else if (catFilter === 'marketing') hit = isInBucket(c, 'marketing', bctx as any) || inManual(c, 'marketing')
+      if (catFilter === 'high') hit = isInBucket(c, 'high', bctx as any)
+      else if (catFilter === 'today') hit = isInBucket(c, 'today', bctx as any)
+      else if (catFilter === 'overdue') hit = isInBucket(c, 'overdue', bctx as any)
+      else if (catFilter === 'pending') hit = isInBucket(c, 'pending', bctx as any)
+      else if (catFilter === 'repurchase') hit = isInBucket(c, 'repurchase', bctx as any)
+      else if (catFilter === 'marketing') hit = isInBucket(c, 'marketing', bctx as any)
       else hit = true
       if (!hit) continue
       if (showManualOnly && !(manualMap[c.id]?.buckets || []).length) continue
@@ -1072,7 +1061,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 {todoInq.map(c=>(
                   <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
                     <span className="truncate flex-1" title={c.email}>{c.contactName||c.title}</span>
-                    <button className="text-orange-600" onClick={async()=>{ await addManualBuckets([c.id],['high'],'今日待办高意向','add'); await db.customers.update(c.id,{aiTier:'high',aiReason:'今日待办',updatedAt:new Date().toISOString()} as any); await load() }}>高意向</button>
+                    <button className="text-orange-600" onClick={async()=>{ await applyBuckets({ customerIds:[c.id], add:['high'], mode:'add', note:'今日待办高意向' }); await load() }}>高意向</button>
                     <button className="text-blue-600" onClick={()=> void handleStartSeq(c)}>自动</button>
                   </div>
                 ))}
@@ -1778,7 +1767,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         <td className="p-2" style={{ maxWidth: colW('name', 180) }}>
                           <div className="font-medium truncate text-sm">{c.contactName||c.title}
                             {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
-                            {(isInBucket(c, 'high', { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet } as any) || (manualMap[c.id]?.buckets||[]).includes('high')) && (
+                            {(isInBucket(c, 'high', { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet } as any)) && (
                               <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[11px]">高意向</span>
                             )}
                           </div>
