@@ -108,7 +108,7 @@ export default function FollowUpsPage() {
   const [batchCustAtts, setBatchCustAtts] = useState<Record<string, any[]>>({})
   const [batchAutoAtt, setBatchAutoAtt] = useState(true)
   /** 批量附件策略：require=无最新附件则跳过该客户；optional=可无附件 */
-  const [batchAttPolicy, setBatchAttPolicy] = useState<'require'|'optional'>('require')
+  const [batchAttPolicy, setBatchAttPolicy] = useState<'require'|'optional'>('optional')
   /** 定时发送 */
   const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
   const [batchScheduleAt, setBatchScheduleAt] = useState('')
@@ -715,6 +715,11 @@ export default function FollowUpsPage() {
       }catch{ attMap[c.id] = [] }
     }))
     setBatchCustAtts(attMap)
+    const withAtt = Object.values(attMap).filter(a=> a && a.length).length
+    if(withAtt === 0){
+      setBatchAttPolicy('optional')
+      setIntellectNote('未找到历史附件，已改为「无附件也发」（否则会全部跳过、待发箱为空）')
+    }
   }, [catFiltered, selectedIds, applyBatchTpl])
 
 const handleBatchAiTpl = useCallback(async () => {
@@ -778,6 +783,8 @@ const handleBatchAiTpl = useCallback(async () => {
     let threaded = 0
     let subjectOnly = 0
     let newMail = 0
+    const enqueuedIds: string[] = []
+    const errList: string[] = []
     const dayKey = new Date().toISOString().slice(0,10)
     const enqueuedKeys = new Set<string>()
     for(let i=0;i<list2.length;i++){
@@ -824,13 +831,15 @@ const handleBatchAiTpl = useCallback(async () => {
             html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+latestAtt.filename+'" style="max-width:360px;border-radius:6px"/></p>'
           }
         }
-        await enqueueMail(acc.id, c.email || '', subj, body, idem, false, {
+        const enq = await enqueueMail(acc.id, c.email || '', subj, body, idem, false, {
           html,
           sendAt,
           inReplyTo: mid,
           references: mid ? (th.references || mid) : undefined,
           attachments: atts.length ? atts : undefined,
         })
+        if(!enq?.id) throw new Error('入队未返回邮件ID')
+        enqueuedIds.push(String(enq.id))
         bumpTodaySendCount(1)
         try{
           const qd = detectQuoteFromText(subject + '\n' + body)
@@ -854,14 +863,25 @@ const handleBatchAiTpl = useCallback(async () => {
           status: 'pending',
           createdAt: new Date().toISOString(),
         } as any)
-      }catch{ errors++ }
+      }catch(e:any){
+        errors++
+        errList.push(`${c.contactName||c.email||c.id}：${String(e?.message||e).slice(0,80)}`)
+      }
       setBatchProgress({ done: i+1, total: list2.length, errors })
       if(i < list2.length-1) await new Promise(r=> setTimeout(r, BATCH_SEND.intervalMs))
     }
     setBatchSending(false)
     setSelectedIds(new Set())
     setBatchSkipped(skipped)
-    setBatchResult({ ok: list2.length-errors-skipped, errors, threaded, subjectOnly, newMail })
+    const ok = enqueuedIds.length
+    setBatchResult({ ok, errors, threaded, subjectOnly, newMail, skipped, errList: errList.slice(0,5) } as any)
+    if(ok > 0){
+      setIntellectNote(`已入队 ${ok} 封（ID ${enqueuedIds.slice(0,3).map(x=>x.slice(0,8)).join(',')}…）· 邮件中心→📤 待发 查看；约30秒内自动发出${skipped?` · 跳过无附件 ${skipped}`:''}${errors?` · 失败 ${errors}`:''}`)
+    } else if(skipped > 0 && errors === 0){
+      setIntellectNote(`0 封入队：${skipped} 人因「无附件不发」被跳过。请改选「无附件也发」，或先给客户补附件。`)
+    } else {
+      setIntellectNote(`入队失败 ${errors} 封${errList.length?'：'+errList[0]:''}。请检查云同步登录与 server.mjs。`)
+    }
     await load()
   }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending])
 
@@ -2145,7 +2165,10 @@ const handleBatchAiTpl = useCallback(async () => {
               </div>
               {batchResult && (
                 <div className="text-xs px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-100">
-                  {batchScheduleMode==='at' && batchScheduleAt ? `已定时 ${new Date(batchScheduleAt).toLocaleString()} 入队` : '已入队'} {batchResult.ok} 封{batchResult.errors?`，失败 ${batchResult.errors}`:''}{batchSkipped?`，跳过无附件 ${batchSkipped}`:''}。
+                  {batchResult.ok>0
+                    ? (batchScheduleMode==='at' && batchScheduleAt ? `已定时 ${new Date(batchScheduleAt).toLocaleString()} 入队` : '已入队') + ` ${batchResult.ok} 封`
+                    : (batchSkipped ? `未入队：${batchSkipped} 人无附件被跳过（改「无附件也发」再试）` : `入队失败 ${batchResult.errors||0} 封`)}
+                  {batchResult.errors?`，失败 ${batchResult.errors}`:''}{batchSkipped && batchResult.ok>0 ? `，跳过无附件 ${batchSkipped}`:''}。
                   {' '}挂线程 {batchResult.threaded||0}{batchResult.subjectOnly?` · 仅历史主题 ${batchResult.subjectOnly}`:''}{batchResult.newMail?` · 新邮件 ${batchResult.newMail}`:''}。
                   打开邮件中心 → 顶栏「📤 待发」查看发送进度（可预览/取消）。
                 </div>

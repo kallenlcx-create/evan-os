@@ -467,7 +467,12 @@ export default function InboxPage(){
   }
 
   const refreshOutbox = useCallback(async()=>{
-    try{ setOutboxList(await getOutbox()) }catch{}
+    try{
+      setOutboxList(await getOutbox())
+    }catch(e:any){
+      setOutboxList([])
+      showToast('待发箱加载失败：' + String(e?.message||e).slice(0,120))
+    }
   },[])
 
   const handleSendReply = async()=>{

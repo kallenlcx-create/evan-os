@@ -580,8 +580,12 @@ export async function enqueueMail(
       attachments: opts?.attachments?.length ? opts.attachments : undefined,
       idempotencyKey, respectWindow
     }) })
-  const j = await r.json().catch(()=>({}))
-  if(!r.ok) throw new Error(j.error||`入队失败 ${r.status}`)
+  const raw = await r.text()
+  let j: any = {}
+  try{ j = raw ? JSON.parse(raw) : {} }catch{ j = {} }
+  if(!r.ok) throw new Error(j.error || (raw && raw.trimStart().startsWith('<') ? `入队失败 ${r.status}（服务器返回了网页，请检查云同步地址）` : `入队失败 ${r.status}`))
+  // 必须拿到服务端 id，否则不算入队成功（防空200/隧道假成功）
+  if(!j.ok || !j.id) throw new Error(j.error || `入队未确认（HTTP ${r.status}）${raw ? '：'+raw.slice(0,80) : ''}`)
   return j
 }
 export async function getOutbox(status = ''): Promise<any[]>{
@@ -589,9 +593,15 @@ export async function getOutbox(status = ''): Promise<any[]>{
   if(!h) return []
   try{
     const r = await fetch(`${h.url}/email/outbox${status?`?status=${status}`:''}`, { headers: bypassHeaders(h) })
-    const j = await r.json().catch(()=>({}))
+    const raw = await r.text()
+    let j: any = {}
+    try{ j = raw ? JSON.parse(raw) : {} }catch{ j = {} }
+    if(!r.ok) throw new Error(j.error || `待发列表加载失败 ${r.status}`)
     return j.outbox || []
-  }catch{ return [] }
+  }catch(e:any){
+    console.warn('[outbox]', e?.message||e)
+    throw e
+  }
 }
 export async function retryOutbox(id: string){
   const h = await serverHeaders()

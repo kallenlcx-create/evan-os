@@ -791,7 +791,7 @@ app.get('/email/oauth/callback', wrap(async (req,res)=>{
     let accountId = st.a || ''
     if(dbReady){
       if(accountId){
-        const [ex] = await pool.query('SELECT id FROM email_accounts WHERE id=? AND username=?',[accountId, st.u])
+        const [ex] = await pool.query('SELECT id FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, st.u])
         if(!ex.length) accountId = ''
       }
       if(!accountId){
@@ -1651,12 +1651,12 @@ app.get('/email/accounts', auth, wrap(async (req,res)=>{
   if(!dbReady){
     const rows=(memEmailAccounts.get(req.user)||[]); return res.json(rows)
   }
-  const [rows]=await pool.query('SELECT id,email,provider,imap_host,imap_port,smtp_host,smtp_port,created_at FROM email_accounts WHERE username=? ORDER BY created_at DESC',[req.user])
+  const [rows]=await pool.query('SELECT id,email,provider,imap_host,imap_port,smtp_host,smtp_port,created_at FROM email_accounts WHERE LOWER(username)=LOWER(?) ORDER BY created_at DESC',[req.user])
   res.json(rows)
 }))
 app.delete('/email/accounts/:id', auth, wrap(async (req,res)=>{
   if(!dbReady){ const arr=(memEmailAccounts.get(req.user)||[]).filter(a=> a.id!==req.params.id); memEmailAccounts.set(req.user,arr); saveEmailAccounts(); return res.json({ok:true}) }
-  await pool.query('DELETE FROM email_accounts WHERE id=? AND username=?',[req.params.id, req.user]); stopMailWatcher(req.params.id); res.json({ok:true})
+  await pool.query('DELETE FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[req.params.id, req.user]); stopMailWatcher(req.params.id); res.json({ok:true})
 }))
 // 预读邮件总数：GET /email/count/:id（默认查 [Gmail]/All Mail 获取全部邮件数）
 app.get('/email/count/:id', auth, wrap(async (req,res)=>{
@@ -1664,7 +1664,7 @@ app.get('/email/count/:id', auth, wrap(async (req,res)=>{
   const folder=String(req.query.folder||'[Gmail]/All Mail')
   let acc=null
   if(dbReady){
-    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, req.user])
     if(rows.length===0) return res.status(404).json({error:'账号不存在'})
     acc=rows[0]
   } else {
@@ -1704,7 +1704,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
   const sinceUid = Number(req.query.sinceUid)||0 // 新增：增量同步，只拉UID > sinceUid的邮件
   let acc=null
   if(dbReady){
-    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, req.user])
     if(rows.length===0) return res.status(404).json({error:'账号不存在'})
     acc=rows[0]
   } else {
@@ -1820,7 +1820,7 @@ app.get('/email/sync/:id', auth, wrap(async (req,res)=>{
 // ====== 服务端邮件库：绑定一次全量入库，之后只增量 ======
 async function loadMailAccount(accountId, username){
   if(!dbReady) return null
-  const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, username])
+  const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, username])
   return rows[0] || null
 }
 function sqlDate(d){
@@ -2748,7 +2748,7 @@ app.get('/email/full/:accountId/:uid', auth, wrap(async (req,res)=>{
   const { accountId, uid } = req.params
   let acc=null
   if(dbReady){
-    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, req.user])
     if(rows.length===0) return res.status(404).json({error:'账号不存在'})
     acc=rows[0]
   } else {
@@ -2815,7 +2815,7 @@ app.post('/email/full-batch', auth, wrap(async (req,res)=>{
   if(!accountId || !Array.isArray(uids) || uids.length===0) return res.status(400).json({error:'需要accountId和uids数组'})
   let acc=null
   if(dbReady){
-    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, req.user])
     if(rows.length===0) return res.status(404).json({error:'账号不存在'})
     acc=rows[0]
   } else {
@@ -2884,7 +2884,7 @@ app.post('/email/send', auth, wrap(async (req,res)=>{
   if(!accountId || !to || !subject) return res.status(400).json({error:'需要accountId, to, subject'})
   let acc=null
   if(dbReady){
-    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[accountId, req.user])
+    const [rows]=await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[accountId, req.user])
     if(rows.length===0) return res.status(404).json({error:'账号不存在'})
     acc=rows[0]
   } else {
@@ -3122,7 +3122,7 @@ app.post('/email/drafts/:id/append-gmail', auth, wrap(async (req,res)=>{
   if(!accountId) return res.status(400).json({ error:'需要 accountId' })
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
-  const [drows] = await pool.query('SELECT * FROM mail_drafts WHERE id=? AND username=?',[req.params.id, req.user])
+  const [drows] = await pool.query('SELECT * FROM mail_drafts WHERE id=? AND LOWER(username)=LOWER(?)',[req.params.id, req.user])
   if(!drows.length) return res.status(404).json({ error:'草稿不存在' })
   const d = drows[0]
   const pass = decAuth(acc.auth_enc)
@@ -3187,7 +3187,7 @@ app.put('/email/drafts', auth, wrap(async (req,res)=>{
 // 草稿删除：DELETE /email/drafts/:id
 app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
-  await pool.query('DELETE FROM mail_drafts WHERE id=? AND username=?',[req.params.id, req.user])
+  await pool.query('DELETE FROM mail_drafts WHERE id=? AND LOWER(username)=LOWER(?)',[req.params.id, req.user])
   res.json({ ok:true })
 }))
 
@@ -3229,6 +3229,7 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
     }
     throw e
   }
+  console.log('[outbox] queued', id, 'user='+req.user, 'to='+String(to).slice(0,60), 'send_at='+sendAt)
   res.json({ ok:true, id, status:'queued', send_at: sendAt })
 }))
 // 发件箱：GET /email/outbox?status=
@@ -3237,8 +3238,8 @@ app.get('/email/outbox', auth, wrap(async (req,res)=>{
   const st = String(req.query.status || '')
   const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at, idempotency_key'
   const [rows] = st
-    ? await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? AND status=? ORDER BY created_at DESC LIMIT 100`,[req.user, st])
-    : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE username=? ORDER BY created_at DESC LIMIT 100`,[req.user])
+    ? await pool.query(`SELECT ${cols} FROM mail_outbox WHERE LOWER(username)=LOWER(?) AND status=? ORDER BY created_at DESC LIMIT 100`,[req.user, st])
+    : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE LOWER(username)=LOWER(?) ORDER BY created_at DESC LIMIT 100`,[req.user])
   res.json({ outbox: rows })
 }))
 // 预览单条待发：GET /email/outbox/:id
@@ -3323,7 +3324,7 @@ app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
     `SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error,
             created_at, send_at, idempotency_key, body_text, body_html,
             in_reply_to, references_headers, attachments_json
-     FROM mail_outbox WHERE id=? AND username=? LIMIT 1`,
+     FROM mail_outbox WHERE id=? AND LOWER(username)=LOWER(?) LIMIT 1`,
     [req.params.id, req.user])
   if(!rows.length) return res.status(404).json({ error:'不存在' })
   const r = rows[0]
@@ -3349,14 +3350,14 @@ app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
 // 重发：POST /email/outbox/:id/retry
 app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
-  await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=?, error='' WHERE id=? AND username=? AND status='failed'`,[sqlNow(), req.params.id, req.user])
+  await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=?, error='' WHERE id=? AND LOWER(username)=LOWER(?) AND status='failed'`,[sqlNow(), req.params.id, req.user])
   res.json({ ok:true })
 }))
 // 取消定时/排队：POST /email/outbox/:id/cancel
 app.post('/email/outbox/:id/cancel', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const [r] = await pool.query(
-    `UPDATE mail_outbox SET status='cancelled', error='用户取消' WHERE id=? AND username=? AND status IN ('queued','failed')`,
+    `UPDATE mail_outbox SET status='cancelled', error='用户取消' WHERE id=? AND LOWER(username)=LOWER(?) AND status IN ('queued','failed')`,
     [req.params.id, req.user])
   res.json({ ok:true, cancelled: r.affectedRows > 0 })
 }))
@@ -3384,7 +3385,7 @@ async function outboxTick(){
           }
         }
         await pool.query(`UPDATE mail_outbox SET status='sending', try_count=try_count+1 WHERE id=?`,[job.id])
-        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[job.account_id, job.username])
+        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[job.account_id, job.username])
         if(!arows.length) throw new Error('账号不存在')
         const info = await sendMailViaSmtp(arows[0], decAuth(arows[0].auth_enc), {
           to: job.to_list,
@@ -3501,7 +3502,7 @@ app.put('/email/seq-templates', auth, wrap(async (req,res)=>{
 }))
 app.delete('/email/seq-templates/:id', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
-  await pool.query('DELETE FROM followup_templates WHERE id=? AND username=?',[req.params.id, req.user])
+  await pool.query('DELETE FROM followup_templates WHERE id=? AND LOWER(username)=LOWER(?)',[req.params.id, req.user])
   res.json({ ok:true })
 }))
 
@@ -3619,13 +3620,13 @@ async function seqTick(){
           if(!html.includes(token)) continue
           let buf = null, mime = 'image/png', fname = `img${i+1}.png`
           try{
-            const [frows] = await pool.query('SELECT stored_name, original_name, mime_type, path FROM files WHERE id=? AND username=?',[imgs[i], s.username])
+            const [frows] = await pool.query('SELECT stored_name, original_name, mime_type, path FROM files WHERE id=? AND LOWER(username)=LOWER(?)',[imgs[i], s.username])
             if(frows.length){ buf = fs.readFileSync(frows[0].path); mime = frows[0].mime_type || mime; fname = frows[0].original_name || fname }
           }catch{}
           if(buf){ attachments.push({ filename: fname, content: buf, cid: `seqimg${i}` }); html = html.split(token).join(`<img src="cid:seqimg${i}" style="max-width:100%">`) }
           else html = html.split(token).join('')
         }
-        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND username=?',[s.account_id, s.username])
+        const [arows] = await pool.query('SELECT * FROM email_accounts WHERE id=? AND LOWER(username)=LOWER(?)',[s.account_id, s.username])
         if(!arows.length) throw new Error('账号不存在')
         // 自动序列也必须挂会话：有往来用历史主题 + In-Reply-To
         let seqMid = ''
