@@ -236,7 +236,10 @@ export default function FollowUpsPage() {
       try{
         const qt = await getQuoteTemplates()
         setQuoteTpls(qt.templates || [])
-      }catch{ setQuoteTpls([]) }
+      }catch(e:any){
+        setQuoteTpls([])
+        setIntellectNote('报价模板加载失败：'+String(e?.message||e).slice(0,140)+'　（需中台 MySQL 就绪；可在本机打开 http://127.0.0.1:3000/health 查看）')
+      }
       const c = await getSeqConfig()
       if(c.intervals) setSeqIntervals(c.intervals)
       if(c.sendStart != null) setSendStart(c.sendStart)

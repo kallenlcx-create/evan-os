@@ -36,11 +36,30 @@ function loadSecret(){
 const SECRET = loadSecret()
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30 // 30 天
 
+// DB 凭据：优先 server/db.config.json（重启不丢），其次环境变量
+function loadDbConfig(){
+  try{
+    const p = path.join(process.cwd(), 'db.config.json')
+    if(fs.existsSync(p)){
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'))
+      return {
+        host: j.host || '127.0.0.1',
+        user: j.user || 'root',
+        password: j.password || '',
+        database: j.database || 'evan_sync',
+      }
+    }
+  }catch(e){ console.log('[sync-server] db.config.json 读取失败:', String(e.message||e).slice(0,80)) }
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASS || '',
+    database: process.env.DB_NAME || 'evan_sync',
+  }
+}
+const dbCfg = loadDbConfig()
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASS || '',
-  database: process.env.DB_NAME || 'evan_sync',
+  ...dbCfg,
   waitForConnections: true,
   connectionLimit: 10,
   charset: 'utf8mb4',
@@ -329,8 +348,19 @@ async function init() {
   }catch(e){
     dbReady=false
     console.log('[sync-server] MySQL 未连接，使用内存+文件模式（邮件IMAP正常）')
+    console.log('[sync-server] DB目标:', dbCfg.user + '@' + dbCfg.host + '/' + dbCfg.database, '错误:', String(e.message||e).slice(0,160))
   }
 }
+
+// 健康检查（无需登录）：确认中台 + MySQL 是否就绪
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    dbReady,
+    db: dbReady ? { host: dbCfg.host, user: dbCfg.user, database: dbCfg.database } : null,
+    mode: dbReady ? 'mysql' : 'memory',
+  })
+})
 
 // ---------- 认证 ----------
 function hashPass(pass, salt) {
@@ -719,7 +749,7 @@ async function buildOAuthClient(req, accountId){
 }
 // 保存/查看 OAuth 应用配置（Client ID 可回显，Secret 不回显）
 app.put('/email/oauth/config', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { clientId, clientSecret } = req.body || {}
   if(!clientId && !clientSecret) return res.status(400).json({ error:'需要 clientId / clientSecret' })
   await saveGoogleOAuthConfig(clientId || '', clientSecret || '')
@@ -814,7 +844,7 @@ app.post('/email/oauth/disconnect/:accountId', auth, wrap(async (req,res)=>{
 // ---------- Gmail 推送（P3：需 GCP Pub/Sub，见 GMAIL_API_SETUP.md）----------
 // 开通/续期 watch：POST /email/push/watch/:accountId {topicName?}
 app.post('/email/push/watch/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2213,7 +2243,7 @@ app.get('/email/watch-pause', auth, wrap(async (req,res)=>{
 // 入库状态总览：GET /email/db-status/:accountId（先查差多少，再决定同步；light=1 跳过 IMAP 探测，零连接）
 // OAuth Gmail 账号：永不探 IMAP，用 historyId + 库计数
 app.get('/email/db-status/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2320,7 +2350,7 @@ async function searchMailRows(pool, accountIdOrNull, q, cols, limit){
 }
 // 库内全文搜索：GET /email/db-search/:accountId?q=&limit=50
 app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2338,7 +2368,7 @@ app.get('/email/db-search/:accountId', auth, wrap(async (req,res)=>{
 // 客户往来线程：GET /email/customer-mails/:accountId?email=xxx&page=0
 // 先查 mail_threads 预聚合命中该邮箱的线程，再取各线程邮件（单客户页秒开）
 app.get('/email/customer-mails/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2371,7 +2401,7 @@ app.get('/email/customer-mails/:accountId', auth, wrap(async (req,res)=>{
 // 库内信封分页拉取：GET /email/db-envelopes/:accountId?sinceUid=0&limit=500
 // 给浏览器同步用：零 IMAP 连接，只读库
 app.get('/email/db-envelopes/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2386,7 +2416,7 @@ app.get('/email/db-envelopes/:accountId', auth, wrap(async (req,res)=>{
 
 // 库内单封全文：GET /email/db-mail/:accountId/:uid（优先走库，不碰 IMAP）
 app.get('/email/db-mail/:accountId/:uid', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId, uid } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2543,7 +2573,7 @@ const US_HOLIDAY_FALLBACK = [
   ['11-11', 'Veterans Day'], ['11-26', 'Thanksgiving'], ['12-25', 'Christmas'],
 ]
 app.get('/email/holidays', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const year = Math.min(2030, Math.max(2020, Number(req.query.year) || new Date().getFullYear()))
   let rows = []
   try{
@@ -2577,7 +2607,7 @@ app.get('/email/holidays', auth, wrap(async (req,res)=>{
 // 复购激活池：GET /email/repurchase-pool?silentDays=90
 // stage=won 且最后一次往来（含收发）超过 silentDays 天的客户，按静默天数倒序
 app.get('/email/repurchase-pool', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const silentDays = Math.min(3650, Math.max(1, Number(req.query.silentDays) || 90))
   const cutoff = new Date(Date.now() - silentDays*86400000)
   const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
@@ -2612,7 +2642,7 @@ app.get('/email/repurchase-pool', auth, wrap(async (req,res)=>{
 // 标已读回写 Gmail：POST /email/mark-read {accountId, uid, read, folder?}
 // OAuth 账号走 Gmail API（messages.modify），其他走 IMAP STORE
 app.post('/email/mark-read', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId, uid, read = true, folder = '[Gmail]/All Mail' } = req.body || {}
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -2655,7 +2685,7 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
 
 // 未读数：GET /email/unread-count/:accountId?folder=
 app.get('/email/unread-count/:accountId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId } = req.params
   const folder = String(req.query.folder || '')
   const acc = await loadMailAccount(accountId, req.user)
@@ -2668,7 +2698,7 @@ app.get('/email/unread-count/:accountId', auth, wrap(async (req,res)=>{
 
 // 多账号库内搜索：GET /email/db-search-all?q=&limit=
 app.get('/email/db-search-all', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const q = String(req.query.q || '').trim().slice(0, 100)
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
   const cols = 'account_id, folder, uid, message_id, gmail_msgid, subject, from_addr, from_name, to_addr, msg_date, is_read, has_attachment, body_cached, CHAR_LENGTH(body_text) AS body_len, LEFT(body_text, 600) AS snippet, body_html'
@@ -2924,7 +2954,7 @@ function classifySmtpError(e){
 // 会话头查询：GET /email/thread-headers?email=xxx
 // 有往来时必须返回「最近一封的 Message-ID + 该封主题」，供 In-Reply-To / Re: 挂线程
 app.get('/email/thread-headers', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const email = String(req.query.email||'').trim().toLowerCase()
   if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
   const like = `%${email}%`
@@ -2967,7 +2997,7 @@ app.get('/email/thread-headers', auth, wrap(async (req,res)=>{
 
 // 客户相关附件：GET /email/customer-attachments?email=xxx&limit=
 app.get('/email/customer-attachments', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const email = String(req.query.email||'').trim().toLowerCase()
   const limit = Math.min(20, Math.max(1, Number(req.query.limit)||8))
   if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
@@ -3001,7 +3031,7 @@ app.get('/email/customer-attachments', auth, wrap(async (req,res)=>{
 
 // 附件列表：GET /email/attachments/:accountId/:uid
 app.get('/email/attachments/:accountId/:uid', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId, uid } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -3018,7 +3048,7 @@ app.get('/email/attachments/:accountId/:uid', auth, wrap(async (req,res)=>{
 
 // 附件库搜索：GET /email/attachment-search?q=&type=image|all&limit=
 app.get('/email/attachment-search', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const q = String(req.query.q||'').trim().slice(0,100)
   const type = String(req.query.type||'image') === 'all' ? 'all' : 'image'
   const limit = Math.min(200, Math.max(1, Number(req.query.limit)||60))
@@ -3061,7 +3091,7 @@ app.get('/email/attachment/:accountId/:uid/:filename', wrap(async (req,res)=>{
   }
   await new Promise((resolve)=> auth(req,res,resolve))
   if(res.headersSent) return
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId, uid, filename } = req.params
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
@@ -3087,7 +3117,7 @@ app.get('/email/attachment/:accountId/:uid/:filename', wrap(async (req,res)=>{
 
 // Gmail 草稿 APPEND：POST /email/drafts/:id/append-gmail {accountId}
 app.post('/email/drafts/:id/append-gmail', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const accountId = req.body?.accountId
   if(!accountId) return res.status(400).json({ error:'需要 accountId' })
   const acc = await loadMailAccount(accountId, req.user)
@@ -3139,13 +3169,13 @@ app.post('/email/drafts/:id/append-gmail', auth, wrap(async (req,res)=>{
 
 // 草稿：GET /email/drafts
 app.get('/email/drafts', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const [rows] = await pool.query('SELECT * FROM mail_drafts WHERE username=? ORDER BY updated_at DESC LIMIT 100',[req.user])
   res.json({ drafts: rows })
 }))
 // 草稿保存：PUT /email/drafts {id?, accountId, to, cc, subject, body_html, body_text, template_id}
 app.put('/email/drafts', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { id, accountId, to, cc, subject, body_html, body_text, template_id } = req.body || {}
   const did = id || crypto.randomUUID()
   await pool.query(
@@ -3156,14 +3186,14 @@ app.put('/email/drafts', auth, wrap(async (req,res)=>{
 }))
 // 草稿删除：DELETE /email/drafts/:id
 app.delete('/email/drafts/:id', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   await pool.query('DELETE FROM mail_drafts WHERE id=? AND username=?',[req.params.id, req.user])
   res.json({ ok:true })
 }))
 
 // 入队发送：POST /email/outbox {accountId, to, subject, text, html, send_at?, inReplyTo?, references?, attachments?, respectWindow?}
 app.post('/email/outbox', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { accountId, to, subject, text, html, idempotencyKey, respectWindow, send_at: sendAtRaw, inReplyTo, references, attachments } = req.body || {}
   if(!accountId || !to || !subject) return res.status(400).json({ error:'需要 accountId, to, subject' })
   const acc = await loadMailAccount(accountId, req.user)
@@ -3203,7 +3233,7 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
 }))
 // 发件箱：GET /email/outbox?status=
 app.get('/email/outbox', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const st = String(req.query.status || '')
   const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at, idempotency_key'
   const [rows] = st
@@ -3214,7 +3244,7 @@ app.get('/email/outbox', auth, wrap(async (req,res)=>{
 // 预览单条待发：GET /email/outbox/:id
 // 客户发送时间：GET /email/customer-sent-dates?email=
 app.get('/email/customer-sent-dates', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const email = String(req.query.email||'').trim().toLowerCase()
   if(!email || !email.includes('@')) return res.status(400).json({ error:'需要 email' })
   const like = `%${email}%`
@@ -3238,7 +3268,7 @@ app.get('/email/customer-sent-dates', auth, wrap(async (req,res)=>{
 
 // 批量刷新发送时间：POST /email/refresh-sent-dates  body: { emails?: string[] }
 app.post('/email/refresh-sent-dates', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const emails = Array.isArray(req.body?.emails) ? req.body.emails : null
   const likeEvans = '%evan@maxemblem.com%'
   const [rows] = emails && emails.length
@@ -3288,7 +3318,7 @@ app.post('/email/refresh-sent-dates', auth, wrap(async (req,res)=>{
   })
 }))
 app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const [rows] = await pool.query(
     `SELECT id, account_id, to_list, subject, status, try_count, next_try_at, error,
             created_at, send_at, idempotency_key, body_text, body_html,
@@ -3318,13 +3348,13 @@ app.get('/email/outbox/:id', auth, wrap(async (req,res)=>{
 }))
 // 重发：POST /email/outbox/:id/retry
 app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   await pool.query(`UPDATE mail_outbox SET status='queued', next_try_at=?, error='' WHERE id=? AND username=? AND status='failed'`,[sqlNow(), req.params.id, req.user])
   res.json({ ok:true })
 }))
 // 取消定时/排队：POST /email/outbox/:id/cancel
 app.post('/email/outbox/:id/cancel', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const [r] = await pool.query(
     `UPDATE mail_outbox SET status='cancelled', error='用户取消' WHERE id=? AND username=? AND status IN ('queued','failed')`,
     [req.params.id, req.user])
@@ -3430,7 +3460,7 @@ async function seedDefaultTemplates(username){
 }
 // 序列配置：GET/PUT /email/seq-config {intervals, sendStart, sendEnd, skipHolidays}
 app.get('/email/seq-config', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const intervals = await getIntervals(req.user)
   let cfg = { sendStart: 8, sendEnd: 20, skipHolidays: true }
   try{
@@ -3440,7 +3470,7 @@ app.get('/email/seq-config', auth, wrap(async (req,res)=>{
   res.json({ intervals, ...cfg })
 }))
 app.put('/email/seq-config', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const arr = req.body?.intervals
   if(!Array.isArray(arr) || arr.length !== 7 || !arr.every(n=> Number(n) > 0)) return res.status(400).json({ error:'需要7个正数' })
   const sendStart = Math.min(23, Math.max(0, Number(req.body?.sendStart ?? 8)))
@@ -3454,14 +3484,14 @@ app.put('/email/seq-config', auth, wrap(async (req,res)=>{
 
 // 模板：GET /email/seq-templates?kind=auto ｜ PUT /email/seq-templates ｜ DELETE /email/seq-templates/:id
 app.get('/email/seq-templates', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   await seedDefaultTemplates(req.user)
   const kind = String(req.query.kind || 'auto')
   const [rows] = await pool.query('SELECT * FROM followup_templates WHERE username=? AND kind=? ORDER BY id',[req.user, kind])
   res.json({ templates: rows })
 }))
 app.put('/email/seq-templates', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { id, name, kind, subject, body } = req.body || {}
   const tid = id || `tpl-${Date.now()}-${Math.floor(Math.random()*1e4)}`
   await pool.query(`INSERT INTO followup_templates (id, username, name, kind, subject, body, updated_at) VALUES (?,?,?,?,?,?,?)
@@ -3470,14 +3500,14 @@ app.put('/email/seq-templates', auth, wrap(async (req,res)=>{
   res.json({ ok:true, id: tid })
 }))
 app.delete('/email/seq-templates/:id', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   await pool.query('DELETE FROM followup_templates WHERE id=? AND username=?',[req.params.id, req.user])
   res.json({ ok:true })
 }))
 
 // 序列列表：GET /email/sequences?mode=（带客户名/等级）
 app.get('/email/sequences', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const mode = String(req.query.mode || '')
   const [rows] = await pool.query(
     mode ? 'SELECT * FROM followup_sequences WHERE username=? AND mode=? ORDER BY next_due_at' : 'SELECT * FROM followup_sequences WHERE username=? ORDER BY next_due_at',
@@ -3499,7 +3529,7 @@ app.get('/email/sequences', auth, wrap(async (req,res)=>{
 
 // 启动序列：POST /email/sequences {customerId, email, accountId, intervals?, steps?[{subject,body,images[]}]}
 app.post('/email/sequences', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { customerId, email, accountId, intervals, steps } = req.body || {}
   if(!customerId || !email || !accountId) return res.status(400).json({ error:'需要 customerId, email, accountId' })
   const acc = await loadMailAccount(accountId, req.user)
@@ -3530,7 +3560,7 @@ app.post('/email/sequences', auth, wrap(async (req,res)=>{
 
 // 切换模式/续跑：PATCH /email/sequences/:customerId {mode:'auto'|'manual'|'dormant', fromStep?}
 app.patch('/email/sequences/:customerId', auth, wrap(async (req,res)=>{
-  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const { mode, fromStep } = req.body || {}
   if(!['auto','manual','dormant','done'].includes(mode)) return res.status(400).json({ error:'mode 非法' })
   const [rows] = await pool.query('SELECT * FROM followup_sequences WHERE customer_id=? AND username=?',[req.params.customerId, req.user])
@@ -3720,7 +3750,7 @@ app.use((err, req, res, next) => {
 
 init().then(() => {
   app.listen(PORT, () => {
-    const dbMode = dbReady ? 'MySQL' : '内存+文件'
+    const dbMode = dbReady ? ('MySQL ' + dbCfg.user + '@' + dbCfg.host + '/' + dbCfg.database) : '内存+文件'
     const secretMode = process.env.SECRET ? '环境变量' : 'secret.key'
     console.log(`[sync-server] listening on :${PORT} | 数据库: ${dbMode} | 密钥: ${secretMode}`)
     startAllMailWatchers() // 启动所有账号常驻监听

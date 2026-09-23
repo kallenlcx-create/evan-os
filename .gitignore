@@ -31,6 +31,7 @@ server.cjs
 
 server/email_accounts.json
 server/secret.key
+server/db.config.json
 
 server/data.json
 server/deletions.json
