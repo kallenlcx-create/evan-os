@@ -1344,6 +1344,15 @@ const handleBatchAiTpl = useCallback(async () => {
                   {(c.tags||[]).slice(0,3).map(t=> <span key={t} className="ml-1 px-1 rounded bg-teal-50 text-teal-600 text-[10px]">{t}</span>)}
                 </div>
               </div>
+              <div className="shrink-0 text-right min-w-[92px] px-2" title="我方最近发出邮件时间（来自跟进档案 lastFollowAt / lastSentAt）">
+                <div className="text-[10px] text-gray-400 leading-tight">最近发信</div>
+                <div className="text-[12px] font-medium text-slate-700">
+                  {String((c as any).lastFollowAt || (c as any).lastSentAt || '').slice(0, 10) || '—'}
+                </div>
+                {(c as any).firstSentAt && (
+                  <div className="text-[10px] text-gray-300 leading-tight">首次 {String((c as any).firstSentAt).slice(0, 10)}</div>
+                )}
+              </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button onClick={() => handleQuickFollow(c)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1 hover:bg-blue-700">
                   <Send size={11} /> 跟进
