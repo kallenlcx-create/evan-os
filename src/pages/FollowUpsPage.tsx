@@ -581,12 +581,24 @@ export default function FollowUpsPage() {
     openSendModal(c)
   }, [openSendModal])
 
-  // ====== 标记完成 ======
-  const handleComplete = useCallback(async (fu: FollowUpRecord) => {
-    await db.followUps.update(fu.id, { status: 'completed' } as any)
-    emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: fu.customerId, action: 'followup_completed' })
+  // ====== 标记完成：关待办跟进 + 移出当前雷达板块（完成后从列表消失）======
+  const handleComplete = useCallback(async (c: Customer, fu?: FollowUpRecord) => {
+    const pend = list.filter(f => f.customerId === c.id && (f.status === 'pending' || (f as any).status === 'overdue' || (f as any).status === 'completed'))
+    for (const f of (pend.length ? pend : (fu ? [fu] : []))) {
+      await db.followUps.update(f.id, { status: 'done' } as any)
+    }
+    // 从当前分区/六桶移出，点完成后不再出现在雷达
+    const keys = ['high','today','overdue','pending','repurchase','marketing'] as const
+    const cur = catFilter as string
+    const removeList = (keys as readonly string[]).includes(cur)
+      ? [cur as ManualBucket]
+      : [...keys] as ManualBucket[]
+    await applyBuckets({ customerIds: [c.id], remove: removeList })
+    emitEvent(EVENTS.CUSTOMERS_UPDATED, { id: c.id, action: 'followup_completed' })
+    setManualMap(loadManualBuckets())
+    setIntellectNote(`已完成并移出雷达：${c.contactName || c.email}`)
     await load()
-  }, [load])
+  }, [list, catFilter, load])
 
   // ====== 智能分类 L1 ======
   const handleIntellect = useCallback(async () => {
@@ -1360,9 +1372,11 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={() => handleStartSeq(c)} title="启动7步自动跟进序列" className="px-2 py-1.5 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs hover:bg-purple-100">
                   🔁序列
                 </button>
-                {list.some(f => f.customerId === c.id && f.status === 'pending') && (
-                  <button onClick={() => { const fu = list.find(f => f.customerId === c.id && f.status === 'pending'); if (fu) handleComplete(fu) }} className="px-2 py-1.5 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs">✓ 完成</button>
-                )}
+                <button
+                  onClick={() => void handleComplete(c)}
+                  title="本次跟进已完成：关闭待办跟进，并移出当前雷达板块（客户不再出现在本列表）"
+                  className="px-2 py-1.5 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs"
+                >✓ 完成</button>
                 <button onClick={() => navigate('/inbox')} className="px-2 py-1.5 bg-white border rounded-lg text-xs text-gray-500">邮件 ›</button>
               </div>
             </div>
