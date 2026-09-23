@@ -401,7 +401,12 @@ export default function FollowUpsPage() {
       else if (catFilter === 'pending') hit = isInBucket(c, 'pending', bctx as any)
       else if (catFilter === 'repurchase') hit = isInBucket(c, 'repurchase', bctx as any)
       else if (catFilter === 'marketing') hit = isInBucket(c, 'marketing', bctx as any)
-      else hit = true
+      else if (catFilter === 'everyone') hit = true
+      else {
+        // 默认「全部雷达」= 六桶预警并集，不是全库客户
+        hit = (['high','today','overdue','pending','repurchase','marketing'] as const)
+          .some(k => isInBucket(c, k, bctx as any))
+      }
       if (!hit) continue
       if (showManualOnly && !(manualMap[c.id]?.buckets || []).length) continue
       if (tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) continue
@@ -1155,14 +1160,15 @@ const handleBatchAiTpl = useCallback(async () => {
       <>
       <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className="text-gray-400">视图：</span>
-        <button onClick={()=>{ setCatFilter('all'); setShowManualOnly(false); setTagFilter('all') }} className="px-2 py-0.5 border rounded-full bg-white">全部雷达</button>
+        <button onClick={()=>{ setCatFilter('all'); setShowManualOnly(false); setTagFilter('all') }} className="px-2 py-0.5 border rounded-full bg-white">全部预警</button>
         <button onClick={()=> setCatFilter('high')} className="px-2 py-0.5 border rounded-full bg-white">高意向</button>
         <button onClick={()=> setCatFilter('overdue')} className="px-2 py-0.5 border rounded-full bg-white">逾期</button>
         <button onClick={()=> setCatFilter('repurchase')} className="px-2 py-0.5 border rounded-full bg-white">复购</button>
         <button onClick={()=>{ setCatFilter('overdue'); setPerPage(10) }} className="px-2 py-0.5 border rounded-full bg-white">逾期·每页10</button>
+        <button onClick={()=>{ setCatFilter('everyone' as any); setShowManualOnly(false); setTagFilter('all') }} className="px-2 py-0.5 border rounded-full bg-white" title="显示全部客户（含无预警）">全库客户</button>
       </div>
-      {catFilter !== 'all' && (
-        <div className="text-xs text-gray-500 -mt-2">当前筛选：<b className="text-blue-600">{{high:'高意向客户',today:'今日跟进',overdue:'逾期跟进',pending:'待成交机会',repurchase:'潜在复购',marketing:'营销机会'}[catFilter]}</b>
+      {true && (
+        <div className="text-xs text-gray-500 -mt-2">当前筛选：<b className="text-blue-600">{catFilter==='all' ? '全部预警（六桶并集）' : catFilter==='everyone' ? '全库客户' : ({high:'高意向客户',today:'今日跟进',overdue:'逾期跟进',pending:'待成交机会',repurchase:'潜在复购',marketing:'营销机会'} as any)[catFilter] || catFilter}</b>
           <button onClick={()=> setCatFilter('all')} className="ml-2 text-gray-400 hover:text-gray-600">✕ 清除</button>
         </div>
       )}
@@ -1194,7 +1200,7 @@ const handleBatchAiTpl = useCallback(async () => {
           <div className="w-7 h-7 bg-red-100 rounded-lg flex items-center justify-center">🔥</div>
           <div>
             <div className="text-sm font-bold">客户跟进雷达</div>
-            <div className="text-xs text-gray-400">未成交客户沉寂预警 · 已下单客户不进逾期（走复购）· 每页可配</div>
+            <div className="text-xs text-gray-400">默认只显示六桶预警客户（不是全库）· 点上方六桶卡或「全库客户」切换 · 已下单不进逾期</div>
           </div>
           <select value={tagFilter} onChange={e=> { setTagFilter(e.target.value); setPage(1) }} className="ml-auto px-2 py-1 border rounded text-xs">
             <option value="all">全部标签</option>
@@ -1335,7 +1341,7 @@ const handleBatchAiTpl = useCallback(async () => {
             共 {catFiltered.length} 条
             {catFilter !== 'all' && (
               <span className="ml-1 text-blue-500">
-                · 当前分区「{{high:'高意向',today:'今日跟进',overdue:'逾期跟进',pending:'待成交',repurchase:'复购',marketing:'营销'}[catFilter] || catFilter}」
+                · 当前分区「{catFilter==='everyone' ? '全库' : ({high:'高意向',today:'今日跟进',overdue:'逾期跟进',pending:'待成交',repurchase:'复购',marketing:'营销'} as any)[catFilter] || catFilter}」
               </span>
             )}
             {' · 第 '}{safePage}/{totalPages} 页

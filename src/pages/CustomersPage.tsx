@@ -74,12 +74,14 @@ export default function CustomersPage(){
   const [tagFilter, setTagFilter] = useState<string>('all')
   const [showTagMgr, setShowTagMgr] = useState(false)
   const [tagInput, setTagInput] = useState('')
-  // 全部自定义标签（去掉系统派生标签，避免与 A~D/邮箱类型筛选重复）
+  // 全部自定义标签（去掉系统派生 + 产品标签，产品单独一排，避免重复）
   const allTags = useMemo(()=>{
     const m = new Map<string, number>()
+    const productSet = new Set<string>(PRODUCT_TAGS as readonly string[])
     for(const c of list) for(const t of (c.tags || [])){
       const tag = String(t)
       if(SYSTEM_TAG_SET.has(tag)) continue
+      if(productSet.has(tag)) continue
       m.set(tag, (m.get(tag) || 0) + 1)
     }
     return [...m.entries()].sort((a,b)=> b[1]-a[1])
