@@ -1,6 +1,7 @@
 // 跟进表高级筛选：字段注册表 + chip + 范围/多选/日期/文本 + 预设 + 导出
 import type { Customer } from '../types'
 import { quoteStatusOf, quoteStatusLabel, salesStageOf, daysNoFollow, businessCreatedAt } from './followProfile'
+import { isInBucket } from './bucketOps'
 
 export type FilterKind = 'range' | 'enum' | 'date' | 'text' | 'bool'
 
@@ -33,24 +34,22 @@ export const BUCKET_OPTIONS = ['高意向', '今日跟进', '逾期跟进', '待
 
 const PRODUCT_TAGS = ['Patch', 'Pin', 'Coin', 'Medal', 'Keychain'] as const
 
-function isOrdered(c: Customer, ctx?: FilterCtx){
+export function isOrdered(c: Customer, ctx?: FilterCtx){
   const tags = (c.tags || []).map(String)
   return tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
 }
 
 function bucketsOf(c: Customer, ctx?: FilterCtx): string[] {
   const out: string[] = []
-  const t = String((c as any).aiTier || '')
+  const keys = ['high','today','overdue','pending','repurchase','marketing'] as const
+  const labels: Record<string, string> = {
+    high: '高意向', today: '今日跟进', overdue: '逾期跟进',
+    pending: '待成交机会', repurchase: '潜在复购', marketing: '营销机会',
+  }
   const mb = (ctx?.manualMap?.[c.id]?.buckets || []).map(String)
-  const hr = String((c as any).hasReply || '')
-  if (t === 'high' || mb.includes('high') || hr === 'yes') out.push('高意向')
-  if (ctx?.todaySet?.has(c.id) || mb.includes('today')) out.push('今日跟进')
-  const ordered = isOrdered(c, ctx)
-  if ((!ordered && ctx?.overdueSet?.has(c.id)) || mb.includes('overdue')) out.push('逾期跟进')
-  if (t === 'pending' || mb.includes('pending')) out.push('待成交机会')
-  const days = daysNoFollow(c)
-  if (t === 'repurchase' || mb.includes('repurchase') || (ordered && (days == null || days >= 30))) out.push('潜在复购')
-  if (t === 'marketing' || mb.includes('marketing')) out.push('营销机会')
+  for (const k of keys) {
+    if (isInBucket(c, k, ctx as any) || mb.includes(k)) out.push(labels[k])
+  }
   return out
 }
 

@@ -9,7 +9,8 @@ import { coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromPro
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
 import { runAiInsight, runPurchaseLoop } from '../services/customerInsight'
 import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, businessCreatedAt } from '../services/followProfile'
-import { MANUAL_BUCKETS, addManualBuckets, getCustomerBuckets, removeManualBuckets } from '../services/manualBuckets'
+import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
+import { applyBuckets, applyCustomerTags } from '../services/bucketOps'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 import { PRODUCT_TAGS, runProductClassify, formatProductResult } from '../services/productClassify'
 
@@ -194,10 +195,14 @@ export default function CustomersPage(){
       } else if(kind === 'stage'){
         await db.customers.update(id, { stage: bulkStage, updatedAt: ts } as any)
       } else if(kind === 'tag'){
-        const c = await db.customers.get(id) as Customer | undefined
-        if(!c) continue
-        const tags = [...new Set([...(c.tags || []), bulkTag.trim()])]
-        await db.customers.update(id, { tags, updatedAt: ts } as any)
+        // 支持「-标签名」删除；普通则添加
+        const raw = bulkTag.trim()
+        if(raw.startsWith('-') || raw.startsWith('×')){
+          const name = raw.replace(/^[-×]/, '').trim()
+          if(name) await applyCustomerTags({ customerIds:[id], remove:[name] })
+        } else {
+          await applyCustomerTags({ customerIds:[id], add:[raw] })
+        }
       }
       n++
     }
@@ -987,7 +992,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <button key={'p-in-'+b.key}
               onClick={async()=>{
                 if(!checked.size) return alert('请先勾选客户')
-                await addManualBuckets([...checked], [b.key], undefined, bucketAddMode)
+                await applyBuckets({ customerIds:[...checked], add:[b.key], mode: bucketAddMode, note:'客户页移入' })
                 setIntelNote(bucketAddMode==='add'
                   ? `已叠加「${b.label}」到 ${checked.size} 人`
                   : `已将 ${checked.size} 人板块设为「${b.label}」（替换，其它手动板块已清）`)
@@ -999,8 +1004,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           {MANUAL_BUCKETS.map(b=>(
             <button key={'p-out-'+b.key}
               onClick={async()=>{
-                const n = removeManualBuckets([...checked], [b.key])
-                setIntelNote(`已从「${b.label}」批量移出 ${n} 人`)
+                const r = await applyBuckets({ customerIds:[...checked], remove:[b.key] })
+                setIntelNote(`已从「${b.label}」批量移出 ${r.changed} 人（含 AI 桶/自动归类，跟进页同步消失）`)
                 await load()
               }}
               className="px-2 py-1 bg-rose-500/50 hover:bg-rose-500/70 rounded-lg border border-white/20"
@@ -1009,8 +1014,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
           <button
             onClick={async()=>{
               if(!confirm(`清空 ${checked.size} 人的全部手动板块？`)) return
-              const n = removeManualBuckets([...checked], [])
-              setIntelNote(`已清空 ${n} 人手动板块`)
+              const r = await applyBuckets({ customerIds:[...checked], clearAll: true })
+              setIntelNote(`已清空 ${r.changed} 人板块（手动+AI桶+移出标记）`)
               await load()
             }}
             className="px-2 py-1 bg-white/10 hover:bg-white/20 rounded-lg border border-white/20"
@@ -1121,11 +1126,10 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <button key={'in-'+b.key}
               onClick={async()=>{
                 if(!checked.size) return alert('请先勾选客户')
-                await addManualBuckets([...checked], [b.key], undefined, bucketAddMode)
+                await applyBuckets({ customerIds:[...checked], add:[b.key], mode: bucketAddMode, note:'客户页移入' })
                 setIntelNote(bucketAddMode==='add'
                   ? `已叠加「${b.label}」到 ${checked.size} 人`
                   : `已将 ${checked.size} 人板块设为「${b.label}」（替换）`)
-                window.dispatchEvent(new CustomEvent('evan-customers-updated'))
                 await load()
               }}
               className="px-2 py-1 bg-indigo-500/80 hover:bg-indigo-400 rounded text-[11px]"
@@ -1136,8 +1140,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             <button key={'out-'+b.key}
               onClick={async()=>{
                 if(!checked.size) return alert('请先勾选客户')
-                const n = removeManualBuckets([...checked], [b.key])
-                setIntelNote(`已从「${b.label}」移出 ${n} 人的手动板块标记`)
+                const r = await applyBuckets({ customerIds:[...checked], remove:[b.key] })
+                setIntelNote(`已从「${b.label}」移出 ${r.changed} 人（含 AI 桶，跟进页同步）`)
                 window.dispatchEvent(new CustomEvent('evan-customers-updated'))
                 await load()
               }}
@@ -1149,9 +1153,8 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             onClick={async()=>{
               if(!checked.size) return alert('请先勾选客户')
               if(!confirm(`清空 ${checked.size} 人的全部手动跟进板块标记？`)) return
-              const n = removeManualBuckets([...checked], [])
-              setIntelNote(`已清空 ${n} 人的全部手动板块`)
-              window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+              const r = await applyBuckets({ customerIds:[...checked], clearAll: true })
+              setIntelNote(`已清空 ${r.changed} 人板块（手动+AI+移出标记）`)
               await load()
             }}
             className="px-2 py-1 bg-gray-600 hover:bg-gray-500 rounded text-[11px] border border-white/20"

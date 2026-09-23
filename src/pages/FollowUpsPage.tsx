@@ -10,6 +10,7 @@ import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, addManualBuckets, type ManualBucket } from '../services/manualBuckets'
+import { applyBuckets, applyCustomerTags, isInBucket } from '../services/bucketOps'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusLabel, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
@@ -75,6 +76,7 @@ export default function FollowUpsPage() {
   const [sending, setSending] = useState(false)
   // 批量选择 + 智能分类
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [radarTagInput, setRadarTagInput] = useState('')
   const [manualMap, setManualMap] = useState<Record<string, { buckets: ManualBucket[] }>>(()=> loadManualBuckets())
   const [showManualOnly, setShowManualOnly] = useState(false)
   useEffect(()=>{
@@ -371,12 +373,13 @@ export default function FollowUpsPage() {
       return n
     }
     let high = 0, pending = 0, repurchase = 0, marketing = 0
+    const bctx0 = { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet }
+    const inM = (id: string, b: string) => (manualMap[id]?.buckets||[]).includes(b as any)
     for (const c of customers) {
-      const t = (c as any).aiTier
-      if (t === 'high') high++
-      else if (t === 'pending') pending++
-      else if (t === 'repurchase') repurchase++
-      else if (t === 'marketing') marketing++
+      if (isInBucket(c, 'high', bctx0 as any) || inM(c.id, 'high')) high++
+      if (isInBucket(c, 'pending', bctx0 as any) || inM(c.id, 'pending')) pending++
+      if (isInBucket(c, 'repurchase', bctx0 as any) || inM(c.id, 'repurchase')) repurchase++
+      if (isInBucket(c, 'marketing', bctx0 as any) || inM(c.id, 'marketing')) marketing++
     }
     return {
       high: high + manualCount('high'),
@@ -398,25 +401,17 @@ export default function FollowUpsPage() {
       if ((c.tags||[]).map(String).includes('噪声')) continue
       const stage = salesStageOf(c)
       if (stage === 'cancelled') continue
-      const t = tierOf(c)
+      void tierOf
       const days = daysByCustomer.get(c.id) ?? 99
       const st = c.stage || 'lead'
       let hit = false
-      if (catFilter === 'high') {
-        hit = t === 'high' || inManual(c, 'high') || String((c as any).hasReply||'') === 'yes'
-      }
-      else if (catFilter === 'today') hit = followIndex.todaySet.has(c.id) || inManual(c, 'today')
-      else if (catFilter === 'overdue') {
-        // 逾期 = 未下单且跟进过期；已下单仅在手动勾选「逾期」时出现
-        const ordered = followIndex.orderedSet.has(c.id)
-        hit = (!ordered && followIndex.overdueSet.has(c.id)) || inManual(c, 'overdue')
-      }
-      else if (catFilter === 'pending') hit = t === 'pending' || inManual(c, 'pending')
-      else if (catFilter === 'repurchase') {
-        hit = t === 'repurchase' || inManual(c, 'repurchase')
-          || (followIndex.orderedSet.has(c.id) && days >= 30)
-      }
-      else if (catFilter === 'marketing') hit = t === 'marketing' || inManual(c, 'marketing')
+      const bctx = { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet }
+      if (catFilter === 'high') hit = isInBucket(c, 'high', bctx as any) || inManual(c, 'high')
+      else if (catFilter === 'today') hit = isInBucket(c, 'today', bctx as any) || inManual(c, 'today')
+      else if (catFilter === 'overdue') hit = isInBucket(c, 'overdue', bctx as any) || inManual(c, 'overdue')
+      else if (catFilter === 'pending') hit = isInBucket(c, 'pending', bctx as any) || inManual(c, 'pending')
+      else if (catFilter === 'repurchase') hit = isInBucket(c, 'repurchase', bctx as any) || inManual(c, 'repurchase') || (followIndex.orderedSet.has(c.id) && days >= 30 && !((c as any).bucketOptOut && ((c as any).bucketOptOut.repurchase || (c as any).bucketOptOut.includes?.('repurchase'))))
+      else if (catFilter === 'marketing') hit = isInBucket(c, 'marketing', bctx as any) || inManual(c, 'marketing')
       else hit = true
       if (!hit) continue
       if (showManualOnly && !(manualMap[c.id]?.buckets || []).length) continue
@@ -1261,6 +1256,27 @@ const handleBatchAiTpl = useCallback(async () => {
               <button onClick={()=> void handleBatchAiDrafts()} disabled={aiDraftBusy || batchSending} className="px-2 py-1 border rounded-lg text-purple-600 disabled:opacity-50" title="只生成草稿，不入队不发送">✍️ AI草稿</button>
               <button onClick={()=> void handleBatchAiReply()} disabled={batchAiReplyBusy || batchSending || aiDraftBusy} className="px-2 py-1 border rounded-lg bg-purple-600 text-white disabled:opacity-50" title="AI 生成并入队；有往来挂最新会话最下方">🤖 批量AI回复</button>
               <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
+              <span className="text-gray-300">|</span>
+              <input value={radarTagInput} onChange={e=> setRadarTagInput(e.target.value)} placeholder="标签…" className="w-20 px-1.5 py-1 border rounded text-[11px]"/>
+              <button onClick={async()=>{
+                const t = radarTagInput.trim(); if(!t) return
+                const r = await applyCustomerTags({ customerIds:[...selectedIds], add:[t] })
+                setIntellectNote(`已为 ${r.changed} 人打标签「${t}」`); setRadarTagInput(''); await load()
+              }} className="px-2 py-1 border rounded-lg text-[11px]">+标签</button>
+              <button onClick={async()=>{
+                const t = radarTagInput.trim().replace(/^[-×]/,''); if(!t) return
+                const r = await applyCustomerTags({ customerIds:[...selectedIds], remove:[t] })
+                setIntellectNote(`已从 ${r.changed} 人删除标签「${t}」`); setRadarTagInput(''); await load()
+              }} className="px-2 py-1 border rounded-lg text-[11px] text-rose-600">-标签</button>
+              <span className="text-gray-300">板块</span>
+              {MANUAL_BUCKETS.map(b=>(
+                <span key={'rb-'+b.key} className="inline-flex">
+                  <button onClick={async()=>{ await applyBuckets({ customerIds:[...selectedIds], add:[b.key], mode:'add', note:'雷达移入' }); setManualMap(loadManualBuckets()); setIntellectNote(`已移入「${b.label}」`); await load() }}
+                    className="px-1.5 py-1 border rounded-l-lg text-[11px]" title={'移入'+b.label}>+{b.label}</button>
+                  <button onClick={async()=>{ await applyBuckets({ customerIds:[...selectedIds], remove:[b.key] }); setManualMap(loadManualBuckets()); setIntellectNote(`已移出「${b.label}」并同步客户页`); await load() }}
+                    className="px-1.5 py-1 border border-l-0 rounded-r-lg text-[11px] text-rose-600" title={'移出'+b.label}>×</button>
+                </span>
+              ))}
               <button onClick={()=> setSelectedIds(new Set())} className="px-2 py-1 text-gray-400">清空</button>
             </div>
           )}
@@ -1293,7 +1309,7 @@ const handleBatchAiTpl = useCallback(async () => {
                       <span key={b} className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 inline-flex items-center gap-1">
                         手动·{lb}
                         <button type="button" title="移出该板块" className="text-indigo-400 hover:text-rose-600"
-                          onClick={(e)=>{ e.stopPropagation(); removeManualBucket(c.id, b); setManualMap(loadManualBuckets()) }}>×</button>
+                          onClick={async(e)=>{ e.stopPropagation(); await applyBuckets({ customerIds:[c.id], remove:[b] }); setManualMap(loadManualBuckets()) }}>×</button>
                       </span>
                     )
                   })}
@@ -1547,11 +1563,17 @@ const handleBatchAiTpl = useCallback(async () => {
             setIntellectNote(`已批量停自动跟进 ${n} 人`)
             setBoardBulkBusy(''); await load(); return
           }
+          if(kind==='unhigh'){
+            if(!confirm(`从高意向移出 ${n} 人？（手动板块+AI高意向+移出标记，跟进雷达同步）`)) return
+            setBoardBulkBusy('unhigh')
+            await applyBuckets({ customerIds: selectedCustomers.map(c=>c.id), remove:['high'] })
+            setIntellectNote(`已移出高意向 ${n} 人`)
+            setBoardBulkBusy(''); await load(); return
+          }
           if(kind==='high'){
             setBoardBulkBusy('high')
             for(const c of selectedCustomers){
-              await addManualBuckets([c.id], ['high'], '跟进表批量高意向', 'add')
-              await db.customers.update(c.id, { aiTier:'high', aiReason:'批量高意向', updatedAt:new Date().toISOString() } as any)
+              await applyBuckets({ customerIds:[c.id], add:['high'], mode:'add', note:'跟进表批量高意向' })
             }
             setIntellectNote(`已批量标高意向 ${n} 人`)
             setBoardBulkBusy(''); await load(); return
@@ -1670,6 +1692,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> void applyBoardBulk('stage-cancelled')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-600 rounded disabled:opacity-50">标取消</button>
                 <button onClick={()=> void applyBoardBulk('stage-following')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">标跟进中</button>
                 <button onClick={()=> void applyBoardBulk('high')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-orange-500 rounded disabled:opacity-50">批量高意向</button>
+                <button onClick={()=> void applyBoardBulk('unhigh')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-500 rounded disabled:opacity-50" title="移出高意向（含AI桶，跟进雷达同步消失）">移出高意向</button>
                 <button onClick={()=> void applyBoardBulk('seq-start')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-purple-600 rounded disabled:opacity-50">批量启动序列</button>
                 <button onClick={()=> void applyBoardBulk('seq-stop')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-gray-700 rounded disabled:opacity-50">批量停自动</button>
                 <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
@@ -1755,7 +1778,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         <td className="p-2" style={{ maxWidth: colW('name', 180) }}>
                           <div className="font-medium truncate text-sm">{c.contactName||c.title}
                             {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
-                            {((c as any).aiTier==='high' || hr==='yes') && (
+                            {(isInBucket(c, 'high', { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet } as any) || (manualMap[c.id]?.buckets||[]).includes('high')) && (
                               <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[11px]">高意向</span>
                             )}
                           </div>
@@ -1835,8 +1858,7 @@ const handleBatchAiTpl = useCallback(async () => {
                           <div className="flex flex-wrap gap-1">
                             <button
                               onClick={async()=>{
-                                await addManualBuckets([c.id], ['high'], '跟进表标高意向', 'add')
-                                await db.customers.update(c.id, { aiTier:'high', aiReason:'手动高意向', updatedAt:new Date().toISOString() } as any)
+                                await applyBuckets({ customerIds:[c.id], add:['high'], mode:'add', note:'跟进表标高意向' })
                                 setIntellectNote(`已标高意向：${c.contactName||c.email}`)
                                 await load()
                               }}
