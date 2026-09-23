@@ -821,7 +821,8 @@ const handleBatchAiTpl = useCallback(async () => {
         else if(hasHistory) subjectOnly++
         else newMail++
         // 稳定幂等键：同一天 + 同客户 + 同主题，服务端/本地都不重复入队
-        const idem = `batch-${c.id}-${dayKey}-${subj.slice(0,40)}`
+        // 短幂等键：过长会撑爆 mail_outbox.idempotency_key(191) 甚至旧表80
+        const idem = `b${dayKey.replace(/-/g,'')}-${String(c.id).replace(/-/g,'').slice(0,12)}-${String(subj).replace(/\s+/g,'').slice(0,24)}`
         if(enqueuedKeys.has(idem)){ skipped++; continue }
         enqueuedKeys.add(idem)
         const isImg = !!latestAtt && (String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||''))

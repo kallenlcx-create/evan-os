@@ -287,7 +287,7 @@ async function init() {
       try_count INT DEFAULT 0,
       next_try_at TIMESTAMP(3) NULL,
       error VARCHAR(512) DEFAULT '',
-      idempotency_key VARCHAR(80) DEFAULT '',
+      idempotency_key VARCHAR(191) DEFAULT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_status (username, status, next_try_at),
       UNIQUE INDEX idx_idem (idempotency_key)
@@ -338,6 +338,7 @@ async function init() {
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN in_reply_to VARCHAR(512) DEFAULT ''`).catch(()=>{}) }catch{}
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN references_headers TEXT`).catch(()=>{}) }catch{}
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN attachments_json MEDIUMTEXT`).catch(()=>{}) }catch{}
+  try{ await pool.query(`ALTER TABLE mail_outbox MODIFY idempotency_key VARCHAR(191) NULL`).catch(()=>{}) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS us_holidays (
       date DATE PRIMARY KEY,
@@ -3199,11 +3200,12 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
   const acc = await loadMailAccount(accountId, req.user)
   if(!acc) return res.status(404).json({ error:'账号不存在' })
   const id = crypto.randomUUID()
-  const idem = idempotencyKey || id
+  // 幂等键截断，避免 ER_DATA_TOO_LONG 导致 500
+  const idem = idempotencyKey ? String(idempotencyKey).slice(0, 180) : id
   // 幂等：同 key 已存在则不重复入队（防前端双击/重试造成重复发送）
   if(idempotencyKey){
     try{
-      const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=? AND username=? LIMIT 1',[idempotencyKey, req.user])
+      const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=? AND LOWER(username)=LOWER(?) LIMIT 1',[idem, req.user])
       if(ex.length){
         return res.json({ ok:true, id: ex[0].id, status: ex[0].status, deduped:true })
       }
@@ -3227,6 +3229,7 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
       const [ex] = await pool.query('SELECT id, status FROM mail_outbox WHERE idempotency_key=?',[idem])
       return res.json({ ok:true, id: ex[0]?.id, status: ex[0]?.status, deduped:true })
     }
+    console.error('[outbox] insert fail:', e && e.code, String(e && e.message || e).slice(0, 220))
     throw e
   }
   console.log('[outbox] queued', id, 'user='+req.user, 'to='+String(to).slice(0,60), 'send_at='+sendAt)
@@ -3744,9 +3747,10 @@ async function seqReplyCheck(accountId, username, uid, env, parsed, msgDate){
 // 兜底错误中间件：DB 宕机/非法参数等不再悬挂请求，也不泄漏 stack
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error('[sync-server] 错误:', err?.message ?? err)
+  console.error('[sync-server] 错误:', err?.stack || err?.message || err)
   if (res.headersSent) return
-  res.status(500).json({ error: '服务器内部错误' })
+  const msg = String(err?.message || err || '').slice(0, 240)
+  res.status(500).json({ error: msg ? ('服务器内部错误：' + msg) : '服务器内部错误' })
 })
 
 init().then(() => {

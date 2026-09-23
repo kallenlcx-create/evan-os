@@ -12,7 +12,7 @@ import { setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageO
 import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags } from '../services/bucketOps'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
-import { PRODUCT_TAGS, runProductClassify, formatProductResult } from '../services/productClassify'
+import { PRODUCT_TAGS, runProductClassify, formatProductResult, isProductTag } from '../services/productClassify'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -82,8 +82,8 @@ export default function CustomersPage(){
       const tag = String(t).trim()
       if(!tag) continue
       if(SYSTEM_TAG_SET.has(tag)) continue
-      // 产品标只在一排展示：大小写/空白不同的 Pin/pin 也合并排除
-      if(productSet.has(tag.toLowerCase())) continue
+      // 产品标只在一排展示（含 Pin/pin/Ｐｉｎ 等）
+      if(productSet.has(tag.toLowerCase()) || isProductTag(tag)) continue
       const key = tag
       m.set(key, (m.get(key) || 0) + 1)
     }
@@ -1355,7 +1355,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             >{p} {n}</button>
           )
         })}
-        {allTags.map(([t, n])=>(
+        {allTags.filter(([t])=> !isProductTag(t)).map(([t, n])=>(
           <button key={t} onClick={()=> setTagFilter(tagFilter===t?'all':t)} className={`px-2 py-1 rounded-full text-[10px] border ${tagFilter===t?'bg-teal-600 text-white':'bg-white text-gray-500'}`}>{t} {n}</button>
         ))}
         <div className="relative ml-auto">

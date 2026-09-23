@@ -84,3 +84,9 @@ export function formatProductResult(r: ProductClassifyResult){
   const b = Object.entries(r.byProduct).map(([k,v])=> `${k} ${v}`).join(' · ')
   return `产品分类 ${r.processed} 人：打标 ${r.tagged} · 多品类 ${r.multiTagged}${b?`｜${b}`:''}`
 }
+
+/** 是否产品标签（大小写/全角/复数均算） */
+export function isProductTag(tag: string): boolean {
+  const n = String(tag || '').normalize('NFKC').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  return ['patch','patches','pin','pins','coin','coins','medal','medals','keychain','keychains'].includes(n)
+}
