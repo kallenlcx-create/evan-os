@@ -142,6 +142,8 @@ export default function FollowUpsPage() {
   const [boardHideNoise, setBoardHideNoise] = useState(true)
   const [boardSelected, setBoardSelected] = useState<Set<string>>(new Set())
   const [boardBulkBusy, setBoardBulkBusy] = useState('')
+  const [bulkEditField, setBulkEditField] = useState<'quote'|'level'|'step'|'stage'|'mode'>('quote')
+  const [bulkEditValue, setBulkEditValue] = useState('')
   const BOARD_PER_PAGE_KEY = 'evan:followupBoardPerPage'
   const BOARD_COL_W_KEY = 'evan:followupBoardColW'
   const [boardPerPage, setBoardPerPage] = useState<number>(()=>{
@@ -1584,6 +1586,44 @@ const handleBatchAiTpl = useCallback(async () => {
             await handleBatchAiReply()
             return
           }
+          if(kind.startsWith('edit-')){
+            const rest = kind.slice(5)
+            const dash = rest.indexOf('-')
+            const field = rest.slice(0, dash) as 'quote'|'level'|'step'|'stage'|'mode'
+            const val = rest.slice(dash + 1)
+            const labels: Record<string,string> = {
+              none:'未报价', sent:'已报价', negotiating:'谈价中', accepted:'已接受',
+              following:'跟进中', ordered:'已下单', cancelled:'取消',
+              manual:'手动跟进', auto:'自动跟进',
+            }
+            const show = labels[val] || (field==='step' ? '跟进'+val : val)
+            const fieldLabel = field==='quote'?'报价':field==='level'?'等级':field==='step'?'跟进状态':field==='stage'?'销售阶段':'跟进方式'
+            if(!confirm(`将 ${n} 人的「${fieldLabel}」改为「${show}」？`)) return
+            setBoardBulkBusy('edit')
+            const ts = new Date().toISOString()
+            for(const c of selectedCustomers){
+              if(field==='quote'){
+                await db.customers.update(c.id, {
+                  quoteStatus: val,
+                  quoteAt: val==='none' ? '' : ts,
+                  quoteMatched: val==='none' ? '' : '批量设置',
+                  updatedAt: ts,
+                } as any)
+              } else if(field==='level'){
+                await db.customers.update(c.id, { level: val as any, updatedAt: ts } as any)
+              } else if(field==='step'){
+                const stepN = Number(val)||1
+                await db.customers.update(c.id, { followStep: stepN, followStepLabel: `跟进${stepN}`, followStepMatched: '批量设置', updatedAt: ts } as any)
+              } else if(field==='stage'){
+                await setCustomerSalesStage(c, val as SalesStage)
+              } else if(field==='mode'){
+                await setCustomerFollowMode(c, val as FollowMode, 'user')
+              }
+            }
+            window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+            setIntellectNote(`批量修改：${n} 人 → ${show}`)
+            setBoardBulkBusy(''); setBulkEditValue(''); await load(); return
+          }
           if(kind.startsWith('quote-')){
             const v = kind.slice(6) as 'none'|'sent'|'negotiating'|'accepted'
             if(!confirm(`将 ${n} 人报价状态改为「${v==='none'?'未报价':v==='sent'?'已报价':v==='negotiating'?'谈价中':'已接受'}」？`)) return
@@ -1774,30 +1814,50 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> setBoardSelected(new Set(pageRows.map(c=>c.id)))} className="px-2 py-1 bg-white/15 rounded">本页全选</button>
                 <button onClick={()=> setBoardSelected(new Set(rows.map(c=>c.id)))} className="px-2 py-1 bg-white/15 rounded">筛选全选 {rows.length}</button>
                 <span className="opacity-70">|</span>
-                <button onClick={()=> void applyBoardBulk('mode-auto')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">批量自动跟进</button>
-                <button onClick={()=> void applyBoardBulk('mode-manual')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">批量手动跟进</button>
-                <button onClick={()=> void applyBoardBulk('stage-ordered')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-emerald-600 rounded disabled:opacity-50">标已下单</button>
-                <button onClick={()=> void applyBoardBulk('stage-cancelled')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-600 rounded disabled:opacity-50">标取消</button>
-                <button onClick={()=> void applyBoardBulk('stage-following')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-indigo-500 rounded disabled:opacity-50">标跟进中</button>
-                <button onClick={()=> void applyBoardBulk('high')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-orange-500 rounded disabled:opacity-50">批量高意向</button>
-                <button onClick={()=> void applyBoardBulk('unhigh')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-500 rounded disabled:opacity-50" title="移出高意向（含AI桶，跟进雷达同步消失）">移出高意向</button>
-                <button onClick={()=> void applyBoardBulk('seq-start')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-purple-600 rounded disabled:opacity-50">批量启动序列</button>
-                <button onClick={()=> void applyBoardBulk('seq-stop')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-gray-700 rounded disabled:opacity-50">批量停自动</button>
-                <span className="opacity-70">|</span>
-                <button onClick={()=> void applyBoardBulk('quote-sent')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-sky-500 rounded disabled:opacity-50" title="批量改为已报价">批量已报价</button>
-                <button onClick={()=> void applyBoardBulk('quote-none')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-slate-500 rounded disabled:opacity-50" title="批量改为未报价">批量未报价</button>
-                {([1,2,3,4,5,6,7] as const).map(n=>(
-                  <button key={'sp'+n} onClick={()=> void applyBoardBulk('step-'+n)} disabled={!!boardBulkBusy} className="px-1.5 py-1 bg-white/15 rounded disabled:opacity-50" title={'批量改为跟进'+n}>跟{n}</button>
-                ))}
-                <select
-                  onChange={e=>{ const v=e.target.value; e.target.value=''; if(v) void applyBoardBulk('level-'+v) }}
-                  className="px-1 py-1 rounded text-[11px] text-gray-800"
-                  disabled={!!boardBulkBusy}
-                  defaultValue=""
-                >
-                  <option value="">批量改等级…</option>
-                  {(['A+','A','B','C','D'] as const).map(l=> <option key={l} value={l}>{l}</option>)}
-                </select>
+                <span className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1">
+                  <span className="text-[11px] opacity-90">编辑字段</span>
+                  <select
+                    value={bulkEditField}
+                    onChange={e=>{ setBulkEditField(e.target.value as any); setBulkEditValue('') }}
+                    className="px-1 py-0.5 rounded text-[11px] text-gray-800"
+                    disabled={!!boardBulkBusy}
+                  >
+                    <option value="quote">报价</option>
+                    <option value="level">等级</option>
+                    <option value="step">跟进状态</option>
+                    <option value="stage">销售阶段</option>
+                    <option value="mode">跟进方式</option>
+                  </select>
+                  <select
+                    value={bulkEditValue}
+                    onChange={e=> setBulkEditValue(e.target.value)}
+                    className="px-1 py-0.5 rounded text-[11px] text-gray-800"
+                    disabled={!!boardBulkBusy}
+                  >
+                    <option value="">字段值…</option>
+                    {bulkEditField==='quote' && (['none','sent','negotiating','accepted'] as const).map(v=>(
+                      <option key={v} value={v}>{v==='none'?'未报价':v==='sent'?'已报价':v==='negotiating'?'谈价中':'已接受'}</option>
+                    ))}
+                    {bulkEditField==='level' && (['A+','A','B','C','D'] as const).map(v=> <option key={v} value={v}>{v}</option>)}
+                    {bulkEditField==='step' && [1,2,3,4,5,6,7].map(v=> <option key={v} value={String(v)}>跟进{v}</option>)}
+                    {bulkEditField==='stage' && (['following','ordered','cancelled'] as const).map(v=>(
+                      <option key={v} value={v}>{v==='following'?'跟进中':v==='ordered'?'已下单':'取消'}</option>
+                    ))}
+                    {bulkEditField==='mode' && (['manual','auto'] as const).map(v=>(
+                      <option key={v} value={v}>{v==='manual'?'手动跟进':'自动跟进'}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={()=>{ if(!bulkEditValue) return; void applyBoardBulk('edit-'+bulkEditField+'-'+bulkEditValue) }}
+                    disabled={!!boardBulkBusy || !bulkEditValue}
+                    className="px-2 py-0.5 bg-white text-indigo-700 rounded text-[11px] disabled:opacity-40"
+                  >确定</button>
+                </span>
+                <button
+                  onClick={()=> void applyBoardBulk('ai-reply')}
+                  disabled={!!boardBulkBusy || batchAiReplyBusy || aiDraftBusy || !!aiReplyBusy}
+                  className="px-2 py-1 bg-purple-500 rounded disabled:opacity-50"
+                >{batchAiReplyBusy ? 'AI回复中…' : '🤖 批量AI回复'}</button>
                 <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
                 <button
                   onClick={()=> void applyBoardBulk('ai-reply')}
@@ -1878,8 +1938,9 @@ const handleBatchAiTpl = useCallback(async () => {
                             <input type="checkbox" checked={boardSelected.has(c.id)} onChange={()=> toggleBoard(c.id)}/>
                           )}
                         </td>
-                        <td className="p-2" style={{ maxWidth: colW('name', 180) }}>
-                          <div className="font-medium truncate text-sm">{c.contactName||c.title}
+                        <td className="p-2" style={{ maxWidth: colW('name', 200) }}>
+                          <div className="flex flex-col gap-0.5 items-start">
+                          <div className="font-medium truncate text-sm w-full">{c.contactName||c.title}
                             {c.isKey && <span className="ml-1 text-yellow-500" title="重点">★</span>}
                             {(isInBucket(c, 'high', { manualMap, todaySet: followIndex.todaySet, overdueSet: followIndex.overdueSet, orderedSet: followIndex.orderedSet } as any)) && (
                               <span className="ml-1 px-1 rounded bg-red-50 text-red-600 text-[11px]">高意向</span>
@@ -1888,7 +1949,7 @@ const handleBatchAiTpl = useCallback(async () => {
                           <button
                             type="button"
                             onClick={()=> void copyEmail(c.email||'')}
-                            className="text-gray-500 hover:text-blue-600 hover:underline truncate max-w-full text-left text-xs"
+                            className="block w-full text-gray-500 hover:text-blue-600 hover:underline truncate text-left text-xs"
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
                           {(()=>{
@@ -1906,10 +1967,11 @@ const handleBatchAiTpl = useCallback(async () => {
                                   }
                                   setCopiedEmail('inq:'+no); setTimeout(()=> setCopiedEmail(''), 1200)
                                 }}
-                                className="text-left font-mono text-[11px] text-orange-600 hover:underline truncate max-w-full"
+                                className="block w-full text-left font-mono text-[11px] text-orange-600 hover:underline truncate"
                               >{copiedEmail==='inq:'+no ? '已复制 ✓' : no}</button>
                             )
                           })()}
+                          </div>
                         </td>
                         <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}
                           title="业务创建时间：优先询盘日(INQC)，否则收发邮件最早日期"
