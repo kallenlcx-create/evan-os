@@ -29,22 +29,40 @@ export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
   { n: 7, name: '收口', keywords: ['closing the loop', 'pick it right up', '收口', 'closing the loop on my side'] },
 ]
 
-/** 报价/设计稿识别关键词（我方发出=已报价；客户回砍价=谈价；接受=已接受） */
+/** 付款/报价链接（主判定）：每个客户 design_no 不同 */
+export const PURCHASE_LINK_RE = /https?:\/\/(?:www\.)?maxemblem\.com\/design\/preview\?[^\s"'<>]*design_no=\d+/i
+export const DESIGN_NO_RE = /design_no=(\d+)/i
+export const PURCHASE_LINKS_LABEL_RE = /purchase\s*links?\s*:/i
+
+export function extractPurchaseLink(text: string): { url: string; designNo: string } | null {
+  const raw = String(text || '')
+  const m = raw.match(PURCHASE_LINK_RE)
+  if (m) {
+    const no = raw.match(DESIGN_NO_RE)
+    return { url: m[0], designNo: no?.[1] || '' }
+  }
+  // 宽松：只要出现 design_no= 或 maxemblem 设计预览链也算报价
+  const loose = raw.match(/https?:\/\/[^\s"'<>]*maxemblem\.com\/design\/[^\s"'<>]*/i)
+  if (loose || /design_no=\d+/i.test(raw) || PURCHASE_LINKS_LABEL_RE.test(raw)) {
+    const no = raw.match(DESIGN_NO_RE)
+    return { url: (loose?.[0] || '').slice(0, 300), designNo: no?.[1] || '' }
+  }
+  return null
+}
+
+/** 旧关键词：付款链接缺失时的兜底 */
 export const QUOTE_SENT_KW = [
+  'purchase link', 'purchase links', 'please find our quotation',
   'quotation', 'please find our quote', 'quote attached', 'price list',
   'unit price', 'final cost', 'final fee', 'mold fee', 'mold / setup', 'total us$',
   '报价单', '报价如下', 'our quotation', 'attached is the quote',
   'design team has completed', 'artwork attached', 'please find the artwork',
-  'draft for your', 'project specifications', 'purchase link', 'purchase links',
-  'complete the payment', 'click the link above', 'free shipping to',
-  'select size', 'embroidery coverage',
+  'draft for your', 'project specifications',
+  'complete the payment', 'click the link above',
 ]
-/** 结构特征：价格表 / 美元金额 / 支付链 —— 文案改写也能认出报价 */
 const QUOTE_SHAPE_RE: RegExp[] = [
   /unit\s*price/i, /mold\s*(fee|\/\s*setup)/i, /final\s*(fee|cost)/i,
-  /purchase\s*links?/i, /complete the payment/i, /click the link above/i,
-  /\$\s*\d+(\.\d+)?/, /qty[\s\t]+unit\s*price/i,
-  /size[\s\t]+qty/i, /报价/, /artwork attached/i, /design team has completed/i,
+  /qty[\s\t]+unit\s*price/i, /size[\s\t]+qty/i, /\$\s*\d+(\.\d+)?/,
 ]
 export const QUOTE_NEGO_KW = [
   'too expensive', 'too high', 'best price', 'can you do $', 'discount',
@@ -52,24 +70,47 @@ export const QUOTE_NEGO_KW = [
 ]
 export const QUOTE_ACCEPT_KW = [
   'approved', 'proceed with', "let's move forward", 'we accept',
-  'please send invoice', 'payment sent', 'ok to order', '确认报价', '可以下单',
+  'please send invoice', 'payment sent', 'payment completed', 'ok to order',
+  '确认报价', '可以下单', '已付款',
 ]
 
 const RANK: Record<QuoteStatus, number> = { none: 0, sent: 1, negotiating: 2, accepted: 3 }
 
-export function detectQuoteFromText(text: string): { status: QuoteStatus; matched: string } {
-  const t = String(text || '').toLowerCase()
+export function detectQuoteFromText(text: string): {
+  status: QuoteStatus
+  matched: string
+  quoteUrl?: string
+  designNo?: string
+} {
+  const raw = String(text || '')
+  const t = raw.toLowerCase()
   if (!t) return { status: 'none', matched: '' }
+  const link = extractPurchaseLink(raw)
+  // 付款链接 = 强「已报价」信号（优先于零散关键词）
+  if (link) {
+    // 同信里有「已付款/确认」才升 accepted
+    for (const k of QUOTE_ACCEPT_KW) {
+      if (t.includes(k)) return { status: 'accepted', matched: k, quoteUrl: link.url, designNo: link.designNo }
+    }
+    return {
+      status: 'sent',
+      matched: link.designNo ? ('付款链接 design_no=' + link.designNo) : '付款链接',
+      quoteUrl: link.url,
+      designNo: link.designNo,
+    }
+  }
   for (const k of QUOTE_ACCEPT_KW) {
     if (t.includes(k)) return { status: 'accepted', matched: k }
   }
   for (const k of QUOTE_NEGO_KW) {
     if (t.includes(k)) return { status: 'negotiating', matched: k }
   }
+  if (PURCHASE_LINKS_LABEL_RE.test(raw)) {
+    return { status: 'sent', matched: 'Purchase Links' }
+  }
   for (const k of QUOTE_SENT_KW) {
     if (t.includes(k)) return { status: 'sent', matched: k }
   }
-  const raw = String(text || '')
   for (const re of QUOTE_SHAPE_RE) {
     const m = raw.match(re) || t.match(re)
     if (m) return { status: 'sent', matched: m[0].slice(0, 40) }
@@ -162,6 +203,8 @@ export function detectQuoteFromMails(c: Customer, emails: EmailMessage[], selfAd
   let best: QuoteStatus = 'none'
   let matched = ''
   let quoteAt = ''
+  let quoteUrl = ''
+  let designNo = ''
   for (const e of emails) {
     if (!involvesCustomer(e, set)) continue
     const from = extractAddr(e.from).toLowerCase()
@@ -169,21 +212,35 @@ export function detectQuoteFromMails(c: Customer, emails: EmailMessage[], selfAd
     const text = `${e.subject||''}\n${mailBodyText(e)}`
     let st: QuoteStatus = 'none'
     let hit = ''
+    let url = ''
+    let no = ''
     if (isSent) {
       const d = detectQuoteFromText(text)
       if (d.status === 'accepted' || d.status === 'sent' || d.status === 'negotiating') {
         st = d.status === 'negotiating' ? 'sent' : d.status
         hit = d.matched
+        url = d.quoteUrl || ''
+        no = d.designNo || ''
         if (st === 'sent' && RANK[best] < 1) quoteAt = e.date || quoteAt
       }
     } else {
       const d = detectQuoteFromText(text)
       st = d.status
       hit = d.matched
+      url = d.quoteUrl || ''
+      no = d.designNo || ''
     }
-    if (RANK[st] > RANK[best]) { best = st; matched = hit || matched }
+    if (RANK[st] > RANK[best]) {
+      best = st
+      matched = hit || matched
+      if (url) quoteUrl = url
+      if (no) designNo = no
+    } else if (RANK[st] === RANK[best] && url && !quoteUrl) {
+      quoteUrl = url
+      if (no) designNo = no
+    }
   }
-  return { status: best, matched, quoteAt }
+  return { status: best, matched, quoteAt, quoteUrl, designNo }
 }
 
 /** 从用户保存的序列模板提取关键词，供「跟进状态」相似度判断 */
@@ -452,14 +509,17 @@ export async function runFollowBoardSync(opts?: {
       if (q.status !== 'none' && RANK[q.status] >= RANK[prevQ]) {
         patch.quoteStatus = q.status
         patch.quoteMatched = q.matched
+        if (q.quoteUrl) patch.quoteUrl = q.quoteUrl
+        if (q.designNo) patch.designNo = q.designNo
         if (q.quoteAt || !(c as any).quoteAt) patch.quoteAt = (c as any).quoteAt || q.quoteAt || ts
         quotesUpdated++
       }
-      // 已报价/设计稿但步号仍空 → 至少 跟进1
-      if ((patch.quoteStatus || quoteStatusOf(c)) !== 'none' && !patch.followStep) {
+      // 已报价/付款链接 → 至少 跟进1
+      const nowQ = (patch.quoteStatus as QuoteStatus) || quoteStatusOf(c)
+      if (nowQ !== 'none' && !(patch.followStep > 0)) {
         patch.followStep = 1
         patch.followStepLabel = stepLabel(1)
-        if (!patch.followStepMatched) patch.followStepMatched = '报价/设计稿'
+        if (!patch.followStepMatched) patch.followStepMatched = (q as any).designNo ? ('付款链接 ' + (q as any).designNo) : '付款链接/报价'
         stepsUpdated++
       }
     } catch {}
@@ -609,26 +669,42 @@ export function bestFollowStepFromMails(
   addrs: string[],
   templates?: FollowStepTemplate[],
   threshold?: number,
-): { step: number; matched: string; lastSent: string | null; count: number } {
+): { step: number; matched: string; lastSent: string | null; count: number; designNo?: string } {
   const set = new Set(addrs.map(a => a.toLowerCase()))
   const mine = emails.filter(e => {
     if (!isSelfSender(e.from, e.folder)) return false
     return involvesCustomer(e, set)
-  }).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-  const lastSent = mine[0]?.date ? String(mine[0].date) : null
+  }).sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))) // 旧→新，数进度
+  const lastSent = mine.length ? String(mine[mine.length - 1].date || '') : null
   let step = 0
   let matched = ''
-  for (const e of mine.slice(0, 12)) {
+  let designNo = ''
+  let afterQuote = 0
+  let sawQuote = false
+  for (const e of mine) {
     const body = mailBodyText(e)
+    const text = `${e.subject || ''}\n${body}`
+    const link = extractPurchaseLink(text)
+    const q = link ? { status: 'sent' as const, matched: link.designNo ? ('付款链接 design_no='+link.designNo) : '付款链接' } : detectQuoteFromText(text)
+    if (link?.designNo) designNo = link.designNo
+    // 付款链接发出 → 跟进1（报价）
+    if (q.status !== 'none' && !sawQuote) {
+      sawQuote = true
+      afterQuote = 0
+      if (step < 1) { step = 1; matched = q.matched || '付款链接/报价' }
+    } else if (sawQuote && !link) {
+      // 报价之后我方再发的跟进信：跟进2、3…
+      afterQuote++
+      const next = Math.min(7, 1 + afterQuote)
+      if (next > step) { step = next; matched = '报价后第' + afterQuote + '次跟进' }
+    }
+    // 用户保存的 7 步文案相似度（可抬高）
     const m = matchFollowStep(e.subject || '', body, templates, threshold)
     if (m.step > step) {
       step = m.step
-      matched = m.matched || ''
-    }
-    if (step < 1) {
-      const q = detectQuoteFromText(`${e.subject || ''}\n${body}`)
-      if (q.status !== 'none') { step = 1; matched = q.matched || '报价/设计稿' }
+      matched = m.matched || matched
     }
   }
-  return { step, matched, lastSent, count: mine.length }
+  if (!step && mine.length && sawQuote) step = 1
+  return { step, matched, lastSent, count: mine.length, designNo }
 }
