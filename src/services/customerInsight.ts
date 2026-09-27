@@ -176,6 +176,20 @@ ${prevText}
         aiReason: reason,
         aiCheckedAt: new Date().toISOString(),
       }
+      // 邮件里的付款链接 → 写回报价字段（规则，不依赖模型）
+      try {
+        const { extractPurchaseLink, detectQuoteFromText } = await import('./followProfile')
+        const blob = mailText || ''
+        const link = extractPurchaseLink(blob)
+        const q = detectQuoteFromText(blob)
+        if (q.status !== 'none' || link) {
+          patch.quoteStatus = q.status === 'none' ? 'sent' : q.status
+          patch.quoteMatched = q.matched || (link ? 'Purchase Links' : '')
+          if (link?.url) patch.quoteUrl = link.url
+          if (link?.designNo) patch.designNo = link.designNo
+          if (!patch.quoteAt) patch.quoteAt = new Date().toISOString()
+        }
+      } catch { /* ignore */ }
       if(prevEdited) patch.portraitEditedAt = (c as any).portraitEditedAt
       const prodStr = portraitFields.product_preference
       if(isFillableDim(prodStr)){

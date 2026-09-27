@@ -85,6 +85,19 @@ export const AI_PROVIDERS: AiProvider[] = [
     defaults: { temperature: 0.7, maxTokens: 4096, topP: 0.9 },
   },
   {
+    id: 'sensenova',
+    name: '商汤 SenseNova',
+    baseUrl: 'https://token.sensenova.cn/v1',
+    models: [
+      'sensenova-6.8-flash-lite',
+      'sensenova-6.8-flash',
+      'sensenova-6.8-pro',
+      'sensenova-5.5',
+    ],
+    defaultModel: 'sensenova-6.8-flash-lite',
+    defaults: { temperature: 0.7, maxTokens: 4096, topP: 0.9 },
+  },
+  {
     id: 'relay',
     name: '中转 API 接口',
     baseUrl: '',
@@ -128,11 +141,21 @@ export function getAiSettings(): AiSettings {
   return getDefaultSettings()
 }
 
-export function setAiSettings(settings: AiSettings) {
-  // 规范化 baseUrl：去掉可能重复拼接的路径后缀，防止 /chat/completions/chat/completions
-  let baseUrl = settings.baseUrl.replace(/\/$/, '')
+/** 归一化 Base URL：去掉错误后缀，OpenAI 兼容接口统一保留 /v1 */
+export function normalizeAiBaseUrl(raw: string): string {
+  let baseUrl = String(raw || '').trim().replace(/\/+$/, '')
   baseUrl = baseUrl.replace(/\/chat\/completions$/i, '')
   baseUrl = baseUrl.replace(/\/v1\/messages$/i, '')
+  baseUrl = baseUrl.replace(/\/messages$/i, '')
+  // 已是 API 根（含 /v1）则不动；否则补 /v1（商汤 token.sensenova.cn 必须带 /v1）
+  if (!/\/v1$/i.test(baseUrl) && !baseUrl.includes('anthropic.com')) {
+    // deepseek 根域不带 /v1，调用时拼 /chat/completions；此处不强加
+  }
+  return baseUrl
+}
+
+export function setAiSettings(settings: AiSettings) {
+  const baseUrl = normalizeAiBaseUrl(settings.baseUrl)
   localStorage.setItem(LS_KEY, JSON.stringify({ ...settings, baseUrl }))
 }
 

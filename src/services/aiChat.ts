@@ -112,6 +112,21 @@ async function* parseSSEStream(
   yield { content: '', done: true }
 }
 
+/** OpenAI 兼容 chat/completions 完整地址 */
+export function buildChatCompletionsUrl(baseUrl: string): string {
+  let b = String(baseUrl || '').trim().replace(/\/+$/, '')
+  b = b.replace(/\/chat\/completions$/i, '')
+  if (!b) throw new Error('未配置 Base URL')
+  // 已含 /v1 结尾 → 直接拼；deepseek 等无 /v1 的根域 → 拼 /chat/completions
+  if (/\/v1$/i.test(b)) return b + '/chat/completions'
+  if (b.includes('api.deepseek.com') || b.includes('api.moonshot.cn') || b.includes('api.openai.com')) {
+    return (b.endsWith('/v1') ? b : b) + (b.endsWith('/v1') ? '' : '/v1') + '/chat/completions'
+  }
+  // 默认：若看起来像 API 根（无路径），补 /v1（商汤必须）
+  if (/^https?:\/\/[^/]+$/.test(b)) return b + '/v1/chat/completions'
+  return b + '/chat/completions'
+}
+
 /** 流式调用 AI Chat Completions */
 export async function* streamChat(request: ChatRequest): AsyncGenerator<ChatChunk> {
   const settings = getAiSettings()
@@ -128,7 +143,7 @@ export async function* streamChat(request: ChatRequest): AsyncGenerator<ChatChun
   }
 
   // OpenAI 兼容格式（DeepSeek / 通义 / 豆包 / Kimi / 智谱 / OpenAI / MiMo / 火山方舟）
-  const targetUrl = `${settings.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const targetUrl = buildChatCompletionsUrl(settings.baseUrl)
 
   const body: Record<string, any> = {
     model: settings.model,
@@ -235,15 +250,73 @@ async function* streamClaude(request: ChatRequest): AsyncGenerator<ChatChunk> {
   })
 }
 
-/** 非流式调用（简单场景） */
+/** 非流式调用（商汤默认非流式；批量/画像更稳） */
 export async function chatOnce(userMessage: string, systemPrompt?: string): Promise<string> {
   const messages: { role: string; content: string }[] = []
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
   messages.push({ role: 'user', content: userMessage })
+  return chatCompletionsOnce(messages)
+}
 
-  let result = ''
-  for await (const chunk of streamChat({ messages })) {
-    if (!chunk.done) result += chunk.content
+/** 一次非流式 chat/completions */
+export async function chatCompletionsOnce(messages: { role: string; content: string }[]): Promise<string> {
+  const settings = getAiSettings()
+  if (!settings.apiKey) throw new Error('未配置 API Key（AI 中心右上角齿轮）')
+  const isClaude = settings.providerId === 'claude'
+  const targetUrl = isClaude
+    ? `${settings.baseUrl.replace(/\/+$/, '')}/v1/messages`
+    : buildChatCompletionsUrl(settings.baseUrl)
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(isClaude
+      ? { 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${settings.apiKey}` }),
   }
-  return result
+  const body: Record<string, any> = isClaude
+    ? {
+        model: settings.model,
+        max_tokens: settings.maxTokens,
+        temperature: settings.temperature,
+        messages: messages.filter(m => m.role !== 'system'),
+        ...(messages.find(m => m.role === 'system') ? { system: messages.find(m => m.role === 'system')!.content } : {}),
+      }
+    : {
+        model: settings.model,
+        messages,
+        temperature: settings.temperature,
+        max_tokens: settings.maxTokens,
+        top_p: settings.topP,
+        stream: false,
+      }
+
+  const directInit: RequestInit = { method: 'POST', headers, body: JSON.stringify(body) }
+  const proxy = buildProxyInit(settings, targetUrl, 'POST', headers, JSON.stringify(body))
+  let res: Response
+  if (proxy) {
+    try {
+      res = await fetchWithTimeout(proxy.url, proxy.init, 45000)
+    } catch (proxyErr: any) {
+      try {
+        res = await fetchWithTimeout(targetUrl, directInit, 45000)
+      } catch {
+        throw new Error(`AI 调用失败（代理+直连）：${proxyErr.message}`)
+      }
+    }
+  } else {
+    res = await fetchWithTimeout(targetUrl, directInit, 45000)
+  }
+  const raw = await res.text()
+  if (!res.ok) throw new Error(`AI 错误 ${res.status}：${raw.slice(0, 220)}`)
+  let j: any = {}
+  try { j = JSON.parse(raw) } catch { throw new Error('AI 返回非 JSON：' + raw.slice(0, 160)) }
+  const content =
+    j.choices?.[0]?.message?.content ??
+    j.choices?.[0]?.text ??
+    j.content?.[0]?.text ??
+    j.output?.text ??
+    ''
+  const text = String(content || '').trim()
+  if (!text) throw new Error('AI 无内容返回：' + raw.slice(0, 180))
+  return text
 }

@@ -273,6 +273,19 @@ export default function AiChat() {
                   className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-200" />
                 <div className="flex items-center gap-2 mt-1">
                   <button onClick={handleTestProxy} className="px-2 py-1 text-[11px] border border-gray-200 rounded-lg text-gray-500 hover:border-blue-300 hover:text-blue-600">测试代理连通</button>
+                  <button
+                    onClick={async()=>{
+                      try{
+                        setAiSettings(settings)
+                        const { chatOnce } = await import('../services/aiChat')
+                        const t = await chatOnce('请只回复两个字：正常')
+                        setProxyTest('模型连通 ✅：' + (t || '(空)').slice(0,40))
+                      }catch(e:any){
+                        setProxyTest('模型失败：' + String(e?.message||e).slice(0,160))
+                      }
+                    }}
+                    className="px-2 py-1 text-[11px] border border-blue-200 rounded-lg text-blue-600 hover:bg-blue-50"
+                  >测试模型</button>
                   {proxyTest && <span className="text-[11px] text-gray-500">{proxyTest}</span>}
                 </div>
                 <p className="text-[10px] text-gray-400 mt-1">代理地址须是本设备可达的地址（如 Tailscale funnel 需本设备先加入 tailnet，否则会超时；可留空直连模型 API）</p>
