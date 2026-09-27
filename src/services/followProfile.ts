@@ -29,21 +29,32 @@ export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
   { n: 7, name: '收口', keywords: ['closing the loop', 'pick it right up', '收口', 'closing the loop on my side'] },
 ]
 
-/** 付款/报价链接（主判定）：每个客户 design_no 不同 */
-export const PURCHASE_LINK_RE = /https?:\/\/(?:www\.)?maxemblem\.com\/design\/preview\?[^\s"'<>]*design_no=\d+/i
-export const DESIGN_NO_RE = /design_no=(\d+)/i
+/** 付款链接主判定：Purchase Links: 后跟任意 http(s) 链接 */
 export const PURCHASE_LINKS_LABEL_RE = /purchase\s*links?\s*:/i
+/** Purchase Links: 同行/紧随其后的任意 URL */
+export const PURCHASE_LINK_ANY_RE = /purchase\s*links?\s*:\s*https?:\/\/[^\s"'<>]+/i
+/** 标签后较宽窗口内出现 URL（跨行也算） */
+export const PURCHASE_LINK_NEAR_RE = /purchase\s*links?\s*:[\s\S]{0,400}?(https?:\/\/[^\s"'<>]+)/i
+export const DESIGN_NO_RE = /design_no=(\d+)/i
+export const MAXEMBLEM_DESIGN_RE = /https?:\/\/[^\s"'<>]*maxemblem\.com\/design\/[^\s"'<>]*/i
 
 export function extractPurchaseLink(text: string): { url: string; designNo: string } | null {
   const raw = String(text || '')
-  const m = raw.match(PURCHASE_LINK_RE)
-  if (m) {
+  if (!raw) return null
+  // 1) Purchase Links: + 任意 URL（推荐主规则）
+  const tight = raw.match(PURCHASE_LINK_ANY_RE)
+  const near = tight ? null : raw.match(PURCHASE_LINK_NEAR_RE)
+  const url = tight?.[0]?.replace(/^purchase\s*links?\s*:\s*/i, '') || near?.[1] || ''
+  if (tight || near || PURCHASE_LINKS_LABEL_RE.test(raw)) {
     const no = raw.match(DESIGN_NO_RE)
-    return { url: m[0], designNo: no?.[1] || '' }
+    return {
+      url: (url || raw.match(MAXEMBLEM_DESIGN_RE)?.[0] || '').slice(0, 300),
+      designNo: no?.[1] || '',
+    }
   }
-  // 宽松：只要出现 design_no= 或 maxemblem 设计预览链也算报价
-  const loose = raw.match(/https?:\/\/[^\s"'<>]*maxemblem\.com\/design\/[^\s"'<>]*/i)
-  if (loose || /design_no=\d+/i.test(raw) || PURCHASE_LINKS_LABEL_RE.test(raw)) {
+  // 2) 兜底：maxemblem 设计预览链 / design_no=
+  const loose = raw.match(MAXEMBLEM_DESIGN_RE)
+  if (loose || /design_no=\d+/i.test(raw)) {
     const no = raw.match(DESIGN_NO_RE)
     return { url: (loose?.[0] || '').slice(0, 300), designNo: no?.[1] || '' }
   }
@@ -94,7 +105,9 @@ export function detectQuoteFromText(text: string): {
     }
     return {
       status: 'sent',
-      matched: link.designNo ? ('付款链接 design_no=' + link.designNo) : '付款链接',
+      matched: link.designNo
+        ? ('Purchase Links design_no=' + link.designNo)
+        : (link.url ? 'Purchase Links' : 'Purchase Links'),
       quoteUrl: link.url,
       designNo: link.designNo,
     }
