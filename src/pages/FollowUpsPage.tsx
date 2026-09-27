@@ -11,7 +11,7 @@ import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } 
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusLabel, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 import FilterBar from '../components/FollowFilterBar'
@@ -1584,6 +1584,50 @@ const handleBatchAiTpl = useCallback(async () => {
             await handleBatchAiReply()
             return
           }
+          if(kind.startsWith('quote-')){
+            const v = kind.slice(6) as 'none'|'sent'|'negotiating'|'accepted'
+            if(!confirm(`将 ${n} 人报价状态改为「${v==='none'?'未报价':v==='sent'?'已报价':v==='negotiating'?'谈价中':'已接受'}」？`)) return
+            setBoardBulkBusy('quote')
+            const ts = new Date().toISOString()
+            for(const c of selectedCustomers){
+              await db.customers.update(c.id, {
+                quoteStatus: v,
+                quoteAt: v==='none' ? '' : ts,
+                quoteMatched: v==='none' ? '' : '批量设置',
+                updatedAt: ts,
+              } as any)
+            }
+            setIntellectNote(`批量报价 → ${v}：${n} 人`)
+            setBoardBulkBusy(''); await load(); return
+          }
+          if(kind.startsWith('level-')){
+            const lv = kind.slice(5)
+            if(!confirm(`将 ${n} 人等级改为 ${lv}？（与客户界面同步）`)) return
+            setBoardBulkBusy('level')
+            const ts = new Date().toISOString()
+            for(const c of selectedCustomers){
+              await db.customers.update(c.id, { level: lv as any, updatedAt: ts } as any)
+            }
+            window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+            setIntellectNote(`批量等级 → ${lv}：${n} 人`)
+            setBoardBulkBusy(''); await load(); return
+          }
+          if(kind.startsWith('step-')){
+            const stepN = Number(kind.slice(5)) || 1
+            if(!confirm(`将 ${n} 人跟进状态改为「跟进${stepN}」？`)) return
+            setBoardBulkBusy('step')
+            const ts = new Date().toISOString()
+            for(const c of selectedCustomers){
+              await db.customers.update(c.id, {
+                followStep: stepN,
+                followStepLabel: `跟进${stepN}`,
+                followStepMatched: '批量设置',
+                updatedAt: ts,
+              } as any)
+            }
+            setIntellectNote(`批量跟进状态 → 跟进${stepN}：${n} 人`)
+            setBoardBulkBusy(''); await load(); return
+          }
           if(kind==='copy-emails'){
             const list = selectedCustomers.map(c=> c.email).filter(Boolean).join('\n')
             try{ await navigator.clipboard.writeText(list) }catch{}
@@ -1739,6 +1783,21 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> void applyBoardBulk('unhigh')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-rose-500 rounded disabled:opacity-50" title="移出高意向（含AI桶，跟进雷达同步消失）">移出高意向</button>
                 <button onClick={()=> void applyBoardBulk('seq-start')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-purple-600 rounded disabled:opacity-50">批量启动序列</button>
                 <button onClick={()=> void applyBoardBulk('seq-stop')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-gray-700 rounded disabled:opacity-50">批量停自动</button>
+                <span className="opacity-70">|</span>
+                <button onClick={()=> void applyBoardBulk('quote-sent')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-sky-500 rounded disabled:opacity-50" title="批量改为已报价">批量已报价</button>
+                <button onClick={()=> void applyBoardBulk('quote-none')} disabled={!!boardBulkBusy} className="px-2 py-1 bg-slate-500 rounded disabled:opacity-50" title="批量改为未报价">批量未报价</button>
+                {([1,2,3,4,5,6,7] as const).map(n=>(
+                  <button key={'sp'+n} onClick={()=> void applyBoardBulk('step-'+n)} disabled={!!boardBulkBusy} className="px-1.5 py-1 bg-white/15 rounded disabled:opacity-50" title={'批量改为跟进'+n}>跟{n}</button>
+                ))}
+                <select
+                  onChange={e=>{ const v=e.target.value; e.target.value=''; if(v) void applyBoardBulk('level-'+v) }}
+                  className="px-1 py-1 rounded text-[11px] text-gray-800"
+                  disabled={!!boardBulkBusy}
+                  defaultValue=""
+                >
+                  <option value="">批量改等级…</option>
+                  {(['A+','A','B','C','D'] as const).map(l=> <option key={l} value={l}>{l}</option>)}
+                </select>
                 <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
                 <button
                   onClick={()=> void applyBoardBulk('ai-reply')}
@@ -1768,16 +1827,15 @@ const handleBatchAiTpl = useCallback(async () => {
                     {([
                       { key:'name', label:'客户', w:'name', sort:'name' },
                       { key:'created', label:'创建时间', w:'created', sort:'created' },
-                      { key:'inq', label:'询盘号', w:'inq' },
                       { key:'quote', label:'报价', w:'quote', sort:'quote' },
                       { key:'level', label:'等级', w:'level', sort:'level' },
                       { key:'reply', label:'回复', w:'reply', sort:'reply' },
                       { key:'mode', label:'跟进方式', w:'mode' },
-                      { key:'reply_time', label:'最近回复', w:'reply_time', sort:'reply_time' },
-                      { key:'follow', label:'最近跟进', w:'follow', sort:'follow_at' },
+                      { key:'reply_time', label:'最近回复时间', w:'reply_time', sort:'reply_time' },
+                      { key:'follow', label:'最近跟进时间', w:'follow', sort:'follow_at' },
                       { key:'count', label:'跟进次数', w:'count', sort:'follow_count' },
                       { key:'step', label:'跟进状态', w:'step', sort:'step' },
-                      { key:'no_follow', label:'未跟进', w:'no_follow', sort:'no_follow' },
+                      { key:'no_follow', label:'未跟进天数', w:'no_follow', sort:'no_follow' },
                       { key:'stage', label:'销售阶段', w:'stage', sort:'stage' },
                       { key:'ops', label:'操作', w:'ops' },
                     ] as const).map(col=>{
@@ -1810,6 +1868,7 @@ const handleBatchAiTpl = useCallback(async () => {
                     const seq = seqMapB.get(c.id)
                     const fm = followModeOf(c)
                     const st = salesStageOf(c)
+                    const qs = quoteStatusOf(c)
                     const hr = String((c as any).hasReply||'')
                     const dn = daysNoFollow(c)
                     return (
@@ -1832,39 +1891,66 @@ const handleBatchAiTpl = useCallback(async () => {
                             className="text-gray-500 hover:text-blue-600 hover:underline truncate max-w-full text-left text-xs"
                             title="点击复制邮箱"
                           >{copiedEmail===c.email ? '已复制 ✓' : (c.email||'—')}</button>
-                        </td>
-                        <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}
-                          title="业务创建时间：优先询盘日(INQC)，否则收发邮件最早日期"
-                        >{bizCreatedAt(c)}</td>
-                        <td className="p-2 text-xs">
                           {(()=>{
                             const inq = inqByCust.get(c.id)
                             const nos = (c as any).inquiryNos as string[] | undefined
                             const no = inq?.inquiryNo || nos?.[0]
-                            if(!no && !isInquiryCustomer(c)) return <span className="text-gray-300">—</span>
+                            if(!no) return null
                             return (
-                              <div className="max-w-[140px]">
-                                <div className="font-mono text-[11px] text-blue-700 truncate" title={no}>{no || '询盘'}</div>
-                                <div className="text-[10px] text-gray-400 truncate">
-                                  {[inq?.productName, inq?.qty?`${inq.qty}pcs`:null, inq?.amount?`$${inq.amount}`:null].filter(Boolean).join(' · ') || inq?.inquiryDate?.slice(0,10) || ''}
-                                </div>
-                                {inq?.completeness === 'L0' && <div className="text-[10px] text-amber-600">待补信息</div>}
-                              </div>
+                              <button
+                                type="button"
+                                title="点击复制询盘号"
+                                onClick={async()=>{
+                                  try{ await navigator.clipboard.writeText(String(no)) }catch{
+                                    const ta=document.createElement('textarea'); ta.value=String(no); document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta)
+                                  }
+                                  setCopiedEmail('inq:'+no); setTimeout(()=> setCopiedEmail(''), 1200)
+                                }}
+                                className="text-left font-mono text-[11px] text-orange-600 hover:underline truncate max-w-full"
+                              >{copiedEmail==='inq:'+no ? '已复制 ✓' : no}</button>
                             )
                           })()}
+                        </td>
+                        <td className="p-2 text-gray-600 whitespace-nowrap" style={{ width: colW('created', 110) }}
+                          title="业务创建时间：优先询盘日(INQC)，否则收发邮件最早日期"
+                        >{bizCreatedAt(c)}</td>
+                        <td className="p-2">
+                          <select
+                            value={qs}
+                            onChange={async(ev)=>{
+                              const v = ev.target.value as 'none'|'sent'|'negotiating'|'accepted'
+                              await db.customers.update(c.id, {
+                                quoteStatus: v,
+                                quoteAt: v==='none' ? '' : (new Date().toISOString()),
+                                quoteMatched: v==='none' ? '' : '手动设置',
+                                updatedAt: new Date().toISOString(),
+                              } as any)
+                              await load()
+                            }}
+                            className={`border rounded px-1 py-0.5 text-xs ${quoteStatusClass(qs)}`}
+                            title={(c as any).quoteMatched || '手动改报价状态，与客户档案同步'}
+                          >
+                            <option value="none">未报价</option>
+                            <option value="sent">已报价</option>
+                            <option value="negotiating">谈价中</option>
+                            <option value="accepted">已接受</option>
+                          </select>
                         </td>
                         <td className="p-2">
-                          {(()=>{
-                            const qs = quoteStatusOf(c)
-                            const qAt = String((c as any).quoteAt||'').slice(0,10)
-                            return (
-                              <span className={`px-2 py-0.5 rounded text-xs ${quoteStatusClass(qs)}`} title={(c as any).quoteMatched||''}>
-                                {quoteStatusLabel(qs)}{qs!=='none' && qAt ? ` ${qAt.slice(5)}` : ''}
-                              </span>
-                            )
-                          })()}
+                          <select
+                            value={c.level||'C'}
+                            onChange={async(ev)=>{
+                              await db.customers.update(c.id, { level: ev.target.value as any, updatedAt: new Date().toISOString() } as any)
+                              window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                              await load()
+                            }}
+                            className="border rounded px-1 py-0.5 text-xs"
+                            title="改等级，与客户界面双向同步"
+                          >
+                            {(['A+','A','B','C','D'] as const).map(l=> <option key={l} value={l}>{l}</option>)}
+                          </select>
+                          {c.isKey ? '⭐' : ''}
                         </td>
-                        <td className="p-2">{c.level||'C'}{c.isKey?'⭐':''}</td>
                         <td className="p-2"><span className={`px-2 py-0.5 rounded ${hr==='yes'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}`}>{hr==='yes'?'有':'无'}</span></td>
                         <td className="p-2">
                           <select value={fm} onChange={async(ev)=>{
@@ -1926,7 +2012,7 @@ const handleBatchAiTpl = useCallback(async () => {
               </table>
             </div>
             <div className="flex items-center justify-between text-sm text-gray-500">
-              <span>第 {safeB}/{totalPagesB} 页 · 勾选后可批量改方式/阶段/高意向/序列</span>
+              <span>第 {safeB}/{totalPagesB} 页 · 勾选可批量：报价/等级/跟进步号/方式/阶段/序列</span>
               <div className="flex gap-1">
                 <button onClick={()=> setBoardPage(p=> Math.max(1,p-1))} className="w-8 h-8 border rounded bg-white">{'<'}</button>
                 <button onClick={()=> setBoardPage(p=> Math.min(totalPagesB,p+1))} className="w-8 h-8 border rounded bg-white">{'>'}</button>

@@ -9,6 +9,7 @@ import {
   AI_PROVIDERS, type AiSettings, type ChatSession, type ChatMessage,
 } from '../config/aiProviders'
 import { streamChat, testProxy } from '../services/aiChat'
+import { db } from '../db'
 
 export default function AiChat() {
   const [sessions, setSessions] = useState<ChatSession[]>(() => getChatSessions())
@@ -24,6 +25,26 @@ export default function AiChat() {
   const [settings, setSettings] = useState<AiSettings>(() => getAiSettings())
   const [providerId, setProviderId] = useState(settings.providerId)
   const [proxyTest, setProxyTest] = useState('')
+  const [lastMailCustomer, setLastMailCustomer] = useState<{ id: string; email: string; reply: string } | null>(null)
+  const writeMailToCustomer = async () => {
+    if (!lastMailCustomer) return
+    try {
+      const c = await db.customers.get(lastMailCustomer.id) as any
+      if (!c) return
+      const notes = String(c.notes || '')
+      const add = `【AI邮件分析】${new Date().toLocaleString()}\n${lastMailCustomer.reply.slice(0, 800)}`
+      await db.customers.update(c.id, {
+        notes: (notes ? notes + '\n\n' : '') + add,
+        aiSummary: lastMailCustomer.reply.slice(0, 300),
+        updatedAt: new Date().toISOString(),
+      })
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+      setLastMailCustomer(null)
+      alert('已写入客户档案（备注 + AI摘要）')
+    } catch (e: any) {
+      alert('写入失败：' + String(e?.message || e).slice(0, 120))
+    }
+  }
   const handleTestProxy = async () => {
     setProxyTest('测试中…')
     try { setProxyTest(await testProxy()) }
@@ -69,10 +90,44 @@ export default function AiChat() {
     setInput('')
     setLoading(true)
 
+    // 若消息里含邮箱 → 自动读取该客户邮件上下文供 AI 阅读/提炼
+    let emailCtx = ''
+    let linkedCustomerId = ''
+    const mailHits = [...new Set((text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).map(x=> x.toLowerCase()))]
+    if (mailHits.length) {
+      try {
+        const allC = await db.customers.toArray() as any[]
+        const allM = await db.emails.toArray() as any[]
+        const parts: string[] = []
+        for (const em of mailHits.slice(0, 3)) {
+          const c = allC.find(x=> String(x.email||'').toLowerCase()===em || (x.extraEmails||[]).some((e:string)=> String(e).toLowerCase()===em))
+          if (c) {
+            linkedCustomerId = c.id
+            parts.push(`【客户档案】${c.contactName||c.title||''} ${c.email} 公司${c.company||'—'} 等级${c.level||'C'} 阶段${c.stage||''} 备注${c.notes||''} 画像摘要${c.aiSummary||''}`)
+          } else {
+            parts.push(`【未知客户】${em}（库中无建档）`)
+          }
+          const mails = allM.filter(m=>{
+            const from = String(m.from||'').toLowerCase()
+            const to = String(m.to||'').toLowerCase()
+            return from.includes(em) || to.includes(em)
+          }).sort((a,b)=> String(b.date||'').localeCompare(String(a.date||''))).slice(0, 8)
+          for (const m of mails) {
+            parts.push(`[${m.date}] ${m.folder==='sent'?'我方':'客户'} ${m.subject}\n${String(m.text||'').slice(0, 600)}`)
+          }
+          if (!mails.length) parts.push('（本地暂无该邮箱邮件，请点邮件中心「拉邮件」）')
+        }
+        emailCtx = '\n\n【已自动读取邮件上下文】\n' + parts.join('\n---\n').slice(0, 12000)
+      } catch { /* ignore */ }
+    }
+
     // 构建消息历史
     const session = getChatSessions().find(s => s.id === activeId)
     const history = session?.messages.map(m => ({ role: m.role, content: m.content })) ?? []
-    if (settings.systemPrompt) history.unshift({ role: 'system', content: settings.systemPrompt })
+    if (settings.systemPrompt || emailCtx) {
+      const sys = (settings.systemPrompt || '你是 Evan OS 的 AI 助手。') + (emailCtx ? '\n\n你可以阅读/分析/提炼/总结上述邮件，并回答；若用户要求写入客户，请给出可执行的要点。' : '')
+      history.unshift({ role: 'system', content: sys })
+    }
 
     const assistantMsg: ChatMessage = { id: Date.now().toString() + 'a', role: 'assistant', content: '', timestamp: Date.now() }
 
@@ -105,6 +160,9 @@ export default function AiChat() {
       // 最终保存
       appendMessage(activeId, { ...assistantMsg, content: fullContent })
       setSessions(getChatSessions())
+      if (linkedCustomerId) {
+        setLastMailCustomer({ id: linkedCustomerId, email: mailHits[0] || '', reply: fullContent })
+      }
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         appendMessage(activeId, { ...assistantMsg, content: `❌ 错误：${err.message}` })
@@ -359,6 +417,13 @@ export default function AiChat() {
         </div>
 
         {/* 输入区 */}
+        {lastMailCustomer && (
+          <div className="px-3 py-2 bg-amber-50 border-t border-amber-100 flex items-center gap-2 shrink-0">
+            <span className="text-[11px] text-amber-800 flex-1">已读取 {lastMailCustomer.email} 的邮件并生成分析，可写入客户档案</span>
+            <button onClick={writeMailToCustomer} className="px-2 py-1 text-[11px] bg-amber-600 text-white rounded">写入客户档案</button>
+            <button onClick={()=> setLastMailCustomer(null)} className="px-2 py-1 text-[11px] text-amber-700">忽略</button>
+          </div>
+        )}
         <div className="border-t border-gray-100 p-3 shrink-0">
           <div className="flex items-end gap-2">
             <textarea
