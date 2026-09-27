@@ -11,7 +11,7 @@ import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } 
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, stepLabel, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 import FilterBar from '../components/FollowFilterBar'
@@ -2029,11 +2029,32 @@ const handleBatchAiTpl = useCallback(async () => {
                           <b className={followCountOf(c)>=3?'text-orange-600':''}>{followCountOf(c)}</b>
                         </td>
                         <td className="p-2">
-                          <div className="text-sm">
-                            {followStepOf(c) > 0 ? stepLabel(followStepOf(c)) : (seq?.mode==='auto' ? `待发步${Math.min(seq.current_step||1,7)}` : '—')}
-                            {seq?.mode==='auto' ? ` · 序列${Math.min(seq.current_step||1,7)}/7` : ''}
-                          </div>
-                          {String((c as any).followStepMatched||'') && <div className="text-[10px] text-gray-400 truncate max-w-[120px]" title={String((c as any).followStepMatched)}>{(c as any).followStepMatched}</div>}
+                          <select
+                            value={String(followStepOf(c) || 0)}
+                            onChange={async(ev)=>{
+                              const n = Number(ev.target.value)||0
+                              await db.customers.update(c.id, {
+                                followStep: n,
+                                followStepLabel: n ? `跟进${n}` : '',
+                                followStepMatched: n ? '手动设置' : '',
+                                updatedAt: new Date().toISOString(),
+                              } as any)
+                              await load()
+                            }}
+                            className="border rounded px-1.5 py-1 text-sm"
+                            title="手动选择跟进状态（与客户档案同步）"
+                          >
+                            <option value="0">—</option>
+                            {[1,2,3,4,5,6,7].map(n=>(
+                              <option key={n} value={String(n)}>跟进{n}</option>
+                            ))}
+                          </select>
+                          {seq?.mode==='auto' && (
+                            <div className="text-[10px] text-purple-500 mt-0.5">序列{Math.min(seq.current_step||1,7)}/7</div>
+                          )}
+                          {String((c as any).followStepMatched||'') && (
+                            <div className="text-[10px] text-gray-400 truncate max-w-[120px]" title={String((c as any).followStepMatched)}>{(c as any).followStepMatched}</div>
+                          )}
                         </td>
                         <td className={`p-2 text-sm ${(dn!=null && dn>7)?'text-rose-600 font-medium':''}`}>{dn==null?'—':`${dn}天`}</td>
                         <td className="p-2">
