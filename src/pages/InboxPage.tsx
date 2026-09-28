@@ -6,6 +6,9 @@ import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
 import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, getOutboxDetail, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
+import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
+import { applyBuckets } from '../services/bucketOps'
+import { setCustomerSalesStage, salesStageOf, followModeOf, type SalesStage } from '../services/followProfile'
 import { getEmailSyncConfig, setEmailSyncConfig, syncAllEmails, isEmailSyncing } from '../services/emailSyncService'
 import { generateFullAnalysis, type FullAnalysis } from '../services/customerAnalysisService'
 import { useAskText } from '../components/PromptModal'
@@ -395,8 +398,9 @@ export default function InboxPage(){
     setMarkKeyBusy(true)
     try{
       const next = !c.isKey
-      await db.customers.update(c.id, { isKey: next, level: next? 'A': 'C' } as any)
-      setCustomer({...c, isKey: next, level: next? 'A':'C'} as any)
+      await db.customers.update(c.id, { isKey: next, updatedAt: new Date().toISOString() } as any)
+      setCustomer({ ...c, isKey: next } as any)
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
       showToast(next ? '已标为重点客户' : '已取消重点')
     }catch(e:any){
       showToast('标记失败：' + String(e?.message||e).slice(0,80))
@@ -1265,6 +1269,117 @@ export default function InboxPage(){
               </div>
               {customer?.aiSummary && <div className="mt-2 text-[11px] bg-white/70 rounded p-2 text-gray-600">{customer.aiSummary}</div>}
             </div>
+
+            {/* 标签 · 分类（与客户/跟进双向同步） */}
+            {customer && (
+              <div className="rounded-xl border p-3">
+                <div className="text-xs font-semibold text-gray-700 mb-2">🏷 标签 · 分类</div>
+                <div className="space-y-2 text-[11px]">
+                  <div>
+                    <div className="text-gray-400 mb-1">跟进六板块</div>
+                    <div className="flex flex-wrap gap-1">
+                      {MANUAL_BUCKETS.map(b=>{
+                        const on = getCustomerBuckets(customer.id).includes(b.key)
+                        return (
+                          <button key={b.key}
+                            onClick={async()=>{
+                              await applyBuckets({
+                                customerIds: [customer.id],
+                                add: on ? undefined : [b.key],
+                                remove: on ? [b.key] : undefined,
+                                mode: 'add',
+                                note: '邮件侧栏',
+                              })
+                              const nc = await db.customers.get(customer.id) as Customer
+                              setCustomer(nc || customer)
+                            }}
+                            className={`px-1.5 py-0.5 border rounded-full ${on?'bg-indigo-100 text-indigo-700 border-indigo-300':'bg-white text-gray-500'}`}
+                          >{on?'✓ ':''}{b.label}</button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="text-gray-400 w-12">等级</span>
+                    <select
+                      value={customer.level||'C'}
+                      onChange={async(e)=>{
+                        const lv = e.target.value
+                        await db.customers.update(customer.id, { level: lv as any, updatedAt: new Date().toISOString() } as any)
+                        setCustomer({ ...customer, level: lv as any } as any)
+                        window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                      }}
+                      className="border rounded px-1 py-0.5"
+                      title="与客户页/跟进表等级双向同步"
+                    >{(['A+','A','B','C','D'] as const).map(l=> <option key={l} value={l}>{l}</option>)}</select>
+                    <button
+                      onClick={async()=>{
+                        const on = !customer.isKey
+                        await db.customers.update(customer.id, { isKey: on, updatedAt: new Date().toISOString() } as any)
+                        setCustomer({ ...customer, isKey: on } as any)
+                        window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                      }}
+                      className={`px-1.5 py-0.5 border rounded ${customer.isKey?'bg-yellow-100 text-yellow-700 border-yellow-200':'bg-white text-gray-500'}`}
+                      title="重点客户"
+                    >{customer.isKey?'★ 重点':'标重点'}</button>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="text-gray-400 w-12">阶段</span>
+                    <select
+                      value={salesStageOf(customer as any)}
+                      onChange={async(e)=>{
+                        const st = e.target.value as SalesStage
+                        await setCustomerSalesStage(customer, st)
+                        const nc = await db.customers.get(customer.id) as Customer
+                        setCustomer(nc || { ...customer, salesStage: st } as any)
+                        window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                      }}
+                      className="border rounded px-1 py-0.5"
+                      title="与客户页「已下单/取消」标签同步"
+                    >
+                      <option value="following">跟进中</option>
+                      <option value="ordered">已下单</option>
+                      <option value="cancelled">取消</option>
+                    </select>
+                    <span className="text-gray-400">方式</span>
+                    <select
+                      value={followModeOf(customer as any)}
+                      onChange={async(e)=>{
+                        await db.customers.update(customer.id, { followMode: e.target.value, updatedAt: new Date().toISOString() } as any)
+                        setCustomer({ ...customer, followMode: e.target.value } as any)
+                        window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                      }}
+                      className="border rounded px-1 py-0.5"
+                    >
+                      <option value="manual">手动</option>
+                      <option value="auto">自动</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-400 w-12">跟进</span>
+                    <select
+                      value={String(Number((customer as any).followStep||0))}
+                      onChange={async(e)=>{
+                        const n = Number(e.target.value)||0
+                        await db.customers.update(customer.id, {
+                          followStep: n,
+                          followStepLabel: n ? `跟进${n}` : '',
+                          followStepMatched: n ? '邮件侧栏手动设置' : '',
+                          updatedAt: new Date().toISOString(),
+                        } as any)
+                        setCustomer({ ...customer, followStep: n } as any)
+                        window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                      }}
+                      className="border rounded px-1 py-0.5"
+                      title="与跟进表「跟进状态」双向同步"
+                    >
+                      <option value="0">—</option>
+                      {[1,2,3,4,5,6,7].map(n=> <option key={n} value={String(n)}>跟进{n}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* 邮件往来统计 */}
             <div className="rounded-xl border p-3">
