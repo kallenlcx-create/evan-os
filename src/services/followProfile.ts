@@ -29,34 +29,37 @@ export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
   { n: 7, name: '收口', keywords: ['closing the loop', 'pick it right up', '收口', 'closing the loop on my side'] },
 ]
 
-/** 付款链接主判定：Purchase Links: 后跟任意 http(s) 链接 */
-export const PURCHASE_LINKS_LABEL_RE = /purchase\s*links?\s*:/i
-/** Purchase Links: 同行/紧随其后的任意 URL */
+/** 付款链接主判定：Purchase Links / 任意支付/设计链接 */
+export const PURCHASE_LINKS_LABEL_RE = /purchase\s*links?/i
 export const PURCHASE_LINK_ANY_RE = /purchase\s*links?\s*:\s*https?:\/\/[^\s"'<>]+/i
-/** 标签后较宽窗口内出现 URL（跨行也算） */
 export const PURCHASE_LINK_NEAR_RE = /purchase\s*links?\s*:[\s\S]{0,400}?(https?:\/\/[^\s"'<>]+)/i
 export const DESIGN_NO_RE = /design_no=(\d+)/i
 export const MAXEMBLEM_DESIGN_RE = /https?:\/\/[^\s"'<>]*maxemblem\.com\/design\/[^\s"'<>]*/i
 
 export function extractPurchaseLink(text: string): { url: string; designNo: string } | null {
-  const raw = String(text || '')
+  let raw = String(text || '')
   if (!raw) return null
-  // 1) Purchase Links: + 任意 URL（推荐主规则）
-  const tight = raw.match(PURCHASE_LINK_ANY_RE)
-  const near = tight ? null : raw.match(PURCHASE_LINK_NEAR_RE)
-  const url = tight?.[0]?.replace(/^purchase\s*links?\s*:\s*/i, '') || near?.[1] || ''
-  if (tight || near || PURCHASE_LINKS_LABEL_RE.test(raw)) {
-    const no = raw.match(DESIGN_NO_RE)
-    return {
-      url: (url || raw.match(MAXEMBLEM_DESIGN_RE)?.[0] || '').slice(0, 300),
-      designNo: no?.[1] || '',
+  const hrefs = [...raw.matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map(m => m[1])
+  raw = raw.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+  const blob = raw + '\n' + hrefs.join('\n')
+  const no = blob.match(DESIGN_NO_RE)
+  const tight = blob.match(PURCHASE_LINK_ANY_RE)
+  const near = tight ? null : blob.match(PURCHASE_LINK_NEAR_RE)
+  if (tight || near || PURCHASE_LINKS_LABEL_RE.test(blob)) {
+    let url = ''
+    if (tight) url = tight[0].replace(/^purchase\s*links?\s*:\s*/i, '')
+    else if (near) url = near[1]
+    else {
+      url = hrefs.find(h => /maxemblem\.com\/design/i.test(h) || /design_no=/i.test(h))
+        || blob.match(MAXEMBLEM_DESIGN_RE)?.[0]
+        || blob.match(/https?:\/\/[^\s"'<>]+/i)?.[0]
+        || ''
     }
+    return { url: String(url || '').slice(0, 300), designNo: no?.[1] || '' }
   }
-  // 2) 兜底：maxemblem 设计预览链 / design_no=
-  const loose = raw.match(MAXEMBLEM_DESIGN_RE)
-  if (loose || /design_no=\d+/i.test(raw)) {
-    const no = raw.match(DESIGN_NO_RE)
-    return { url: (loose?.[0] || '').slice(0, 300), designNo: no?.[1] || '' }
+  const loose = blob.match(MAXEMBLEM_DESIGN_RE) || hrefs.find(h => /design_no=\d+/i.test(h))
+  if (loose || /design_no=\d+/i.test(blob)) {
+    return { url: String(loose || '').slice(0, 300), designNo: no?.[1] || '' }
   }
   return null
 }
@@ -118,8 +121,8 @@ export function detectQuoteFromText(text: string): {
   for (const k of QUOTE_NEGO_KW) {
     if (t.includes(k)) return { status: 'negotiating', matched: k }
   }
-  if (PURCHASE_LINKS_LABEL_RE.test(raw)) {
-    return { status: 'sent', matched: 'Purchase Links' }
+  if (PURCHASE_LINKS_LABEL_RE.test(raw) || /payment\s*link|pay\s*now|checkout\s*link/i.test(raw)) {
+    return { status: 'sent', matched: 'Purchase Links/付款链接' }
   }
   for (const k of QUOTE_SENT_KW) {
     if (t.includes(k)) return { status: 'sent', matched: k }
@@ -202,7 +205,15 @@ function involvesCustomer(e: EmailMessage, set: Set<string>): boolean {
 }
 
 function mailBodyText(e: EmailMessage): string {
-  return e.text || String((e as any).html || '').replace(/<[^>]+>/g, ' ')
+  const text = String(e.text || '')
+  const html = String((e as any).html || '')
+  if (text && /purchase\s*links?|design_no=/i.test(text)) return text
+  if (html) {
+    const hrefs = [...html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]).join('\n')
+    const stripped = html.replace(/<[^>]+>/g, ' ')
+    return [text, stripped, hrefs].filter(Boolean).join('\n')
+  }
+  return text
 }
 
 export function customerAddrs(c: Customer): string[] {
@@ -269,28 +280,41 @@ export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
     return { t, n }
   }).sort((a, b) => a.n - b.n).slice(0, 7)
 
+  // 只保留「本步独有」关键词，避免跟进1–5 主题/客套话雷同导致乱跳
+  const bags = sorted.map(({ t }) => {
+    const raw = `${t.subject || ''}\n${t.body || ''}`
+    const text = raw.toLowerCase()
+    const cjk = (raw.match(/[\u4e00-\u9fff]{2,12}/g) || []).map(x => x.toLowerCase())
+    const words = text.split(/[^a-z0-9']+/).filter(w => w.length >= 3 && !STOP.has(w))
+    const phrases: string[] = []
+    for (let k = 0; k < words.length - 1; k++) {
+      phrases.push(words[k] + ' ' + words[k + 1])
+      if (k < words.length - 2) phrases.push(words[k] + ' ' + words[k + 1] + ' ' + words[k + 2])
+    }
+    return { subj: String(t.subject || '').toLowerCase().trim(), cjk, phrases, words }
+  })
+  const countMap = new Map<string, number>()
+  for (const b of bags) {
+    for (const k of new Set([...b.cjk, ...b.phrases, ...b.words.filter(w => w.length >= 5)])) {
+      countMap.set(k, (countMap.get(k) || 0) + 1)
+    }
+  }
   const out: FollowStepTemplate[] = []
   for (let i = 0; i < sorted.length; i++) {
     const t = sorted[i].t
     const n = sorted[i].n
     const name = String(t.name || `跟进${n}`)
-    const raw = `${t.subject || ''}\n${t.body || ''}`
-    const text = raw.toLowerCase()
-    const cjk = (raw.match(/[一-鿿]{2,12}/g) || []).map(x => x.toLowerCase())
-    const words = text.split(/[^a-z0-9']+/).filter(w => w.length >= 3 && !STOP.has(w))
-    const phrases: string[] = []
-    for (let k = 0; k < words.length - 1; k++) {
-      const p2 = words[k] + ' ' + words[k + 1]
-      if (p2.length >= 8) phrases.push(p2)
-      if (k < words.length - 2) phrases.push(words[k] + ' ' + words[k + 1] + ' ' + words[k + 2])
-    }
-    const longWords = words.filter(w => w.length >= 5 && !STOP.has(w))
-    const subj = String(t.subject || '').toLowerCase().trim()
+    const b = bags[i]
+    const uniqPhrases = b.phrases.filter(k => (countMap.get(k) || 0) === 1)
+    const uniqWords = b.words.filter(w => w.length >= 5 && (countMap.get(w) || 0) === 1)
+    const uniqCjk = b.cjk.filter(k => (countMap.get(k) || 0) === 1)
+    const subjCount = bags.filter(x => x.subj === b.subj).length
+    const subjUnique = b.subj && subjCount === 1 ? b.subj : ''
     const keywords = [...new Set([
-      subj,
-      ...cjk.slice(0, 6),
-      ...phrases.slice(0, 8),
-      ...longWords.slice(0, 8),
+      subjUnique,
+      ...uniqCjk.slice(0, 6),
+      ...uniqPhrases.slice(0, 10),
+      ...uniqWords.slice(0, 10),
     ])].filter(k => k && k.length >= 2).slice(0, 16)
     const def = DEFAULT_FOLLOW_STEP_TEMPLATES[n - 1]
     out.push({
@@ -300,6 +324,7 @@ export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
     })
   }
   return out
+
 }
 
 /** 关键词/片段相似度：覆盖 + 主题包含；templates 优先用「用户在序列模板里填的文案」 */
@@ -714,7 +739,7 @@ export function bestFollowStepFromMails(
     }
     // 用户保存的 7 步文案相似度（可抬高）
     const m = matchFollowStep(e.subject || '', body, templates, threshold)
-    if (m.step > step) {
+    if (m.step > step && (m.score >= 0.75 || !templates?.length)) {
       step = m.step
       matched = m.matched || matched
     }
