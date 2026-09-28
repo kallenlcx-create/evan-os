@@ -59,7 +59,7 @@ export function loadIntellectConfig(): IntellectConfig {
     purchaseLoopCooldownDays: 14,
     purchaseLoopBatchMax: 20,
     followReplyToManual: true,
-    followReplyToHigh: true,
+    followReplyToHigh: false,
     followStopSeqOnOrder: true,
     followStopSeqOnCancel: true,
     followAutoEnrollNoReply: false,
@@ -318,7 +318,7 @@ export async function syncTiersFromRules(opts?: { ids?: Set<string> }){
     if(stage==='proposal' || stage==='negotiation'){
       tier = 'pending'; reason = '报价/谈判阶段'
     } else if((c.isKey && (level==='A+' || level==='A')) || stage==='qualified'){
-      tier = 'high'; reason = `等级${level}${c.isKey?'/重点':''}`
+      tier = 'follow'; reason = `等级${level}${c.isKey?'/重点':''}` + '（已关闭自动高意向）'
     } else if(hasOrder && days >= 30 && days <= 400){
       tier = 'repurchase'; reason = `已下单·静默${days}天`
     } else if(stage==='lost' || days > 180){

@@ -462,7 +462,8 @@ export async function runFollowBoardSync(opts?: {
         try { await patchSequence(c.id, { mode: 'manual' }) } catch { /* server optional */ }
       }
     }
-    if (hasReply && (cfg as any).followReplyToHigh !== false && !isBucketOptOut(c, 'high')) {
+    // 默认关闭「有回复→高意向」；仅当用户显式打开 followReplyToHigh === true
+    if (hasReply && (cfg as any).followReplyToHigh === true && !isBucketOptOut(c, 'high')) {
       if (!(c as any).aiTier || (c as any).aiTier !== 'high') {
         try {
           await db.customers.update(c.id, { aiTier: 'high', aiReason: '有客户回复', aiCheckedAt: ts } as any)

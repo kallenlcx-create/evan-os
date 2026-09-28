@@ -124,7 +124,15 @@ export default function FollowUpsPage() {
   const [boardStage, setBoardStage] = useState<'all'|SalesStage>('all')
   const [boardReply, setBoardReply] = useState<'all'|'yes'|'no'>('all')
   const [boardBusy, setBoardBusy] = useState(false)
-  const [followCfg, setFollowCfg] = useState<IntellectConfig>(()=> loadIntellectConfig())
+  const [followCfg, setFollowCfg] = useState<IntellectConfig>(()=> {
+    const c = loadIntellectConfig()
+    // 默认关闭「有回复→高意向」自动入桶
+    if (c.followReplyToHigh !== false) {
+      c.followReplyToHigh = false
+      try { saveIntellectConfig({ followReplyToHigh: false }) } catch {}
+    }
+    return c
+  })
   const [showFollowRules, setShowFollowRules] = useState(false)
   const [boardPage, setBoardPage] = useState(1)
   const [aiReplyBusy, setAiReplyBusy] = useState<string>('')
@@ -932,34 +940,6 @@ const handleBatchAiTpl = useCallback(async () => {
     setMainView('board')
   }
 
-  /** AI 跟进入队（复用生成+挂会话逻辑；不改变发送管道） */
-  const handleAiReply = useCallback(async (c: Customer) => {
-    try{
-      const { getAiSettings } = await import('../config/aiProviders')
-      const ai = getAiSettings()
-      if(!(ai.apiKey || ai.proxyUrl) && !confirm('未配置 AI Key，生成可能失败。继续？')) return
-      if(!confirm(`为 ${c.contactName||c.title} 用 AI 生成跟进并入队发送？（有往来则挂会话最下方）`)) return
-      setAiReplyBusy(c.id)
-      const mails = await db.emails.toArray()
-      const gen = await generateAiFollowReply(c, mails)
-      const accs = await listAccounts()
-      if(!accs.length){ alert('请先绑定邮箱'); return }
-      const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
-      const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
-      const mid = th.found && th.messageId ? th.messageId : undefined
-      await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
-        html: (await import('../utils/mailHtml')).textToHtml(gen.body),
-        inReplyTo: mid,
-        references: mid,
-      })
-      await setCustomerFollowMode(c, 'manual', 'user')
-      setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'}`)
-      await loadSequences()
-      await load()
-    }catch(e:any){ setIntellectNote('AI回复失败：'+String(e.message||e).slice(0,120)) }
-    finally{ setAiReplyBusy('') }
-  }, [load, loadSequences])
-
   /** 批量 AI 回复：逐个生成并入队，挂在各自最新会话最下方 */
   const [batchAiReplyBusy, setBatchAiReplyBusy] = useState(false)
   const handleBatchAiReply = useCallback(async () => {
@@ -1079,67 +1059,6 @@ const handleBatchAiTpl = useCallback(async () => {
   return (
     <div className={`${mainView==='board' ? 'w-full max-w-none' : 'max-w-7xl mx-auto'} p-0 space-y-4`}>
       <h1 className="text-xl font-bold flex items-center gap-2"><Calendar size={20} /> 跟进 · 客户跟进雷达</h1>
-      {/* 今日待办（不改发信逻辑，只做聚合与快捷操作） */}
-      {(() => {
-        const today = new Date().toISOString().slice(0,10)
-        const seqDue = sequences.filter(s=> s.mode==='auto' && String(s.next_due_at||'').slice(0,10) <= today)
-        const todoInq = customers.filter(c=>{
-          if(isBoardNoiseEmail(c.email)) return false
-          const inq = inquiries.find(r=> r.customerId===c.id)
-          const d = String(inq?.inquiryDate || (c as any).inquiryAt || '').slice(0,10)
-          return d === today || (isInquiryCustomer(c) && !String((c as any).hasReply||'').match(/yes/))
-        }).slice(0, 8)
-        const todoSilent = customers.filter(c=>{
-          if(isBoardNoiseEmail(c.email)) return false
-          if(salesStageOf(c)!=='following') return false
-          const dn = daysNoFollow(c)
-          return dn!=null && dn>=30
-        }).sort((a,b)=> (daysNoFollow(b)||0)-(daysNoFollow(a)||0)).slice(0, 8)
-        const todoReply = customers.filter(c=> String((c as any).hasReply||'')==='yes' && followModeOf(c)==='manual').slice(0, 8)
-        if(!todoInq.length && !todoSilent.length && !todoReply.length && !seqDue.length) return null
-        return (
-          <div className="bg-gradient-to-r from-slate-50 to-blue-50 border border-blue-100 rounded-2xl p-3 text-xs space-y-2">
-            <div className="font-semibold text-sm text-slate-800">📌 今日待办（聚合）· 跟进方式/高意向/序列快捷操作</div>
-            <div className="grid md:grid-cols-3 gap-2">
-              <div className="bg-white/80 rounded-xl p-2 border border-blue-50">
-                <div className="font-medium text-blue-800 mb-1">询盘/新客（{todoInq.length}）</div>
-                {todoInq.map(c=>(
-                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
-                    <span className="truncate flex-1" title={c.email}>{c.contactName||c.title}</span>
-                    <button className="text-orange-600" onClick={async()=>{ await applyBuckets({ customerIds:[c.id], add:['high'], mode:'add', note:'今日待办高意向' }); await load() }}>高意向</button>
-                    <button className="text-blue-600" onClick={()=> void handleStartSeq(c)}>自动</button>
-                  </div>
-                ))}
-                {!todoInq.length && <div className="text-gray-400">暂无</div>}
-              </div>
-              <div className="bg-white/80 rounded-xl p-2 border border-orange-50">
-                <div className="font-medium text-orange-800 mb-1">未跟进≥30天（{todoSilent.length}）</div>
-                {todoSilent.map(c=>(
-                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
-                    <span className="truncate flex-1">{c.contactName||c.title} <span className="text-rose-500">{daysNoFollow(c)}天</span></span>
-                    <button className="text-blue-600" onClick={()=> void handleStartSeq(c)}>序列</button>
-                    <button className="text-purple-700" onClick={()=> void handleAiReply(c)} disabled={!!aiReplyBusy}>AI</button>
-                  </div>
-                ))}
-                {!todoSilent.length && <div className="text-gray-400">暂无</div>}
-              </div>
-              <div className="bg-white/80 rounded-xl p-2 border border-purple-50">
-                <div className="font-medium text-purple-800 mb-1">有回复需处理 / 序列待发</div>
-                {todoReply.map(c=>(
-                  <div key={c.id} className="flex items-center gap-1 py-0.5 border-b last:border-0">
-                    <span className="truncate flex-1">{c.contactName||c.title}</span>
-                    <button className="text-gray-600" onClick={async()=>{ await setCustomerFollowMode(c,'auto','user'); await load() }}>转自动</button>
-                  </div>
-                ))}
-                {seqDue.slice(0,5).map(s=>(
-                  <div key={'sd'+s.customer_id} className="text-[11px] text-purple-700 truncate">🔁 {s.customer?.title||s.email} · 到期 {String(s.next_due_at).slice(0,10)}</div>
-                ))}
-                {!todoReply.length && !seqDue.length && <div className="text-gray-400">暂无</div>}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
       <div className="flex items-center gap-2 flex-wrap -mt-1">
         <button onClick={()=> setMainView('radar')} className={`px-3 py-1 rounded-full text-xs ${mainView==='radar'?'bg-blue-600 text-white':'bg-white border'}`}>雷达六桶</button>
         <button onClick={()=> setMainView('board')} className={`px-3 py-1 rounded-full text-xs ${mainView==='board'?'bg-blue-600 text-white':'bg-white border'}`}>📋 跟进表</button>
@@ -1172,7 +1091,7 @@ const handleBatchAiTpl = useCallback(async () => {
           <div className="font-semibold text-sm">⚙️ 跟进规则（系统自动判断）</div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followReplyToManual} onChange={e=>{ const n={...followCfg, followReplyToManual:e.target.checked}; setFollowCfg(n); saveIntellectConfig({ followReplyToManual:e.target.checked }) }}/> 有回复→改手动跟进</label>
-            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followReplyToHigh} onChange={e=>{ setFollowCfg({...followCfg, followReplyToHigh:e.target.checked}); saveIntellectConfig({ followReplyToHigh:e.target.checked }) }}/> 有回复→进高意向</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followReplyToHigh} onChange={e=>{ setFollowCfg({...followCfg, followReplyToHigh:e.target.checked}); saveIntellectConfig({ followReplyToHigh:e.target.checked }) }}/> 有回复→进高意向（默认关，勾选才开）</label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followStopSeqOnOrder} onChange={e=>{ setFollowCfg({...followCfg, followStopSeqOnOrder:e.target.checked}); saveIntellectConfig({ followStopSeqOnOrder:e.target.checked }) }}/> 已下单→停自动序列</label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followStopSeqOnCancel} onChange={e=>{ setFollowCfg({...followCfg, followStopSeqOnCancel:e.target.checked}); saveIntellectConfig({ followStopSeqOnCancel:e.target.checked }) }}/> 取消→停自动序列</label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={followCfg.followAutoEnrollNoReply} onChange={e=>{ setFollowCfg({...followCfg, followAutoEnrollNoReply:e.target.checked}); saveIntellectConfig({ followAutoEnrollNoReply:e.target.checked }) }}/> 无回复自动拉入序列</label>

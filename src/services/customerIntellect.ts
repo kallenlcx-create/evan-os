@@ -78,7 +78,7 @@ export function classifyOne(
   if((isKey && (level === 'A+' || level === 'A')) ||
      (INTENT_HOT.includes(intent) && days <= 14) ||
      (stage === 'qualified' && days <= 7)){
-    return { customerId: c.id, tier: 'high', reason: isKey&&level.startsWith('A') ? `重点${level}` : '近期热意图/已资格化', daysSilent: days, emailCount }
+    return { customerId: c.id, tier: 'follow', reason: (isKey&&level.startsWith('A') ? `重点${level}` : '近期热意图/已资格化') + '（自动高意向已关闭）', daysSilent: days, emailCount }
   }
   // 复购（与 syncTiersFromRules 对齐：已下单/有复购次数 + 静默 30–400 天）
   const hasOrderTag = (c.tags||[]).map(String).includes('已下单')

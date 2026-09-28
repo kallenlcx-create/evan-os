@@ -154,8 +154,9 @@ ${prevText}
       let tier: string | undefined
       let reason = r.deal_hint || r.profile_cn.slice(0,40)
       if(r.opportunity==='deal' || (r.intent==='high' && r.opportunity!=='none')){
-        tier = r.opportunity==='deal' ? 'pending' : 'high'
-        reason = r.deal_hint || 'AI：高意向/待成交'
+        // 自动高意向已关闭：AI 只升到「待成交/跟进」，高意向须手动标
+        tier = r.opportunity==='deal' ? 'pending' : 'follow'
+        reason = (r.deal_hint || 'AI：高意向/待成交') + '（不自动进高意向）'
       } else if(r.opportunity==='repurchase'){
         tier = 'repurchase'; reason = 'AI：复购机会'
       } else if(r.opportunity==='cross_sell'){
