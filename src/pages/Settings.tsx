@@ -4,6 +4,7 @@ import { useConfirm } from '../components/ConfirmModal'
 import { Download, Upload, Trash2, Database, RotateCw, Check, AlertCircle, Bell, Palette, Info, BellOff } from 'lucide-react'
 import { WALLPAPER_PRESETS, DEFAULT_WALLPAPER, getPresetCss, fileToWallpaperDataUrl } from '../config/wallpapers'
 import { CARD_THEMES, getCardTheme, setCardTheme, setCardThemeOpacity } from '../config/constants'
+import { getGmailLabels, saveGmailLabelSync, applyGmailLabelSync, listAccounts } from '../repositories/emailRepository'
 
 export default function SettingsPage() {
   const { app, toggleSidebar, backup, exportData, importData, goals, tasks, projects, knowledge, habits, learningPaths, notifications, markNotificationRead, markAllNotificationsRead, clearNotifications, wallpaper, setWallpaper } = useStore()
@@ -17,6 +18,7 @@ export default function SettingsPage() {
     catch { return defaults }
   })
   const [activeSection, setActiveSection] = useState('data')
+  const [gmailLabels, setGmailLabels] = useState<any[]>([])
   const [_cardVersion, setCardVersion] = useState(0)
 
   const stats = {
@@ -168,6 +170,78 @@ export default function SettingsPage() {
                 <div className="text-left"><div className="font-medium">🗑️ 重置数据</div><div className="text-xs text-red-500">清空所有数据（不可恢复）</div></div>
               </button>
             </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Gmail 标签同步</h2>
+            <p className="text-xs text-gray-400 mb-3">列出 Gmail 全部标签（含新增）；勾选后与工作台客户标签双向/单向同步。</p>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <button
+                onClick={async()=>{
+                  try{
+                    const accs = await listAccounts()
+                    const gmailAcc = accs.find(a=> (a.provider||'')==='gmail') || accs[0]
+                    const r = await getGmailLabels(gmailAcc?.id)
+                    const mapBy = new Map((r.map||[]).map((m:any)=> [m.gmail_label_id, m]))
+                    const rows = r.labels.filter((l:any)=> l.type !== 'system').map((l:any)=>{
+                      const m = mapBy.get(l.id)
+                      return {
+                        gmail_label_id: l.id,
+                        gmail_label_name: l.name,
+                        workbench_tag: m?.workbench_tag || l.name,
+                        direction: m?.direction || 'both',
+                        enabled: !!(m?.enabled),
+                      }
+                    })
+                    setGmailLabels(rows)
+                    showMsg('success', '已加载 ' + rows.length + ' 个用户标签')
+                  }catch(e:any){ showMsg('error', String(e.message||e).slice(0,120)) }
+                }}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs"
+              >拉取 Gmail 标签列表</button>
+              <button
+                onClick={async()=>{
+                  try{
+                    await saveGmailLabelSync(gmailLabels)
+                    const r = await applyGmailLabelSync()
+                    showMsg('success', '已保存映射并对齐客户 ' + (r.updated||0) + ' 人')
+                  }catch(e:any){ showMsg('error', String(e.message||e).slice(0,120)) }
+                }}
+                className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs"
+              >保存并立即对齐</button>
+              <button
+                onClick={async()=>{
+                  try{ await saveGmailLabelSync(gmailLabels); showMsg('success', '映射已保存（自动同步生效）') }
+                  catch(e:any){ showMsg('error', String(e.message||e).slice(0,120)) }
+                }}
+                className="px-3 py-1.5 border rounded-lg text-xs"
+              >保存映射</button>
+            </div>
+            <div className="max-h-64 overflow-y-auto border rounded-lg divide-y">
+              {gmailLabels.length === 0 && <div className="text-xs text-gray-400 p-3">先点「拉取 Gmail 标签列表」</div>}
+              {gmailLabels.map((l, i)=>(
+                <div key={l.gmail_label_id} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-xs">
+                  <input type="checkbox" checked={!!l.enabled}
+                    onChange={e=>{ const n = [...gmailLabels]; n[i] = { ...l, enabled: e.target.checked }; setGmailLabels(n) }}
+                  />
+                  <span className="w-32 truncate font-medium">{l.gmail_label_name}</span>
+                  <span className="text-gray-400">→</span>
+                  <input value={l.workbench_tag}
+                    onChange={e=>{ const n=[...gmailLabels]; n[i]={...l, workbench_tag:e.target.value}; setGmailLabels(n) }}
+                    className="w-28 px-1.5 py-0.5 border rounded"
+                  />
+                  <select value={l.direction}
+                    onChange={e=>{ const n=[...gmailLabels]; n[i]={...l, direction:e.target.value}; setGmailLabels(n) }}
+                    className="px-1 py-0.5 border rounded"
+                  >
+                    <option value="both">双向</option>
+                    <option value="gmail_to_workbench">Gmail→台</option>
+                    <option value="workbench_to_gmail">台→Gmail</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="text-[10px] text-gray-400 mt-2">勾选=参与同步；「立即对齐」把 Gmail 标签落到客户 tags；侧栏改标签可写回 Gmail（最近5封）。</div>
           </div>
         </div>
       )}

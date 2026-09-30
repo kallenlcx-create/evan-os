@@ -632,6 +632,49 @@ export async function getOutboxDetail(id: string): Promise<any>{
   return j
 }
 
+
+// ====== Gmail 标签同步 ======
+export async function getGmailLabels(accountId?: string): Promise<{ labels: any[]; map: any[] }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/gmail-labels${accountId?`?accountId=${encodeURIComponent(accountId)}`:''}`, { headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error || `拉取标签失败 ${r.status}`)
+  return { labels: j.labels || [], map: j.map || [] }
+}
+export async function saveGmailLabelSync(items: any[]): Promise<void>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/gmail-label-sync`, { method:'PUT', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) }, body: JSON.stringify({ items }) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error || `保存映射失败 ${r.status}`)
+}
+export async function applyGmailLabelSync(): Promise<{ updated: number; note?: string }>{
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/gmail-label-sync-apply`, { method:'POST', headers: bypassHeaders(h) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error || `对齐失败 ${r.status}`)
+  return j
+}
+export async function getGmailLabelSyncMap(): Promise<any[]>{
+  const h = await serverHeaders()
+  if(!h) return []
+  try{
+    const r = await fetch(`${h.url}/email/gmail-label-sync`, { headers: bypassHeaders(h) })
+    const j = await r.json().catch(()=>({}))
+    return j.map || []
+  }catch{ return [] }
+}
+export async function modifyGmailLabel(opts: { accountId: string; emails: string[]; tag: string; add?: boolean; limit?: number }){
+  const h = await serverHeaders()
+  if(!h) throw new Error('请先登录云同步')
+  const r = await fetch(`${h.url}/email/gmail-label-modify`, { method:'POST', headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) }, body: JSON.stringify(opts) })
+  const j = await r.json().catch(()=>({}))
+  if(!r.ok) throw new Error(j.error || `写标签失败 ${r.status}`)
+  return j
+}
+
 // ====== 自动跟进序列 ======
 async function seqApi(path: string, method = 'GET', body?: any){
   const h = await serverHeaders()

@@ -65,7 +65,8 @@ export default function EmailGraphPage(){
   const dragStart=useRef({x:0,y:0})
 
   const load=useCallback(async()=>{
-    setCustomers(await db.customers.toArray() as any[])
+    const all = await db.customers.toArray() as any[]
+    setCustomers(all.filter(c=> !(c.tags||[]).map(String).includes('噪声')))
     setEmails(await db.emails.toArray() as any[])
   },[])
   useEffect(()=>{void load(); const h=()=>void load(); window.addEventListener('evan-emails-updated',h); window.addEventListener('evan-customers-updated',h); return()=>{window.removeEventListener('evan-emails-updated',h); window.removeEventListener('evan-customers-updated',h)}},[load])

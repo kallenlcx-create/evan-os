@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Settings, Search, Brain, FileText, TrendingUp, X } from 'lucide-react'
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
+import { getGmailLabelSyncMap, modifyGmailLabel } from '../repositories/emailRepository'
 import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, getOutboxDetail, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
@@ -134,6 +135,7 @@ export default function InboxPage(){
   const [showConfig, setShowConfig] = useState(false)
   const [showAccountPop, setShowAccountPop] = useState(false)
   const [customer, setCustomer] = useState<Customer|null>(null)
+  const [syncedLabels, setSyncedLabels] = useState<any[]>([])
   const [deepAnalysis, setDeepAnalysis] = useState<FullAnalysis|null>(null)
   const [analyzingCustomer, setAnalyzingCustomer] = useState(false)
   const [searchMode, setSearchMode] = useState(false)
@@ -155,6 +157,7 @@ export default function InboxPage(){
     setReplyBody(el.innerText || '')
   },[])
   // 打开回复/恢复草稿时灌入编辑器
+  useEffect(()=>{ void getGmailLabelSyncMap().then(setSyncedLabels).catch(()=>{}) },[])
   useEffect(()=>{
     if(!showReply) return
     const el = editorRef.current
@@ -960,11 +963,6 @@ export default function InboxPage(){
           <div className="p-2 border-b space-y-2">
             <div className="flex items-center gap-1">
               <button
-                onClick={()=>{ setFolder('inbox'); setFilter('all'); setSearchMode(false); void refreshServerMeta() }}
-                className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'&&filter==='all'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}
-                title="收件箱 + 已发送，最新在上"
-              >收件箱</button>
-              <button
                 onClick={()=>{ setFolder('inbox'); setFilter('unread'); setSearchMode(false); void refreshServerMeta() }}
                 className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'&&filter==='unread'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}
                 title="仅未读；读完即消失"
@@ -973,6 +971,11 @@ export default function InboxPage(){
                 onClick={async()=>{ setFolder('drafts'); setSearchMode(false); try{ setServerDrafts(await getDrafts()) }catch{} }}
                 className={`flex-1 py-1 rounded-lg text-xs ${folder==='drafts'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'}`}
               >草稿{folder==='drafts'&&serverDrafts.length?`·${serverDrafts.length}`:''}</button>
+              <button
+                onClick={()=>{ setFolder('inbox'); setFilter('all'); setSearchMode(false); void refreshServerMeta() }}
+                className={`flex-1 py-1 rounded-lg text-xs ${folder==='inbox'&&filter==='all'?'bg-blue-600 text-white':'bg-gray-100 text-gray-600'}`}
+                title="收件箱 + 已发送，最新在上"
+              >收件箱</button>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -1355,6 +1358,37 @@ export default function InboxPage(){
                       <option value="auto">自动</option>
                     </select>
                   </div>
+                  {syncedLabels.length > 0 && (
+                    <div>
+                      <div className="text-gray-400 mb-1">同步标签（Gmail↔工作台）</div>
+                      <div className="flex flex-wrap gap-1">
+                        {syncedLabels.map((m:any)=>{
+                          const tag = String(m.workbench_tag || m.gmail_label_name)
+                          const on = (customer.tags||[]).map(String).includes(tag)
+                          return (
+                            <button key={m.gmail_label_id}
+                              onClick={async()=>{
+                                const tags = new Set((customer.tags||[]).map(String))
+                                if(on) tags.delete(tag); else tags.add(tag)
+                                const next = [...tags]
+                                await db.customers.update(customer.id, { tags: next, updatedAt: new Date().toISOString() } as any)
+                                setCustomer({ ...customer, tags: next } as any)
+                                window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+                                try{
+                                  const accs = await listAccounts()
+                                  const acc = accs.find(a=> (a.provider||'')==='gmail') || accs[0]
+                                  if(acc && customer.email && (m.direction==='both' || m.direction==='workbench_to_gmail')){
+                                    await modifyGmailLabel({ accountId: acc.id, emails: [customer.email], tag, add: !on, limit: 5 })
+                                  }
+                                }catch{ /* ignore */ }
+                              }}
+                              className={`px-1.5 py-0.5 border rounded-full ${on?'bg-teal-100 text-teal-800 border-teal-300':'bg-white text-gray-500'}`}
+                            >{on?'✓ ':''}{tag}</button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-center gap-1">
                     <span className="text-gray-400 w-12">跟进</span>
                     <select

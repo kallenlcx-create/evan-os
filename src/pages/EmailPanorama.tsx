@@ -26,7 +26,7 @@ export default function EmailPanorama(){
   const [emails,setEmails]=useState<EmailMessage[]>([])
   const [accounts,setAccounts]=useState<any[]>([])
   const [customers,setCustomers]=useState<any[]>([])
-  useEffect(()=>{ const load=async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray()); setCustomers(await db.customers.toArray())}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[])
+  useEffect(()=>{ const load=async()=>{ setEmails(await db.emails.toArray()); setAccounts(await db.emailAccounts.toArray()); setCustomers((await db.customers.toArray() as any[]).filter(c=> !(c.tags||[]).map(String).includes('噪声')))}; void load(); const h=()=> void load(); window.addEventListener('evan-emails-updated', h); window.addEventListener('evan-customers-updated', h); return ()=>{ window.removeEventListener('evan-emails-updated', h); window.removeEventListener('evan-customers-updated', h) }},[])
 
   // === 客户标签分布 ===
   const tagStats = useMemo(()=>{

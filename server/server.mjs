@@ -199,6 +199,17 @@ async function init() {
   await pool.query(`ALTER TABLE gmail_oauth ADD COLUMN topic_name VARCHAR(256) DEFAULT ''`).catch(()=>{})
   await pool.query(`ALTER TABLE gmail_oauth ADD COLUMN watch_expiration TIMESTAMP(3) NULL`).catch(()=>{})
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS gmail_label_sync (
+      gmail_label_id VARCHAR(128) NOT NULL,
+      gmail_label_name VARCHAR(256) DEFAULT '',
+      workbench_tag VARCHAR(128) DEFAULT '',
+      direction VARCHAR(32) DEFAULT 'both',
+      enabled TINYINT DEFAULT 0,
+      username VARCHAR(64) NOT NULL,
+      updated_at TIMESTAMP(3) NOT NULL,
+      PRIMARY KEY (username, gmail_label_id)
+    ) CHARACTER SET utf8mb4`).catch(()=>{})
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS server_config (
       k VARCHAR(80) PRIMARY KEY,
       v TEXT,
@@ -1449,6 +1460,7 @@ async function gmailApiIncremental(gmail, accountId, username, folder, st, start
       const labels = (mm.data && mm.data.labelIds) || [];
       await pool.query('UPDATE mail_messages SET is_read=?, labels=?, updated_at=? WHERE account_id=? AND gmail_msgid=?',
         [labels.includes('UNREAD')?0:1, labels.join(',').slice(0,1024), sqlNow(), accountId, gid]);
+      try{ await applyGmailLabelsToCustomer(username, labels, from, to) }catch{}
     }catch{}
     await new Promise(r=>setImmediate(r));
   }
@@ -2638,6 +2650,151 @@ app.get('/email/repurchase-pool', auth, wrap(async (req,res)=>{
   }
   out.sort((a,b)=> b.silentDays - a.silentDays)
   res.json({ silentDays, total: out.length, pool: out.slice(0, 500) })
+}))
+
+// ====== Gmail 标签同步 ======
+// 拉取 Gmail 标签目录 + 当前同步映射
+app.get('/email/gmail-labels', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const accountId = String(req.query.accountId || '')
+  const acc = accountId ? await loadMailAccount(accountId, req.user) : null
+  let labels = []
+  if(acc && await usesGmailApi(acc).catch(()=>false)){
+    try{
+      const { google } = await import('googleapis')
+      const o = await buildOAuthClient(req, acc.id)
+      const gmail = google.gmail({ version:'v1', auth:o })
+      const st0 = { apiCalls: 0 }
+      const r = await gmailCall(()=> gmail.users.labels.list({ userId:'me' }), st0, 'labels.list')
+      labels = (r.data?.labels || []).map(l=> ({ id: l.id, name: l.name, type: l.type || 'user' }))
+    }catch(e){
+      return res.status(502).json({ error:'拉取 Gmail 标签失败：'+String(e.message||e).slice(0,160) })
+    }
+  }
+  // 目录写入/更新
+  const now = sqlNow()
+  for(const l of labels){
+    if(l.type === 'system') continue
+    await pool.query(`INSERT INTO gmail_label_sync (gmail_label_id, gmail_label_name, workbench_tag, direction, enabled, username, updated_at)
+      VALUES (?,?,?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE gmail_label_name=VALUES(gmail_label_name), updated_at=VALUES(updated_at)`,
+      [l.id, l.name, l.name, 'both', 0, req.user, now]).catch(()=>{})
+  }
+  const [rows] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? ORDER BY gmail_label_name',[req.user])
+  res.json({ labels, map: rows })
+}))
+
+// 保存同步映射（勾选/方向/工作台标签名）
+app.put('/email/gmail-label-sync', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const items = Array.isArray(req.body?.items) ? req.body.items : []
+  const now = sqlNow()
+  for(const it of items){
+    const id = String(it.gmail_label_id || it.id || '')
+    if(!id) continue
+    await pool.query(`INSERT INTO gmail_label_sync (gmail_label_id, gmail_label_name, workbench_tag, direction, enabled, username, updated_at)
+      VALUES (?,?,?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE gmail_label_name=VALUES(gmail_label_name), workbench_tag=VALUES(workbench_tag), direction=VALUES(direction), enabled=VALUES(enabled), updated_at=VALUES(updated_at)`,
+      [id, String(it.gmail_label_name||it.name||''), String(it.workbench_tag||it.name||''),
+       String(it.direction||'both'), it.enabled ? 1 : 0, req.user, now])
+  }
+  res.json({ ok:true, saved: items.length })
+}))
+
+// 将映射标签落到客户 tags（Gmail→工作台）
+app.post('/email/gmail-label-sync-apply', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const [maps] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? AND enabled=1',[req.user])
+  if(!maps.length) return res.json({ ok:true, updated: 0, note:'未启用任何标签同步' })
+  const idToTag = new Map(maps.map(m=> [String(m.gmail_label_id), String(m.workbench_tag || m.gmail_label_name)]))
+  const nameToTag = new Map(maps.map(m=> [String(m.gmail_label_name||'').toLowerCase(), String(m.workbench_tag || m.gmail_label_name)]))
+  const [msgs] = await pool.query(`SELECT m.from_addr, m.to_addr, m.labels
+    FROM mail_messages m JOIN email_accounts a ON a.id=m.account_id
+    WHERE a.username=? AND m.labels<>'' LIMIT 20000`, [req.user])
+  // 按邮箱聚合标签
+  const byEmail = new Map()
+  for(const m of msgs){
+    const addrs = [m.from_addr, m.to_addr].join(' ').toLowerCase().split(/[,;\s]+/).filter(x=> x.includes('@'))
+    const labelIds = String(m.labels||'').split(',').filter(Boolean)
+    for(const id of labelIds){
+      const tag = idToTag.get(id) || nameToTag.get(id.toLowerCase())
+      if(!tag) continue
+      for(const em of addrs){
+        if(em.includes('maxemblem.com')) continue
+        if(!byEmail.has(em)) byEmail.set(em, new Set())
+        byEmail.get(em).add(tag)
+      }
+    }
+  }
+  let updated = 0
+  for(const [em, tags] of byEmail){
+    const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
+    // 注：上面全表取再匹配较慢；改为按 data JSON 邮箱匹配
+    break
+  }
+  // 高效：逐客户匹配
+  const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
+  for(const row of crows){
+    let d = {}
+    try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data||{}) }catch{ continue }
+    const ems = [d.email, ...(d.extraEmails||[])].map(x=> String(x||'').toLowerCase()).filter(Boolean)
+    const hit = new Set()
+    for(const em of ems){
+      const t = byEmail.get(em)
+      if(t) for(const x of t) hit.add(x)
+    }
+    if(!hit.size) continue
+    const tags = [...new Set([...(d.tags||[]).map(String), ...hit])]
+    if(tags.length === (d.tags||[]).length) continue
+    d.tags = tags
+    d.updatedAt = new Date().toISOString()
+    await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at) VALUES (?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
+      [req.user, 'customers', row.row_id, JSON.stringify(d), sqlNow()])
+    updated++
+  }
+  res.json({ ok:true, updated, mappedTags: maps.length })
+}))
+
+// 工作台标签 → Gmail（对客户最近 N 封打/去标签）
+app.post('/email/gmail-label-modify', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const { accountId, emails, tag, add = true, limit = 5 } = req.body || {}
+  const acc = await loadMailAccount(accountId, req.user)
+  if(!acc) return res.status(404).json({ error:'账号不存在' })
+  if(!(await usesGmailApi(acc))) return res.status(400).json({ error:'仅 Gmail OAuth 账号支持写标签' })
+  const [maps] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? AND enabled=1',[req.user])
+  const m = maps.find(x=> String(x.workbench_tag||x.gmail_label_name) === String(tag)) || maps.find(x=> String(x.gmail_label_name) === String(tag))
+  if(!m) return res.status(400).json({ error:'该标签未在同步映射中启用' })
+  const list = (Array.isArray(emails) ? emails : [emails]).map(x=> String(x||'').toLowerCase()).filter(Boolean)
+  if(!list.length) return res.status(400).json({ error:'需要 email' })
+  const { google } = await import('googleapis')
+  const o = await buildOAuthClient(req, acc.id)
+  const gmail = google.gmail({ version:'v1', auth:o })
+  const st0 = { apiCalls: 0 }
+  let touched = 0
+  for(const em of list.slice(0, 20)){
+    const like = '%' + em + '%'
+    const [mrows] = await pool.query(`SELECT gmail_msgid FROM mail_messages
+      WHERE account_id=? AND gmail_msgid<>'' AND (from_addr LIKE ? OR to_addr LIKE ?)
+      ORDER BY msg_date DESC LIMIT ?`, [acc.id, like, like, Number(limit)||5])
+    for(const r of mrows){
+      const gid = String(r.gmail_msgid||'')
+      if(!gid) continue
+      await gmailCall(()=> gmail.users.messages.modify({ userId:'me', id: gid,
+        requestBody: add ? { addLabelIds: [m.gmail_label_id] } : { removeLabelIds: [m.gmail_label_id] }
+      }), st0, 'messages.modify-label')
+      touched++
+    }
+  }
+  res.json({ ok:true, touched, label: m.gmail_label_name })
+}))
+
+// 获取同步映射（前端侧栏用）
+app.get('/email/gmail-label-sync', auth, wrap(async (req,res)=>{
+  if(!dbReady) return res.status(503).json({ error:'需要 MySQL' })
+  const [rows] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? AND enabled=1 ORDER BY gmail_label_name',[req.user])
+  res.json({ map: rows })
 }))
 
 // 标已读回写 Gmail：POST /email/mark-read {accountId, uid, read, folder?}
