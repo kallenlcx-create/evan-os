@@ -9,7 +9,7 @@ import { startSequence, patchSequence, listAccounts } from '../repositories/emai
 import { isOrderedCustomer } from './orderScan'
 
 export type FollowMode = 'auto' | 'manual'
-export type SalesStage = 'following' | 'ordered' | 'cancelled'
+export type SalesStage = 'following' | 'ordered' | 'direct_order' | 'cancelled'
 /** 报价状态：未报价 / 已报价 / 谈价中 / 已接受 */
 export type QuoteStatus = 'none' | 'sent' | 'negotiating' | 'accepted'
 
@@ -143,10 +143,11 @@ export function daysSince(iso?: string | null): number | null {
 
 export function salesStageOf(c: Customer): SalesStage {
   const s = String((c as any).salesStage || '')
-  if (s === 'ordered' || s === 'cancelled' || s === 'following') return s
+  if (s === 'ordered' || s === 'cancelled' || s === 'following' || s === 'direct_order') return s
   const tags = (c.tags||[]).map(String)
   if (tags.includes('取消') || (c.stage === 'lost' && tags.includes('取消'))) return 'cancelled'
-  if (isOrderedCustomer(c) || c.stage === 'won' || tags.includes('已下单')) return 'ordered'
+  if (tags.includes('直接下单')) return 'direct_order'
+  if (isOrderedCustomer(c) || c.stage === 'won' || tags.includes('已下单') || tags.includes('订单')) return 'ordered'
   return 'following'
 }
 
@@ -158,7 +159,13 @@ export function followModeOf(c: Customer): FollowMode {
 
 export function quoteStatusOf(c: Customer): QuoteStatus {
   const q = String((c as any).quoteStatus || '')
-  if (q === 'none' || q === 'sent' || q === 'negotiating' || q === 'accepted') return q
+  if (q === 'none' || q === 'sent' || q === 'negotiating' || q === 'accepted') {
+    if (q === 'none') {
+      const tags = (c.tags || []).map(String)
+      if (tags.includes('已报价') || tags.includes('已接受')) return tags.includes('已接受') ? 'accepted' : 'sent'
+    }
+    return q
+  }
   return 'none'
 }
 
@@ -496,8 +503,8 @@ export async function runFollowBoardSync(opts?: {
       }
       try { addManualBuckets([c.id], ['high'], '客户有回复', 'add'); highQueued++ } catch {}
     }
-    if (stage === 'ordered' || stage === 'cancelled') {
-      const stop = stage === 'ordered'
+    if (stage === 'ordered' || stage === 'direct_order' || stage === 'cancelled') {
+      const stop = stage === 'ordered' || stage === 'direct_order'
         ? (cfg as any).followStopSeqOnOrder !== false
         : (cfg as any).followStopSeqOnCancel !== false
       if (stop && seq && seq.mode === 'auto') {
@@ -614,9 +621,10 @@ export async function setCustomerSalesStage(c: Customer, stage: SalesStage){
   const cfg = loadIntellectConfig()
   const ts = new Date().toISOString()
   const tags = new Set([...(c.tags || []).map(String)])
-  if (stage === 'ordered') { tags.add('已下单'); tags.add('订单') }
+  if (stage === 'ordered') { tags.add('已下单'); tags.add('订单'); tags.delete('直接下单') }
+  if (stage === 'direct_order') { tags.add('直接下单'); tags.delete('已下单'); tags.delete('订单') }
   if (stage === 'cancelled') { tags.add('取消') }
-  if (stage === 'following') { tags.delete('取消') }
+  if (stage === 'following') { tags.delete('取消'); tags.delete('直接下单') }
   const patch: any = {
     salesStage: stage,
     tags: [...tags],
@@ -624,12 +632,12 @@ export async function setCustomerSalesStage(c: Customer, stage: SalesStage){
   }
   if (stage === 'ordered') patch.stage = c.stage === 'lost' ? c.stage : 'won'
   if (stage === 'cancelled') patch.stage = 'lost'
-  if (stage === 'ordered' || stage === 'cancelled') {
+  if (stage === 'ordered' || stage === 'direct_order' || stage === 'cancelled') {
     patch.followMode = 'manual'
     patch.followModeSource = 'system'
   }
   await db.customers.update(c.id, patch)
-  const stop = stage === 'ordered' ? cfg.followStopSeqOnOrder !== false : stage === 'cancelled' ? cfg.followStopSeqOnCancel !== false : false
+  const stop = (stage === 'ordered' || stage === 'direct_order') ? cfg.followStopSeqOnOrder !== false : stage === 'cancelled' ? cfg.followStopSeqOnCancel !== false : false
   if (stop) {
     try { await patchSequence(c.id, { mode: 'manual' }) } catch {}
   }

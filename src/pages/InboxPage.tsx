@@ -1342,6 +1342,7 @@ export default function InboxPage(){
                     >
                       <option value="following">跟进中</option>
                       <option value="ordered">已下单</option>
+                      <option value="direct_order">直接下单</option>
                       <option value="cancelled">取消</option>
                     </select>
                     <span className="text-gray-400">方式</span>

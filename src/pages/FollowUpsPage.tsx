@@ -348,7 +348,7 @@ export default function FollowUpsPage() {
     for (const c of customers) {
       const tags = (c.tags||[]).map(String)
       // 仅认「已下单」标签 / stage=won / 复购次数；「订单」标签不再单独当成交（曾被误标污染）
-      if (tags.includes('已下单') || c.stage==='won' || (c.repurchaseCount||0)>=1) {
+      if (tags.includes('已下单') || tags.includes('直接下单') || tags.includes('订单') || c.stage==='won' || (c.repurchaseCount||0)>=1) {
         orderedSet.add(c.id)
       }
     }
@@ -1417,7 +1417,7 @@ const handleBatchAiTpl = useCallback(async () => {
         })
         const rows = applyFollowFilters(rows0, boardChips, '', filterCtx) as typeof rows0
         const LEVEL_RANK: Record<string, number> = { 'A+':5, 'A':4, 'B':3, 'C':2, 'D':1 }
-        const STAGE_RANK: Record<string, number> = { ordered:3, following:2, cancelled:1 }
+        const STAGE_RANK: Record<string, number> = { direct_order:4, ordered:3, following:2, cancelled:1 }
         const replyRank = (c: Customer) => String((c as any).hasReply||'')==='yes' ? 1 : 0
         const dir = boardSortDir === 'asc' ? 1 : -1
         rows.sort((a,b)=>{
@@ -1512,7 +1512,7 @@ const handleBatchAiTpl = useCallback(async () => {
             const val = rest.slice(dash + 1)
             const labels: Record<string,string> = {
               none:'未报价', sent:'已报价', negotiating:'谈价中', accepted:'已接受',
-              following:'跟进中', ordered:'已下单', cancelled:'取消',
+              following:'跟进中', ordered:'已下单', direct_order:'直接下单', cancelled:'取消',
               manual:'手动跟进', auto:'自动跟进',
             }
             const show = labels[val] || (field==='step' ? '跟进'+val : val)
@@ -1635,7 +1635,7 @@ const handleBatchAiTpl = useCallback(async () => {
           }
           if(kind.startsWith('stage-')){
             const st = kind.replace('stage-','') as SalesStage
-            const label = st==='ordered'?'已下单':st==='cancelled'?'取消':'跟进中'
+            const label = st==='ordered'?'已下单':st==='direct_order'?'直接下单':st==='cancelled'?'取消':'跟进中'
             if(!confirm(`将 ${n} 人销售阶段改为「${label}」？`)) return
             setBoardBulkBusy('stage')
             for(const c of selectedCustomers){ await setCustomerSalesStage(c, st) }
@@ -1692,7 +1692,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 <option value="all">回复：全部</option><option value="yes">有回复</option><option value="no">无回复</option>
               </select>
               <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
-                <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="cancelled">取消</option>
+                <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="direct_order">直接下单</option><option value="cancelled">取消</option>
               </select>
               <input value={boardQ} onChange={e=>{ setBoardQ(e.target.value); setBoardPage(1) }} placeholder="搜客户/邮箱/公司" className="border rounded px-2 py-1.5 text-sm w-40"/>
               <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHighOnly} onChange={e=> setBoardHighOnly(e.target.checked)}/> 仅高意向</label>
@@ -1759,8 +1759,8 @@ const handleBatchAiTpl = useCallback(async () => {
                     ))}
                     {bulkEditField==='level' && (['A+','A','B','C','D'] as const).map(v=> <option key={v} value={v}>{v}</option>)}
                     {bulkEditField==='step' && [1,2,3,4,5,6,7].map(v=> <option key={v} value={String(v)}>跟进{v}</option>)}
-                    {bulkEditField==='stage' && (['following','ordered','cancelled'] as const).map(v=>(
-                      <option key={v} value={v}>{v==='following'?'跟进中':v==='ordered'?'已下单':'取消'}</option>
+                    {bulkEditField==='stage' && (['following','ordered','direct_order','cancelled'] as const).map(v=>(
+                      <option key={v} value={v}>{v==='following'?'跟进中':v==='ordered'?'已下单':v==='direct_order'?'直接下单':'取消'}</option>
                     ))}
                     {bulkEditField==='mode' && (['manual','auto'] as const).map(v=>(
                       <option key={v} value={v}>{v==='manual'?'手动跟进':'自动跟进'}</option>
@@ -1983,6 +1983,7 @@ const handleBatchAiTpl = useCallback(async () => {
                           }} className="border rounded px-1.5 py-1 text-sm">
                             <option value="following">跟进中</option>
                             <option value="ordered">已下单</option>
+                            <option value="direct_order">直接下单</option>
                             <option value="cancelled">取消</option>
                           </select>
                         </td>

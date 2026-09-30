@@ -47,7 +47,7 @@ export function isInBucket(
   if (mb.includes(key)) return true
   const t = String((c as any).aiTier || '')
   const tags = (c.tags || []).map(String)
-  const ordered = tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
+  const ordered = tags.includes('已下单') || tags.includes('直接下单') || tags.includes('订单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
   const days = daysNoFollow(c)
   switch (key) {
     case 'high':

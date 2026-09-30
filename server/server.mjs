@@ -1023,6 +1023,49 @@ async function gmailCall(fn, st, label){
     }
   }
 }
+/** Gmail 标签落到客户 tags + 报价/销售阶段（仅同步映射且启用的） */
+async function applyGmailLabelsToCustomer(username, labelIds, from, to){
+  if(!dbReady || !labelIds || !labelIds.length) return
+  const [maps] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? AND enabled=1',[username])
+  if(!maps.length) return
+  const idToTag = new Map(maps.map(m=> [String(m.gmail_label_id), String(m.workbench_tag || m.gmail_label_name)]))
+  const nameToTag = new Map(maps.map(m=> [String(m.gmail_label_name||'').toLowerCase(), String(m.workbench_tag || m.gmail_label_name)]))
+  const tags = new Set()
+  for(const id of labelIds){
+    const t = idToTag.get(String(id)) || nameToTag.get(String(id).toLowerCase())
+    if(t) tags.add(t)
+  }
+  if(!tags.size) return
+  const addrs = [from, to].join(' ').toLowerCase().split(/[,;\s]+/).filter(x=> x.includes('@') && !x.includes('maxemblem.com'))
+  if(!addrs.length) return
+  const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[username])
+  for(const row of crows){
+    let d = {}
+    try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data||{}) }catch{ continue }
+    const ems = [d.email, ...(d.extraEmails||[])].map(x=> String(x||'').toLowerCase())
+    if(!ems.some(e=> addrs.includes(e))) continue
+    const next = [...new Set([...(d.tags||[]).map(String), ...tags])]
+    if(next.length === (d.tags||[]).length) continue
+    d.tags = next
+    d.updatedAt = new Date().toISOString()
+    if(next.includes('已报价') && (!d.quoteStatus || d.quoteStatus === 'none')){
+      d.quoteStatus = 'sent'
+      d.quoteAt = d.quoteAt || new Date().toISOString()
+      d.quoteMatched = 'Gmail标签:已报价'
+    }
+    if(next.includes('直接下单')){
+      d.salesStage = 'direct_order'
+      d.stage = d.stage === 'lost' ? d.stage : 'won'
+    } else if(next.includes('已下单')){
+      d.salesStage = 'ordered'
+      d.stage = d.stage === 'lost' ? d.stage : 'won'
+    }
+    await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at) VALUES (?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
+      [username, 'customers', row.row_id, JSON.stringify(d), sqlNow()])
+  }
+}
+
 async function getGmailService(accountId, username, req){
   const { google } = await import('googleapis');
   const o = await buildOAuthClient(req, accountId);
@@ -2748,6 +2791,18 @@ app.post('/email/gmail-label-sync-apply', auth, wrap(async (req,res)=>{
     if(tags.length === (d.tags||[]).length) continue
     d.tags = tags
     d.updatedAt = new Date().toISOString()
+    if(tags.includes('已报价') && (!d.quoteStatus || d.quoteStatus === 'none')){
+      d.quoteStatus = 'sent'
+      d.quoteAt = d.quoteAt || new Date().toISOString()
+      d.quoteMatched = 'Gmail标签:已报价'
+    }
+    if(tags.includes('直接下单')){
+      d.salesStage = 'direct_order'
+      d.stage = d.stage === 'lost' ? d.stage : 'won'
+    } else if(tags.includes('已下单')){
+      d.salesStage = 'ordered'
+      d.stage = d.stage === 'lost' ? d.stage : 'won'
+    }
     await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at) VALUES (?,?,?,?,?)
       ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
       [req.user, 'customers', row.row_id, JSON.stringify(d), sqlNow()])

@@ -36,7 +36,7 @@ const PRODUCT_TAGS = ['Patch', 'Pin', 'Coin', 'Medal', 'Keychain'] as const
 
 export function isOrdered(c: Customer, ctx?: FilterCtx){
   const tags = (c.tags || []).map(String)
-  return tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
+  return tags.includes('已下单') || tags.includes('直接下单') || tags.includes('订单') || c.stage === 'won' || (c.repurchaseCount || 0) >= 1 || !!ctx?.orderedSet?.has(c.id)
 }
 
 function bucketsOf(c: Customer, ctx?: FilterCtx): string[] {
@@ -61,7 +61,7 @@ export const FOLLOW_FILTER_FIELDS: FilterFieldDef[] = [
     const n = Number((c as any).followStep || 0)
     return n >= 1 && n <= 7 ? `跟进${n}` : String((c as any).followStepLabel || '')
   }},
-  { id: 'sales_stage', label: '销售阶段', kind: 'enum', options: ['跟进中', '已下单', '取消'], get: (c) => salesStageOf(c) === 'ordered' ? '已下单' : salesStageOf(c) === 'cancelled' ? '取消' : '跟进中' },
+  { id: 'sales_stage', label: '销售阶段', kind: 'enum', options: ['跟进中', '已下单', '直接下单', '取消'], get: (c) => { const st = salesStageOf(c); return st === 'ordered' ? '已下单' : st === 'direct_order' ? '直接下单' : st === 'cancelled' ? '取消' : '跟进中' } },
   { id: 'created_at', label: '创建时间', kind: 'date', get: (c, ctx) => businessCreatedAt(c, { inquiryDate: ctx?.inquiryDate?.(c.id) }) },
   { id: 'last_follow', label: '最近跟进时间', kind: 'date', get: (c) => String((c as any).lastFollowAt || (c as any).lastSentAt || '').slice(0, 10) || null },
   { id: 'last_reply', label: '最近回复', kind: 'date', get: (c) => String((c as any).lastReplyAt || '').slice(0, 10) || null },
@@ -232,7 +232,7 @@ export function exportFollowRowsCsv(rows: Customer[], filename = '跟进表筛�
       c.level || 'C',
       product,
       quoteStatusLabel(quoteStatusOf(c)),
-      salesStageOf(c) === 'ordered' ? '已下单' : salesStageOf(c) === 'cancelled' ? '取消' : '跟进中',
+      (() => { const st = salesStageOf(c); return st === 'ordered' ? '已下单' : st === 'direct_order' ? '直接下单' : st === 'cancelled' ? '取消' : '跟进中' })(),
       String((c as any).followMode || (c as any).mode || ''),
       (() => { const n = Number((c as any).followStep || 0); return n >= 1 && n <= 7 ? `跟进${n}` : '' })(),
       daysNoFollow(c) ?? '',

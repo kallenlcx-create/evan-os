@@ -774,7 +774,11 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     // 默认藏起已标噪声的客户（可用搜索仍命中）
     if(!q && (c.tags||[]).map(String).includes('噪声') && filter==='all' && tagFilter==='all') return false
     // 「已下单」标签筛选同时认 stage=won，避免只扫标签时漏人
-    if(tagFilter === '已下单'){
+    if(tagFilter === '直接下单'){
+      const tags = (c.tags||[]).map(String)
+      const stage = String((c as any).salesStage||'')
+      if(!tags.includes('直接下单') && stage !== 'direct_order') return false
+    } else if(tagFilter === '已下单'){
       const tags = (c.tags||[]).map(String)
       const stage = String((c as any).salesStage||'')
       if(!tags.includes('已下单') && !tags.includes('订单') && c.stage !== 'won' && stage !== 'ordered') return false
@@ -811,7 +815,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
     }
     if(hideOrdered){
       const tags = (c.tags||[]).map(String)
-      if(tags.includes('已下单') || c.stage === 'won' || (c.repurchaseCount||0) >= 1) return false
+      if(tags.includes('已下单') || tags.includes('直接下单') || tags.includes('订单') || c.stage === 'won' || (c.repurchaseCount||0) >= 1) return false
     }
     return true
   })
@@ -1594,6 +1598,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                   >
                     <option value="following">跟进中</option>
                     <option value="ordered">已下单</option>
+                    <option value="direct_order">直接下单</option>
                     <option value="cancelled">取消</option>
                   </select>
                 </span>
