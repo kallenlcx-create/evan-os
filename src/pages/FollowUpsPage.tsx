@@ -1068,12 +1068,17 @@ const handleBatchAiTpl = useCallback(async () => {
           onClick={async()=>{
             setBoardBusy(true)
             try{
+              // 顺带对齐 Gmail 标签 → 报价/阶段/客户 tags（并写回本地库）
+              try{
+                const { applyGmailLabelSync } = await import('../repositories/emailRepository')
+                const lab = await applyGmailLabelSync()
+                if(lab.updated) setIntellectNote(`Gmail标签对齐 ${lab.updated} 人`)
+              }catch{ /* 无标签映射时忽略 */ }
               const seqs = (await getSequences()).sequences || []
               setSequences(seqs)
               const r = await runFollowBoardSync({ sequences: seqs, seqTemplates, forceStepScan: true })
-              const inq = await syncInquiriesFromMails()
+              await syncInquiriesFromMails()
               setInquiries(await listInquiries())
-              setIntellectNote(`${r.note}｜${inq.note}`)
               setIntellectNote(r.note)
               await load()
             }catch(e:any){ setIntellectNote('档案同步失败：'+String(e.message||e).slice(0,100)) }

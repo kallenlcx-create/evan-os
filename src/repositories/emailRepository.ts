@@ -649,12 +649,30 @@ export async function saveGmailLabelSync(items: any[]): Promise<void>{
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error || `保存映射失败 ${r.status}`)
 }
-export async function applyGmailLabelSync(): Promise<{ updated: number; note?: string }>{
+export async function applyGmailLabelSync(): Promise<{ updated: number; note?: string; customers?: any[] }>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')
   const r = await fetch(`${h.url}/email/gmail-label-sync-apply`, { method:'POST', headers: bypassHeaders(h) })
   const j = await r.json().catch(()=>({}))
   if(!r.ok) throw new Error(j.error || `对齐失败 ${r.status}`)
+  // 关键：把服务器上的变更写回本地 Dexie，跟进表/客户页才能立刻看到
+  try{
+    for(const c of (j.customers || [])){
+      const id = String(c.id || '')
+      if(!id) continue
+      await db.customers.update(id, {
+        tags: c.tags,
+        quoteStatus: c.quoteStatus,
+        quoteAt: c.quoteAt,
+        quoteMatched: c.quoteMatched,
+        salesStage: c.salesStage,
+        updatedAt: c.updatedAt || new Date().toISOString(),
+      } as any)
+    }
+    if((j.customers || []).length){
+      window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+    }
+  }catch(e){ console.warn('[gmail-label-sync] local merge', e) }
   return j
 }
 export async function getGmailLabelSyncMap(): Promise<any[]>{

@@ -2769,14 +2769,15 @@ app.post('/email/gmail-label-sync-apply', auth, wrap(async (req,res)=>{
       }
     }
   }
+  const result = await applyLabelMapToCustomers(req.user, byEmail)
+  res.json({ ok:true, updated: result.updated, mappedTags: maps.length, customers: result.customers })
+}))
+
+// 将 byEmail(邮箱→标签集) 写回 customers（MySQL），并返回变更列表供前端写本地库
+async function applyLabelMapToCustomers(username, byEmail){
+  const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[username])
   let updated = 0
-  for(const [em, tags] of byEmail){
-    const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
-    // 注：上面全表取再匹配较慢；改为按 data JSON 邮箱匹配
-    break
-  }
-  // 高效：逐客户匹配
-  const [crows] = await pool.query(`SELECT row_id, data FROM data WHERE username=? AND table_name='customers' AND deleted=0`,[req.user])
+  const customers = []
   for(const row of crows){
     let d = {}
     try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data||{}) }catch{ continue }
@@ -2788,28 +2789,67 @@ app.post('/email/gmail-label-sync-apply', auth, wrap(async (req,res)=>{
     }
     if(!hit.size) continue
     const tags = [...new Set([...(d.tags||[]).map(String), ...hit])]
-    if(tags.length === (d.tags||[]).length) continue
+    let changed = tags.length !== (d.tags||[]).length
     d.tags = tags
-    d.updatedAt = new Date().toISOString()
     if(tags.includes('已报价') && (!d.quoteStatus || d.quoteStatus === 'none')){
       d.quoteStatus = 'sent'
       d.quoteAt = d.quoteAt || new Date().toISOString()
       d.quoteMatched = 'Gmail标签:已报价'
+      changed = true
     }
     if(tags.includes('直接下单')){
-      d.salesStage = 'direct_order'
+      if(d.salesStage !== 'direct_order'){ d.salesStage = 'direct_order'; changed = true }
       d.stage = d.stage === 'lost' ? d.stage : 'won'
     } else if(tags.includes('已下单')){
-      d.salesStage = 'ordered'
+      if(d.salesStage !== 'ordered'){ d.salesStage = 'ordered'; changed = true }
       d.stage = d.stage === 'lost' ? d.stage : 'won'
     }
+    if(!changed) continue
+    d.updatedAt = new Date().toISOString()
     await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at) VALUES (?,?,?,?,?)
       ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
-      [req.user, 'customers', row.row_id, JSON.stringify(d), sqlNow()])
+      [username, 'customers', row.row_id, JSON.stringify(d), sqlNow()])
     updated++
+    customers.push({ id: row.row_id, tags: d.tags, quoteStatus: d.quoteStatus, quoteAt: d.quoteAt, quoteMatched: d.quoteMatched, salesStage: d.salesStage, updatedAt: d.updatedAt })
   }
-  res.json({ ok:true, updated, mappedTags: maps.length })
-}))
+  return { updated, customers }
+}
+
+// 每 12 小时自动对齐 Gmail 标签 → 客户
+async function gmailLabelAutoSyncTick(){
+  if(!dbReady) return
+  try{
+    const [users] = await pool.query('SELECT DISTINCT username FROM gmail_label_sync WHERE enabled=1')
+    for(const u of users){
+      const username = u.username
+      const [maps] = await pool.query('SELECT * FROM gmail_label_sync WHERE username=? AND enabled=1',[username])
+      if(!maps.length) continue
+      const idToTag = new Map(maps.map(m=> [String(m.gmail_label_id), String(m.workbench_tag || m.gmail_label_name)]))
+      const nameToTag = new Map(maps.map(m=> [String(m.gmail_label_name||'').toLowerCase(), String(m.workbench_tag || m.gmail_label_name)]))
+      const [msgs] = await pool.query(`SELECT m.from_addr, m.to_addr, m.labels
+        FROM mail_messages m JOIN email_accounts a ON a.id=m.account_id
+        WHERE a.username=? AND m.labels<>'' LIMIT 20000`, [username])
+      const byEmail = new Map()
+      for(const m of msgs){
+        const addrs = [m.from_addr, m.to_addr].join(' ').toLowerCase().split(/[,;\s]+/).filter(x=> x.includes('@'))
+        const labelIds = String(m.labels||'').split(',').filter(Boolean)
+        for(const id of labelIds){
+          const tag = idToTag.get(id) || nameToTag.get(id.toLowerCase())
+          if(!tag) continue
+          for(const em of addrs){
+            if(em.includes('maxemblem.com')) continue
+            if(!byEmail.has(em)) byEmail.set(em, new Set())
+            byEmail.get(em).add(tag)
+          }
+        }
+      }
+      const r = await applyLabelMapToCustomers(username, byEmail)
+      console.log('[gmail-label-sync] auto', username, 'updated', r.updated)
+    }
+  }catch(e){ console.log('[gmail-label-sync] tick skip:', String(e.message||e).slice(0,120)) }
+}
+setInterval(gmailLabelAutoSyncTick, 12 * 60 * 60 * 1000)
+setTimeout(gmailLabelAutoSyncTick, 60 * 1000)
 
 // 工作台标签 → Gmail（对客户最近 N 封打/去标签）
 app.post('/email/gmail-label-modify', auth, wrap(async (req,res)=>{
