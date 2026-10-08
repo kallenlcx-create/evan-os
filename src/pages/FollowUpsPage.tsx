@@ -152,6 +152,7 @@ export default function FollowUpsPage() {
   const [boardBulkBusy, setBoardBulkBusy] = useState('')
   const [bulkEditField, setBulkEditField] = useState<'quote'|'level'|'step'|'stage'|'mode'>('quote')
   const [bulkEditValue, setBulkEditValue] = useState('')
+  const [boardTagInput, setBoardTagInput] = useState('')
   const BOARD_PER_PAGE_KEY = 'evan:followupBoardPerPage'
   const BOARD_COL_W_KEY = 'evan:followupBoardColW'
   const [boardPerPage, setBoardPerPage] = useState<number>(()=>{
@@ -1783,6 +1784,27 @@ const handleBatchAiTpl = useCallback(async () => {
                   className="px-2 py-1 bg-purple-500 rounded disabled:opacity-50"
                 >{batchAiReplyBusy ? 'AI回复中…' : '🤖 批量AI回复'}</button>
                 <button onClick={()=> void applyBoardBulk('copy-emails')} className="px-2 py-1 bg-white/20 rounded">复制邮箱</button>
+                <span className="opacity-50">|</span>
+                <input value={boardTagInput} onChange={e=> setBoardTagInput(e.target.value)} placeholder="标签…" className="w-24 px-2 py-1 rounded text-[11px] text-gray-800"/>
+                <button onClick={async()=>{
+                  const t = boardTagInput.trim(); if(!t) return
+                  const r = await applyCustomerTags({ customerIds:[...boardSelected], add:[t] })
+                  setIntellectNote(`已为 ${r.changed} 人打标签「${t}」并同步客户页`); setBoardTagInput(''); await load()
+                }} className="px-2 py-1 bg-white/20 rounded text-[11px]">+标签</button>
+                <button onClick={async()=>{
+                  const t = boardTagInput.trim().replace(/^[-×]/,''); if(!t) return
+                  const r = await applyCustomerTags({ customerIds:[...boardSelected], remove:[t] })
+                  setIntellectNote(`已从 ${r.changed} 人删除标签「${t}」并同步客户页`); setBoardTagInput(''); await load()
+                }} className="px-2 py-1 bg-white/20 rounded text-[11px] text-rose-200">-标签</button>
+                <span className="opacity-50">|</span>
+                {MANUAL_BUCKETS.map(b=>(
+                  <span key={'bs-'+b.key} className="inline-flex">
+                    <button onClick={async()=>{ await applyBuckets({ customerIds:[...boardSelected], add:[b.key], mode:'add', note:'跟进表批量移入' }); setManualMap(loadManualBuckets()); setIntellectNote(`已移入「${b.label}」并同步客户页`); await load() }}
+                      className="px-1.5 py-1 bg-white/15 rounded-l text-[11px]" title={'移入'+b.label}>+{b.label}</button>
+                    <button onClick={async()=>{ await applyBuckets({ customerIds:[...boardSelected], remove:[b.key] }); setManualMap(loadManualBuckets()); setIntellectNote(`已移出「${b.label}」并同步客户页`); await load() }}
+                      className="px-1.5 py-1 bg-white/15 rounded-r text-[11px] text-rose-200" title={'移出'+b.label}>×</button>
+                  </span>
+                ))}
                 <button
                   onClick={()=> void applyBoardBulk('ai-reply')}
                   disabled={!!boardBulkBusy || batchAiReplyBusy || aiDraftBusy || !!aiReplyBusy}
