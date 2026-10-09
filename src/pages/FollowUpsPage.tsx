@@ -113,6 +113,47 @@ export default function FollowUpsPage() {
   const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
   const [batchScheduleAt, setBatchScheduleAt] = useState('')
   const [batchSkipped, setBatchSkipped] = useState(0)
+  /** 批量自定义图片：图片库持久化，多选后随每封邮件发出 */
+  const BATCH_IMG_LIB_KEY = 'evan:batch-img-lib'
+  const [batchImgLib, setBatchImgLib] = useState<Array<{id:string;name:string;mime:string;b64:string}>>(()=>{
+    try{
+      const raw = JSON.parse(localStorage.getItem(BATCH_IMG_LIB_KEY) || '[]')
+      return Array.isArray(raw) ? raw.filter(x=> x && x.b64) : []
+    }catch{ return [] }
+  })
+  const [batchImgSel, setBatchImgSel] = useState<Set<string>>(new Set())
+  const [batchImgMode, setBatchImgMode] = useState<'file'|'inline'|'both'>('both')
+  const [batchImgBusy, setBatchImgBusy] = useState(false)
+  const saveBatchImgLib = (lib: Array<{id:string;name:string;mime:string;b64:string}>) => {
+    setBatchImgLib(lib)
+    try{ localStorage.setItem(BATCH_IMG_LIB_KEY, JSON.stringify(lib)) }
+    catch{ alert('图片库已满（浏览器存储上限），请删除旧图再试') }
+  }
+  /** 本地图片压缩：最长边≤1000px，转 JPEG/WebP，保证 base64 体积可进 outbox */
+  const compressImageFile = (file: File): Promise<{name:string;mime:string;b64:string}> => new Promise((resolve, reject)=>{
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = ()=>{
+      try{
+        const MAX = 1000
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height))
+        const w = Math.max(1, Math.round(img.width * scale))
+        const h = Math.max(1, Math.round(img.height * scale))
+        const cv = document.createElement('canvas')
+        cv.width = w; cv.height = h
+        cv.getContext('2d')!.drawImage(img, 0, 0, w, h)
+        URL.revokeObjectURL(url)
+        const keepPng = String(file.type||'').toLowerCase() === 'image/png'
+        const mime = keepPng ? 'image/png' : 'image/jpeg'
+        const dataUrl = cv.toDataURL(mime, 0.85)
+        const b64 = String(dataUrl.split(',')[1] || '')
+        if(!b64) return reject(new Error('图片解码失败'))
+        resolve({ name: file.name || ('img-'+Date.now()+'.jpg'), mime, b64 })
+      }catch(e:any){ reject(e) }
+    }
+    img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error('不是有效图片')) }
+    img.src = url
+  })
 
   const attKey = (a: any) => `${a.accountId||''}|${a.uid||''}|${a.filename}`
 
@@ -858,6 +899,18 @@ const handleBatchAiTpl = useCallback(async () => {
             html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+latestAtt.filename+'" style="max-width:360px;border-radius:6px"/></p>'
           }
         }
+        // 自定义图片：每封都带同一批；cid 用 cimgN 避免与历史附件 att0 冲突
+        const selImgs = batchImgLib.filter(im=> batchImgSel.has(im.id))
+        selImgs.forEach((im, idx)=>{
+          const cid = 'cimg'+idx
+          if(batchImgMode === 'file'){
+            atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime })
+          }else{
+            // inline / both：附件带 cid（服务端自动转 inline，不会重复显示为附件），正文嵌图
+            atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime, cid })
+            html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+im.name+'" style="max-width:360px;border-radius:6px"/></p>'
+          }
+        })
         const enq = await enqueueMail(acc.id, c.email || '', subj, body, idem, false, {
           html,
           sendAt,
@@ -912,7 +965,7 @@ const handleBatchAiTpl = useCallback(async () => {
       alert('批量入队失败\n' + errList.slice(0,3).join('\n') + '\n\n请把此弹窗全文发给开发排查。')
     }
     await load()
-  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending])
+  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -2250,7 +2303,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 </div>
                 {/* 预览：仅展示将渲染的主题/正文片段，不改变发送逻辑 */}
                 <div className="mt-2 text-[11px] text-gray-500">
-                  <div className="font-medium text-gray-700 mb-1">发送预览（前3人，模板变量已替换；实际仍按会话/附件规则入队）</div>
+                  <div className="font-medium text-gray-700 mb-1">发送预览（前3人，模板变量已替换；实际仍按会话/附件规则入队{batchImgSel.size?`；另附自定义图片 ${batchImgSel.size} 张（${batchImgMode==='file'?'仅附件':batchImgMode==='inline'?'仅正文':'附件+正文'}）`:''}）</div>
                   {batchTargets.slice(0,3).map(c=>{
                     const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
                     const name = (c.contactName||c.title||'there').split(' ')[0]
@@ -2301,6 +2354,58 @@ const handleBatchAiTpl = useCallback(async () => {
                   <input type="datetime-local" value={batchScheduleAt} onChange={e=> setBatchScheduleAt(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
                 )}
                 <span className="text-[10px] text-gray-400">支持 Hi + 客户名；图片默认用最新附件嵌正文</span>
+              </div>
+              {/* 自定义图片：图片库多选，每封都带 */}
+              <div className="border rounded-lg p-2 bg-gray-50/60">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] text-gray-600">🖼️ 自定义图片{batchImgSel.size?` · 已选 ${batchImgSel.size}`:''}</span>
+                  <label className="px-2 py-1 border rounded-lg text-[11px] bg-white cursor-pointer hover:bg-blue-50 text-blue-600">
+                    {batchImgBusy ? '压缩中…' : '+ 上传图片'}
+                    <input type="file" accept="image/*" multiple className="hidden" disabled={batchImgBusy} onChange={async e=>{
+                      const files = Array.from(e.target.files||[]).filter(f=> String(f.type||'').startsWith('image/'))
+                      e.target.value = ''
+                      if(!files.length) return
+                      if(batchImgLib.length + files.length > 8) return alert('图片库最多 8 张，请先删除旧图')
+                      setBatchImgBusy(true)
+                      try{
+                        const news: Array<{id:string;name:string;mime:string;b64:string}> = []
+                        for(const f of files){
+                          if(f.size > 10*1024*1024) throw new Error(`「${f.name}」超过 10MB，请先压缩`)
+                          const c = await compressImageFile(f)
+                          news.push({ id: 'img-'+Date.now()+'-'+Math.random().toString(36).slice(2,7), ...c })
+                        }
+                        saveBatchImgLib([...batchImgLib, ...news])
+                        setBatchImgSel(prev=>{ const n = new Set(prev); news.forEach(x=> n.add(x.id)); return n })
+                      }catch(err:any){ alert('图片处理失败：'+String(err?.message||err).slice(0,120)) }
+                      finally{ setBatchImgBusy(false) }
+                    }}/>
+                  </label>
+                  {(batchImgSel.size>0) && (
+                    <>
+                      {([['file','仅附件'],['inline','仅正文'],['both','同时']] as const).map(([k,l])=>(
+                        <label key={k} className="flex items-center gap-1 text-[11px] text-gray-600">
+                          <input type="radio" name="cimgMode" checked={batchImgMode===k} onChange={()=> setBatchImgMode(k)}/>
+                          {l}
+                        </label>
+                      ))}
+                    </>
+                  )}
+                </div>
+                {batchImgLib.length>0 ? (
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {batchImgLib.map(im=>(
+                      <div key={im.id} className={`relative border rounded-lg overflow-hidden ${batchImgSel.has(im.id)?'border-blue-500 ring-1 ring-blue-300':'border-gray-200 opacity-70'}`}>
+                        <img src={`data:${im.mime};base64,${im.b64}`} alt={im.name} title={im.name}
+                          onClick={()=> setBatchImgSel(prev=>{ const n=new Set(prev); if(n.has(im.id)) n.delete(im.id); else n.add(im.id); return n })}
+                          className="w-16 h-16 object-cover cursor-pointer"/>
+                        <button title="删除" onClick={()=>{ saveBatchImgLib(batchImgLib.filter(x=> x.id!==im.id)); setBatchImgSel(prev=>{ const n=new Set(prev); n.delete(im.id); return n }) }}
+                          className="absolute top-0 right-0 px-1 text-[10px] bg-black/50 text-white rounded-bl">×</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-gray-400 mt-1">未上传。上传后勾选，每封邮件都会带上（正文嵌图用 cid，附件走 base64，无需服务器改动）。</div>
+                )}
               </div>
               <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
               <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>

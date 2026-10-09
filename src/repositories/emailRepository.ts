@@ -568,7 +568,7 @@ export async function enqueueMail(
     sendAt?: string | null
     inReplyTo?: string | null
     references?: string | null
-    attachments?: Array<{ filename: string; path?: string; contentType?: string }>
+    attachments?: Array<{ filename: string; path?: string; contentType?: string; contentBase64?: string; cid?: string }>
   }
 ): Promise<{id:string;status:string;send_at?:string}>{
   const h = await serverHeaders()
