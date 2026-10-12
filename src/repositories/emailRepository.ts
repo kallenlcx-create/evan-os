@@ -188,6 +188,13 @@ export async function syncFromDb(accountId: string, onBatch?: (done: number, tot
       if(u > since) since = u
     }
     await db.emails.bulkPut(mails)
+    // 本地已读优先：自动同步不得复活用户已标已读的邮件（防重进页面未读复活）
+    try{
+      const readKeys = await db.emails.where('id').anyOf(mails.map(m=> m.id)).filter(e=> !!e.isRead).primaryKeys()
+      if(readKeys.length){
+        await db.emails.where('id').anyOf(readKeys as string[]).modify({ isRead: true, status: '已处理' } as any)
+      }
+    }catch{}
     // 客户去重（整批一次查询+一次写入）；噪声地址不建卡
     try{
       const addrTitle = new Map<string,string>()
@@ -217,18 +224,21 @@ export async function syncFromDb(accountId: string, onBatch?: (done: number, tot
   return { added, total }
 }
 
-export async function markRead(id:string, isRead:boolean){
+export async function markRead(id:string, isRead:boolean): Promise<boolean>{
   const m = await getEmail(id); if(m){ m.isRead=isRead; await db.emails.put(m)}
-  // 尽力回写服务端库 + Gmail（失败静默，限流时下轮自动对齐）
+  // 尽力回写服务端库 + Gmail（返回是否成功，调用方决定是否提示）
   try{
     const h = await serverHeaders()
     if(h && m){
       const uid = m.uid != null ? String(m.uid) : id.split('-').pop()
-      await fetch(`${h.url}/email/mark-read`, { method:'POST',
+      const r = await fetch(`${h.url}/email/mark-read`, { method:'POST',
         headers:{ 'Content-Type':'application/json', ...bypassHeaders(h) },
         body: JSON.stringify({ accountId: m.accountId, uid, read: isRead, folder: m.imapFolder || undefined }) })
+      if(!r.ok) return false
+      return true
     }
-  }catch{}
+    return !!m
+  }catch{ return false }
 }
 export async function upsertEmail(m: EmailMessage){ await db.emails.put(m); return m }
 

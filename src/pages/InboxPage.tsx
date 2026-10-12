@@ -118,6 +118,14 @@ function isSelfSender(m: EmailMessage){
   const from = extractAddr(m.from).toLowerCase()
   return SELF_ADDRS.includes(from)
 }
+/** 回复引用原文块（Gmail 式 "On ... wrote:"），发送时拼到正文后 */
+function buildQuoteHtml(m: EmailMessage){
+  const d = (()=>{ try{ return new Date(m.date).toLocaleString() }catch{ return String(m.date||'') } })()
+  const inner = (m.html && String(m.html).trim())
+    ? String(m.html)
+    : `<div>${String(m.text||'(无正文)').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br/>')}</div>`
+  return `<br/><div>On ${d} ${String(m.from||'')} wrote:</div><blockquote style="margin:4px 0 4px 8px;padding-left:8px;border-left:1px solid #ccc;color:#555">${inner}</blockquote>`
+}
 
 export default function InboxPage(){
   const [askModal, askText] = useAskText()
@@ -148,6 +156,12 @@ export default function InboxPage(){
   const [replyBody, setReplyBody] = useState('')
   const [replyHtml, setReplyHtml] = useState('')
   const [scheduleAt, setScheduleAt] = useState('')
+  // Gmail 式底部编辑器：最小化 / 加宽 / 引用原文
+  const [replyMin, setReplyMin] = useState(false)
+  const [replyWide, setReplyWide] = useState(false)
+  const [replyQuote, setReplyQuote] = useState('')
+  const [quoteOn, setQuoteOn] = useState(true)
+  const [quoteOpen, setQuoteOpen] = useState(false)
   const editorRef = useRef<HTMLDivElement>(null)
   const syncEditor = useCallback(()=>{
     const el = editorRef.current
@@ -156,15 +170,15 @@ export default function InboxPage(){
     setReplyHtml(html)
     setReplyBody(el.innerText || '')
   },[])
-  // 打开回复/恢复草稿时灌入编辑器
+  // 打开回复/恢复草稿/从最小化恢复时灌入编辑器
   useEffect(()=>{ void getGmailLabelSyncMap().then(setSyncedLabels).catch(()=>{}) },[])
   useEffect(()=>{
-    if(!showReply) return
+    if(!showReply || replyMin) return
     const el = editorRef.current
     if(!el) return
     const html = replyHtml || (replyBody ? `<div>${replyBody.replace(/\n/g,'<br/>')}</div>` : '')
     if(el.innerHTML !== html) el.innerHTML = html
-  },[showReply, replyHtml, replyBody])
+  },[showReply, replyMin, replyHtml, replyBody])
   const [sending, setSending] = useState(false)
   const [replyDraftId, setReplyDraftId] = useState('')
   const [draftNote, setDraftNote] = useState('')
@@ -239,10 +253,11 @@ export default function InboxPage(){
     setTranslated('')
     setExpandedIds(new Set([m.id]))
     if (markAsRead) {
-      await markRead(m.id, true)
+      const ok = await markRead(m.id, true)
       setEmails(prev => prev.map(x => x.id === m.id ? { ...x, isRead: true } : x))
       // 未读列表：读完即从列表消失（Gmail 行为）
       void refreshServerMeta()
+      if(!ok) showToast('服务端标已读失败（本地已标），稍后自动对齐')
     }
     if (!m.text && !m.html) {
       setBodyLoading(true)
@@ -421,6 +436,10 @@ export default function InboxPage(){
     setScheduleAt('')
     setReplyDraftId('')
     setDraftNote('')
+    setReplyQuote(buildQuoteHtml(selected))
+    setQuoteOn(true)
+    setQuoteOpen(false)
+    setReplyMin(false)
     setShowReply(true)
     // 恢复同收件人+主题的草稿
     getDrafts().then(ds=>{
@@ -450,6 +469,12 @@ export default function InboxPage(){
     return ()=> clearInterval(t)
   },[showReply, replyBody, replyTo, replySubject, replyDraftId, accounts, selected?.accountId])
 
+  /** 回复最终 HTML：正文 + 引用原文（草稿只存正文，引用每次发送时现拼，防重复） */
+  const replyFinalHtml = ()=>{
+    const body = replyHtml || textToHtml(replyBody)
+    return body + (quoteOn && replyQuote ? replyQuote : '')
+  }
+
   const handleQueueSend = async()=>{
     if(!selected || !replyTo || !replyBody.trim()) return
     const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
@@ -461,7 +486,7 @@ export default function InboxPage(){
         acc.id, replyTo, replySubject, replyBody,
         replyDraftId ? `draft-${replyDraftId}` : undefined,
         false,
-        { html: replyHtml || textToHtml(replyBody), sendAt }
+        { html: replyFinalHtml(), sendAt }
       )
       if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
       setReplyDraftId(''); setShowReply(false); setScheduleAt('')
@@ -489,7 +514,7 @@ export default function InboxPage(){
       // 找到对应账号
       const acc = accounts.find(a=> a.id === selected.accountId) || accounts[0]
       if(!acc){ alert('无可用邮箱账号'); return }
-      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody, replyHtml || textToHtml(replyBody))
+      const result = await sendEmail(acc.id, replyTo, replySubject, replyBody, replyFinalHtml())
       if(result.ok){
         if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
         setReplyDraftId('')
@@ -498,7 +523,7 @@ export default function InboxPage(){
         await db.emails.put({
           id: uidFn(), accountId: acc.id, folder:'sent',
           from: acc.email, to: replyTo, subject: replySubject,
-          text: replyBody, html: replyHtml || '', date: new Date().toISOString(),
+          text: replyBody, html: replyFinalHtml(), date: new Date().toISOString(),
           isRead: true, hasAttachment: false,
           customerId: customer?.id, intent: selected.intent, product: selected.product,
         } as any)
@@ -613,11 +638,6 @@ export default function InboxPage(){
   },[])
   const [aiBusy, setAiBusy] = useState<'translate'|'summary'|null>(null)
   const [markKeyBusy, setMarkKeyBusy] = useState(false)
-  const openThread = useCallback(async (row: ThreadRow)=>{
-    setSelectedThreadId(row.key)
-    setExpandedIds(new Set([row.latest.id]))
-    await openMail(row.latest, true)
-  },[openMail])
   const toggleExpand = useCallback((id: string)=>{
     setExpandedIds(prev=>{
       const n = new Set(prev)
@@ -665,7 +685,32 @@ export default function InboxPage(){
       return m
     }
   },[])
-  // 线程打开/变化时自动滚到底（最新邮件处，和 Gmail 一致）
+  // 点击会话：默认展开最新邮件并加载正文；同会话未读一并标已读（Gmail 行为）
+  const openThread = useCallback(async (row: ThreadRow)=>{
+    setSelectedThreadId(row.key)
+    setExpandedIds(new Set([row.latest.id]))
+    await openMail(row.latest, true)
+    try{ await ensureBody(row.latest) }catch{}
+    // 同会话其他未读一起标已读，否则徽标数对不上
+    try{
+      const sibs = emails.filter(e=> threadKeyOf(e)===row.key && !e.isRead && e.id!==row.latest.id)
+      if(sibs.length){
+        let okAll = true
+        for(const s of sibs){ okAll = (await markRead(s.id, true)) && okAll }
+        setEmails(prev=> prev.map(x=> sibs.some(s=> s.id===x.id) ? { ...x, isRead: true } : x))
+        if(!okAll) showToast('部分已读未同步到服务器，稍后自动对齐')
+      }
+      await refreshServerMeta()
+    }catch{}
+  },[openMail, emails, ensureBody, refreshServerMeta, showToast])
+  // 全部展开 / 全部收起：逐个加载正文（限 30 封防卡顿）
+  const expandAllThread = useCallback(async (open: boolean)=>{
+    if(!thread.length) return
+    if(!open){ setExpandedIds(new Set()); return }
+    const list = thread.slice(-30)
+    setExpandedIds(new Set(list.map(m=> m.id)))
+    for(const m of list){ try{ await ensureBody(m) }catch{} }
+  },[thread, ensureBody])
   const threadBoxRef = useRef<HTMLDivElement>(null)
   useEffect(()=>{
     const el = threadBoxRef.current
@@ -1079,6 +1124,12 @@ export default function InboxPage(){
                     )}
                     <button onClick={()=> setShowTrans(v=>!v)} className="px-2 py-0.5 bg-white border rounded text-xs flex items-center gap-1 shrink-0"><Languages size={12}/> {showTrans?'原文':'翻译'}</button>
                     <button onClick={()=> setAllowRemoteImg(v=>!v)} title="外部图片可能泄露已读回执" className="px-2 py-0.5 bg-white border rounded text-xs shrink-0">{allowRemoteImg?'🖼️':'🚫🖼️'}</button>
+                    {thread.length>1 && (
+                      <button onClick={()=> void expandAllThread(!(thread.length && thread.every(m=> expandedIds.has(m.id))))}
+                        className="px-2 py-0.5 bg-white border rounded text-xs shrink-0" title="展开/收起本会话全部邮件">
+                        {thread.every(m=> expandedIds.has(m.id)) ? '全部收起' : '全部展开'}
+                      </button>
+                    )}
                   </div>
                   <div className="text-xs text-gray-400 truncate">发件：{selected.from} → {selected.to} · {new Date(selected.date).toLocaleString()}</div>
                 </div>
@@ -1543,6 +1594,8 @@ export default function InboxPage(){
                     setReplySubject(selected.subject.startsWith('Re:') ? selected.subject : `Re: ${selected.subject}`)
                     setReplyBody(draft.trim())
                     setReplyDraftId(''); setDraftNote('')
+                    setReplyQuote(buildQuoteHtml(selected))
+                    setQuoteOn(true); setQuoteOpen(false); setReplyMin(false)
                     setShowReply(true)
                   }finally{ setAiDraftingReply(false) }
                 }} disabled={aiDraftingReply} className="flex-1 py-1.5 bg-purple-50 text-purple-600 border border-purple-200 rounded text-[11px] disabled:opacity-50">{aiDraftingReply?'生成中…':'✨ 专属回复'}</button>
@@ -1553,102 +1606,124 @@ export default function InboxPage(){
         </div>
       </div>
 
-      {/* 回复邮件弹窗：富文本 + 定时发送 */}
-      {showReply && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowReply(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
-            <div className="px-5 py-3 border-b flex items-center justify-between">
-              <div className="text-sm font-semibold text-gray-800">回复邮件</div>
-              <button onClick={()=> setShowReply(false)} className="p-1 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
+      {/* 回复邮件：Gmail 式底部编辑器（富文本 + 引用原文 + 定时/排队发送） */}
+      {showReply && !replyMin && (
+        <div className={`fixed bottom-0 left-1/2 -translate-x-1/2 z-50 w-full ${replyWide?'max-w-5xl':'max-w-3xl'} px-2`}>
+          <div className="bg-white rounded-t-2xl shadow-2xl border border-b-0 flex flex-col max-h-[82vh]">
+            {/* 顶栏：↩ 收件人 + 最小化/加宽/关闭 */}
+            <div className="px-4 py-2 border-b flex items-center gap-2 bg-gray-50/80 rounded-t-2xl">
+              <span className="text-gray-500 text-sm">↩</span>
+              <span className="text-[13px] text-gray-700 truncate flex-1" title={replyTo}>{replyTo || '回复邮件'}</span>
+              {draftNote && <span className="text-[10px] text-gray-400 shrink-0">{draftNote}</span>}
+              <button type="button" onClick={()=> setReplyMin(true)} title="最小化" className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">─</button>
+              <button type="button" onClick={()=> setReplyWide(v=>!v)} title={replyWide?'还原':'加宽'} className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">⤢</button>
+              <button type="button" onClick={()=> setShowReply(false)} title="关闭" className="p-1 hover:bg-gray-200 rounded"><X size={15} className="text-gray-500"/></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
-                <span className="text-gray-400">收件人</span>
-                <input value={replyTo} onChange={e=> setReplyTo(e.target.value)} className="px-3 py-2 border rounded-lg text-sm bg-gray-50"/>
-              </div>
-              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
-                <span className="text-gray-400">主题</span>
-                <input value={replySubject} onChange={e=> setReplySubject(e.target.value)} className="px-3 py-2 border rounded-lg text-sm"/>
-              </div>
-              {/* 富文本工具栏 */}
-              <div className="flex flex-wrap items-center gap-1 px-1 py-1 border rounded-t-lg bg-gray-50">
-                {([
-                  ['bold','B','加粗'],
-                  ['italic','I','斜体'],
-                  ['underline','U','下划线'],
-                ] as const).map(([cmd, label, tip])=>(
-                  <button key={cmd} type="button" title={tip}
-                    onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
-                    className={`w-7 h-7 rounded text-xs font-bold border bg-white ${cmd==='italic'?'italic':cmd==='underline'?'underline':''}`}
-                  >{label}</button>
-                ))}
-                <span className="w-px h-5 bg-gray-200 mx-0.5"/>
-                <label className="flex items-center gap-1 text-[10px] text-gray-500 px-1" title="文字颜色">
-                  <span>A</span>
-                  <input type="color" defaultValue="#111827" className="w-6 h-6 border-0 bg-transparent cursor-pointer"
-                    onChange={e=>{ document.execCommand('foreColor', false, e.target.value); syncEditor() }}/>
-                </label>
-                <label className="flex items-center gap-1 text-[10px] text-gray-500 px-1" title="背景色">
-                  <span className="px-1 rounded bg-yellow-100">底</span>
-                  <input type="color" defaultValue="#fef08a" className="w-6 h-6 border-0 bg-transparent cursor-pointer"
-                    onChange={e=>{ document.execCommand('hiliteColor', false, e.target.value); syncEditor() }}/>
-                </label>
-                <span className="w-px h-5 bg-gray-200 mx-0.5"/>
-                {([
-                  ['insertUnorderedList','•','无序列表'],
-                  ['insertOrderedList','1.','有序列表'],
-                  ['justifyLeft','☰','左对齐'],
-                  ['justifyCenter','≡','居中'],
-                ] as const).map(([cmd, label, tip])=>(
-                  <button key={cmd} type="button" title={tip}
-                    onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
-                    className="w-7 h-7 rounded text-xs border bg-white"
-                  >{label}</button>
-                ))}
-                <button type="button" title="插入链接"
-                  onMouseDown={e=>{
-                    e.preventDefault()
-                    const url = prompt('链接地址 https://…')
-                    if(url) { document.execCommand('createLink', false, url); syncEditor() }
-                  }}
-                  className="w-7 h-7 rounded text-xs border bg-white">🔗</button>
-                <button type="button" title="清除格式"
-                  onMouseDown={e=>{ e.preventDefault(); document.execCommand('removeFormat'); syncEditor()}}
-                  className="w-7 h-7 rounded text-xs border bg-white">Tx</button>
+            <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2">
+              <div className="flex items-center gap-2 text-xs border-b border-gray-100 pb-1.5">
+                <span className="text-gray-400 shrink-0">收件人</span>
+                <input value={replyTo} onChange={e=> setReplyTo(e.target.value)} className="flex-1 text-[13px] outline-none bg-transparent"/>
+                <span className="text-gray-400 shrink-0 hidden sm:inline">主题：{replySubject}</span>
               </div>
               <div
                 ref={editorRef}
                 contentEditable
                 suppressContentEditableWarning
                 onInput={()=> syncEditor()}
-                data-ph="输入回复内容…（支持加粗、颜色、列表、链接）"
-                className="min-h-[220px] px-4 py-3 border border-t-0 rounded-b-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 empty:before:content-[attr(data-ph)] empty:before:text-gray-300"
+                data-ph="输入回复内容…"
+                className="min-h-[180px] text-sm focus:outline-none empty:before:content-[attr(data-ph)] empty:before:text-gray-300"
               />
-              <div className="grid grid-cols-[60px_1fr] gap-2 text-xs items-center">
-                <span className="text-gray-400">定时</span>
-                <div className="flex items-center gap-2">
-                  <input type="datetime-local" value={scheduleAt} onChange={e=> setScheduleAt(e.target.value)}
-                    className="px-3 py-2 border rounded-lg text-sm bg-gray-50"/>
-                  {scheduleAt && (
-                    <button type="button" onClick={()=> setScheduleAt('')} className="text-[11px] text-gray-400 hover:text-gray-600">清除（立即）</button>
+              {/* 引用原文：默认折叠（Gmail •••），发送时拼入 */}
+              {replyQuote && (
+                <div className="text-xs">
+                  <button type="button" onClick={()=> setQuoteOpen(v=>!v)} className="text-gray-400 hover:text-gray-600 tracking-widest" title={quoteOn?(quoteOpen?'收起引用原文':'展开引用原文'):'已移除引用原文，点击恢复并展开'}>
+                    •••
+                  </button>
+                  {quoteOpen && (
+                    <div className="mt-1 border-l-2 border-gray-200 pl-2 text-gray-500 max-h-48 overflow-y-auto">
+                      <div className="flex items-center justify-between mb-1">
+                        <span>引用原文（随邮件发出）</span>
+                        <button type="button" onClick={()=> setQuoteOn(v=>!v)} className={`px-1.5 py-0.5 border rounded text-[10px] ${quoteOn?'text-gray-500':'text-rose-500 border-rose-200'}`}>
+                          {quoteOn?'发送时包含':'已排除，点击恢复'}
+                        </button>
+                      </div>
+                      {quoteOn && <div dangerouslySetInnerHTML={{ __html: replyQuote }} className="opacity-80"/>}
+                    </div>
                   )}
-                  <span className="text-[10px] text-gray-400">{scheduleAt ? `到点由服务器发出` : '不填=立即排队发出'}</span>
                 </div>
-              </div>
+              )}
             </div>
-            <div className="px-5 py-3 border-t flex items-center gap-2">
-              <button onClick={()=> setShowReply(false)} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
-              {draftNote && <span className="text-[10px] text-gray-400">{draftNote}</span>}
-              <div className="flex-1"/>
-              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-xs hover:bg-green-100 disabled:opacity-50" title={scheduleAt?`将在 ${scheduleAt} 发出`:'网络不稳时用这个，后台队列发出'}>
-                {scheduleAt ? '📅 定时发送' : '⏳ 排队发送'}
+            {/* 底栏：发送 + 格式工具（Gmail 式） */}
+            <div className="px-3 py-2 border-t flex items-center gap-1 flex-wrap bg-white rounded-b-none">
+              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo || !!scheduleAt} title={scheduleAt?'已设定时，只能走定时/排队':'立即 SMTP 发送'} className="pl-4 pr-3 py-1.5 bg-blue-600 text-white rounded-full text-[13px] font-medium flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
+                {sending ? '发送中...' : '发送'}
               </button>
-              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo || !!scheduleAt} title={scheduleAt?'已设定时，只能走定时/排队':'立即 SMTP 发送'} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-xs flex items-center gap-1.5 hover:bg-blue-700 disabled:opacity-50">
-                <Send size={12}/> {sending ? '发送中...' : '发送'}
+              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-full text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50" title={scheduleAt?`将在 ${scheduleAt} 发出`:'网络不稳时用这个，后台队列发出'}>
+                {scheduleAt ? '📅 定时' : '⏳ 排队'}
               </button>
+              <input type="datetime-local" value={scheduleAt} onChange={e=> setScheduleAt(e.target.value)} title="定时发送（设了时间只能走排队）"
+                className="px-1 py-1 text-[11px] text-gray-500 bg-transparent outline-none"/>
+              {scheduleAt && (
+                <button type="button" onClick={()=> setScheduleAt('')} className="text-[11px] text-gray-400 hover:text-gray-600">✕</button>
+              )}
+              <span className="w-px h-5 bg-gray-200 mx-1"/>
+              {([
+                ['bold','B','加粗'],
+                ['italic','I','斜体'],
+                ['underline','U','下划线'],
+              ] as const).map(([cmd, label, tip])=>(
+                <button key={cmd} type="button" title={tip}
+                  onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                  className={`w-7 h-7 rounded text-xs font-bold hover:bg-gray-100 text-gray-600 ${cmd==='italic'?'italic':cmd==='underline'?'underline':''}`}
+                >{label}</button>
+              ))}
+              <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="文字颜色">
+                <span className="font-bold">A</span>
+                <input type="color" defaultValue="#111827" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
+                  onChange={e=>{ document.execCommand('foreColor', false, e.target.value); syncEditor() }}/>
+              </label>
+              <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="背景色">
+                <span className="px-0.5 rounded bg-yellow-100">底</span>
+                <input type="color" defaultValue="#fef08a" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
+                  onChange={e=>{ document.execCommand('hiliteColor', false, e.target.value); syncEditor() }}/>
+              </label>
+              {([
+                ['insertUnorderedList','•','无序列表'],
+                ['insertOrderedList','1.','有序列表'],
+              ] as const).map(([cmd, label, tip])=>(
+                <button key={cmd} type="button" title={tip}
+                  onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                  className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600"
+                >{label}</button>
+              ))}
+              <button type="button" title="插入链接"
+                onMouseDown={e=>{
+                  e.preventDefault()
+                  const url = prompt('链接地址 https://…')
+                  if(url) { document.execCommand('createLink', false, url); syncEditor() }
+                }}
+                className="w-7 h-7 rounded text-xs hover:bg-gray-100">🔗</button>
+              <button type="button" title="清除格式"
+                onMouseDown={e=>{ e.preventDefault(); document.execCommand('removeFormat'); syncEditor()}}
+                className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600">Tx</button>
+              <span className="flex-1"/>
+              <button type="button" title="舍弃草稿" onClick={async()=>{
+                if(replyBody.trim() && !confirm('舍弃当前回复草稿？')) return
+                if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
+                setReplyDraftId(''); setReplyBody(''); setReplyHtml(''); setReplyQuote(''); setScheduleAt('')
+                setShowReply(false); setReplyMin(false)
+              }} className="w-7 h-7 rounded text-gray-400 hover:bg-gray-100">🗑</button>
             </div>
           </div>
         </div>
+      )}
+      {/* 最小化药丸 */}
+      {showReply && replyMin && (
+        <button onClick={()=> setReplyMin(false)}
+          className="fixed bottom-0 right-6 z-50 bg-gray-900 text-white text-xs pl-3 pr-4 py-2.5 rounded-t-xl shadow-2xl flex items-center gap-2 hover:bg-gray-800 max-w-[320px]">
+          <span className="text-gray-400">↩</span>
+          <span className="truncate">回复：{replyTo || replySubject}</span>
+        </button>
       )}
       {/* 待发预览 */}
       {outboxPreview && (
