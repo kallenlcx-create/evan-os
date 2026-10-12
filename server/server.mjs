@@ -2906,12 +2906,24 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
       const { google } = await import('googleapis');
       const o = await buildOAuthClient(req, accountId);
       const gmail = google.gmail({ version:'v1', auth:o });
-      const [mrows] = await pool.query('SELECT gmail_msgid FROM mail_messages WHERE account_id=? AND uid=?',[accountId, uidNum]).catch(()=> [[]]);
-      const gid = mrows.length ? String(mrows[0].gmail_msgid || '') : '';
-      if(!gid) throw new Error('本地无此邮件的 Gmail ID');
+      const [mrows] = await pool.query('SELECT gmail_msgid, message_id FROM mail_messages WHERE account_id=? AND uid=?',[accountId, uidNum]).catch(()=> [[]]);
+      let gid = mrows.length ? String(mrows[0].gmail_msgid || '') : '';
+      if(!gid && mrows.length && mrows[0].message_id){
+        // 无 gid 时用 RFC Message-ID 反查并回填（IMAP 入库的老邮件常见缺 gid）
+        try{
+          const st0 = { apiCalls:0 };
+          const q = 'rfc822msgid:' + String(mrows[0].message_id).replace(/^<|>$/g, '');
+          const found = await gmailCall(()=> gmail.users.messages.list({ userId:'me', q, maxResults: 1 }), st0, 'messages.list-resolve');
+          const fid = (found && found.data && found.data.messages && found.data.messages[0] && found.data.messages[0].id) || '';
+          if(fid){ gid = fid; await pool.query('UPDATE mail_messages SET gmail_msgid=? WHERE account_id=? AND uid=?',[fid, accountId, uidNum]).catch(()=>{}); }
+        }catch{}
+      }
       const st0 = { apiCalls:0 };
-      await gmailCall(()=> gmail.users.messages.modify({ userId:'me', id: gid,
-        requestBody: read ? { removeLabelIds:['UNREAD'] } : { addLabelIds:['UNREAD'] } }), st0, 'messages.modify');
+      if(gid){
+        await gmailCall(()=> gmail.users.messages.modify({ userId:'me', id: gid,
+          requestBody: read ? { removeLabelIds:['UNREAD'] } : { addLabelIds:['UNREAD'] } }), st0, 'messages.modify');
+      }
+      // 无 gid 也继续：至少把本地库 is_read 落盘（徽标以本地库为准，Gmail 下轮对齐）
     }catch(e){
       return res.status(502).json({ error:'Gmail API 标已读失败：' + String(e.message||e).slice(0,120) })
     }
@@ -2927,10 +2939,10 @@ app.post('/email/mark-read', auth, wrap(async (req,res)=>{
       }finally{ lock.release() }
     }finally{ await client.logout().catch(()=>{}) }
   }
-  // 优先按 (account, folder, uid) 精确回写；无 folder 时兜底只按 uid
-  if(folder && folder !== '[Gmail]/All Mail'){
-    await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',[read?1:0, sqlNow(), accountId, folder, uidNum])
-  } else {
+  // 回写：先精确 (account,folder,uid)，命中 0 行则兜底 (account,uid)
+  // （前端传的 folder 常为 INBOX，与库内 [Gmail]/All Mail 不一致，之前导致永远写不上）
+  const [up] = await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND folder=? AND uid=?',[read?1:0, sqlNow(), accountId, folder, uidNum])
+  if(!up || !up.affectedRows){
     await pool.query('UPDATE mail_messages SET is_read=?, updated_at=? WHERE account_id=? AND uid=?',[read?1:0, sqlNow(), accountId, uidNum])
   }
   res.json({ ok:true })
