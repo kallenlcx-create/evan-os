@@ -716,6 +716,14 @@ export default function InboxPage(){
     const el = threadBoxRef.current
     if(el) el.scrollTop = el.scrollHeight
   },[thread.length, selected?.id, expandedIds.size])
+  // 回复框以内联新邮件插入会话末尾时，滚到编辑框（Gmail 行为）
+  const composerRef = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    if(showReply && !replyMin){
+      const t = setTimeout(()=>{ composerRef.current?.scrollIntoView({ block: 'end' }) }, 60)
+      return ()=> clearTimeout(t)
+    }
+  },[showReply, replyMin])
 
   // ====== 搜索模式：优先服务端邮件库全文检索 ======
   const [searching, setSearching] = useState(false)
@@ -1285,6 +1293,115 @@ export default function InboxPage(){
                     }catch(e:any){ showToast('标为未读失败：'+String(e?.message||e).slice(0,80)) }
                   }} className="px-2 py-1 bg-white border rounded text-xs">标为未读</button>
                 </div>
+                {/* 回复编辑器：Gmail 式内联全宽（占满中栏，随会话滚动） */}
+                {showReply && !replyMin && (
+                  <div ref={composerRef} className="m-3 mt-1 bg-white rounded-2xl border shadow-sm flex flex-col">
+                    {/* 顶栏：↩ 收件人 + 最小化/加高/关闭 */}
+                    <div className="px-4 py-2 border-b flex items-center gap-2 bg-gray-50/80 rounded-t-2xl">
+                      <span className="text-gray-500 text-sm">↩</span>
+                      <span className="text-[13px] text-gray-700 truncate flex-1" title={replyTo}>{replyTo || '回复邮件'}</span>
+                      {draftNote && <span className="text-[10px] text-gray-400 shrink-0">{draftNote}</span>}
+                      <button type="button" onClick={()=> setReplyMin(true)} title="最小化" className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">─</button>
+                      <button type="button" onClick={()=> setReplyWide(v=>!v)} title={replyWide?'恢复高度':'加高编辑区'} className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">⤢</button>
+                      <button type="button" onClick={()=> setShowReply(false)} title="关闭" className="p-1 hover:bg-gray-200 rounded"><X size={15} className="text-gray-500"/></button>
+                    </div>
+                    <div className="px-4 py-2 space-y-2">
+                      <div className="flex items-center gap-2 text-xs border-b border-gray-100 pb-1.5">
+                        <span className="text-gray-400 shrink-0">收件人</span>
+                        <input value={replyTo} onChange={e=> setReplyTo(e.target.value)} className="flex-1 text-[13px] outline-none bg-transparent"/>
+                        <span className="text-gray-400 shrink-0 hidden sm:inline">主题：{replySubject}</span>
+                      </div>
+                      <div
+                        ref={editorRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        onInput={()=> syncEditor()}
+                        data-ph="输入回复内容…"
+                        className={`${replyWide?'min-h-[420px]':'min-h-[220px]'} text-sm focus:outline-none empty:before:content-[attr(data-ph)] empty:before:text-gray-300`}
+                      />
+                      {/* 引用原文：默认折叠（Gmail •••），发送时拼入 */}
+                      {replyQuote && (
+                        <div className="text-xs">
+                          <button type="button" onClick={()=> setQuoteOpen(v=>!v)} className="text-gray-400 hover:text-gray-600 tracking-widest" title={quoteOn?(quoteOpen?'收起引用原文':'展开引用原文'):'已移除引用原文，点击恢复并展开'}>
+                            •••
+                          </button>
+                          {quoteOpen && (
+                            <div className="mt-1 border-l-2 border-gray-200 pl-2 text-gray-500 max-h-48 overflow-y-auto">
+                              <div className="flex items-center justify-between mb-1">
+                                <span>引用原文（随邮件发出）</span>
+                                <button type="button" onClick={()=> setQuoteOn(v=>!v)} className={`px-1.5 py-0.5 border rounded text-[10px] ${quoteOn?'text-gray-500':'text-rose-500 border-rose-200'}`}>
+                                  {quoteOn?'发送时包含':'已排除，点击恢复'}
+                                </button>
+                              </div>
+                              {quoteOn && <div dangerouslySetInnerHTML={{ __html: replyQuote }} className="opacity-80"/>}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {/* 底栏：发送 + 格式工具（Gmail 式） */}
+                    <div className="px-3 py-2 border-t flex items-center gap-1 flex-wrap bg-white rounded-b-2xl">
+                      <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo || !!scheduleAt} title={scheduleAt?'已设定时，只能走定时/排队':'立即 SMTP 发送'} className="pl-4 pr-3 py-1.5 bg-blue-600 text-white rounded-full text-[13px] font-medium flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
+                        {sending ? '发送中...' : '发送'}
+                      </button>
+                      <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-full text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50" title={scheduleAt?`将在 ${scheduleAt} 发出`:'网络不稳时用这个，后台队列发出'}>
+                        {scheduleAt ? '📅 定时' : '⏳ 排队'}
+                      </button>
+                      <input type="datetime-local" value={scheduleAt} onChange={e=> setScheduleAt(e.target.value)} title="定时发送（设了时间只能走排队）"
+                        className="px-1 py-1 text-[11px] text-gray-500 bg-transparent outline-none"/>
+                      {scheduleAt && (
+                        <button type="button" onClick={()=> setScheduleAt('')} className="text-[11px] text-gray-400 hover:text-gray-600">✕</button>
+                      )}
+                      <span className="w-px h-5 bg-gray-200 mx-1"/>
+                      {([
+                        ['bold','B','加粗'],
+                        ['italic','I','斜体'],
+                        ['underline','U','下划线'],
+                      ] as const).map(([cmd, label, tip])=>(
+                        <button key={cmd} type="button" title={tip}
+                          onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                          className={`w-7 h-7 rounded text-xs font-bold hover:bg-gray-100 text-gray-600 ${cmd==='italic'?'italic':cmd==='underline'?'underline':''}`}
+                        >{label}</button>
+                      ))}
+                      <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="文字颜色">
+                        <span className="font-bold">A</span>
+                        <input type="color" defaultValue="#111827" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
+                          onChange={e=>{ document.execCommand('foreColor', false, e.target.value); syncEditor() }}/>
+                      </label>
+                      <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="背景色">
+                        <span className="px-0.5 rounded bg-yellow-100">底</span>
+                        <input type="color" defaultValue="#fef08a" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
+                          onChange={e=>{ document.execCommand('hiliteColor', false, e.target.value); syncEditor() }}/>
+                      </label>
+                      {([
+                        ['insertUnorderedList','•','无序列表'],
+                        ['insertOrderedList','1.','有序列表'],
+                      ] as const).map(([cmd, label, tip])=>(
+                        <button key={cmd} type="button" title={tip}
+                          onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
+                          className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600"
+                        >{label}</button>
+                      ))}
+                      <button type="button" title="插入链接"
+                        onMouseDown={e=>{
+                          e.preventDefault()
+                          const url = prompt('链接地址 https://…')
+                          if(url) { document.execCommand('createLink', false, url); syncEditor() }
+                        }}
+                        className="w-7 h-7 rounded text-xs hover:bg-gray-100">🔗</button>
+                      <button type="button" title="清除格式"
+                        onMouseDown={e=>{ e.preventDefault(); document.execCommand('removeFormat'); syncEditor()}}
+                        className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600">Tx</button>
+                      <span className="flex-1"/>
+                      <button type="button" title="舍弃草稿" onClick={async()=>{
+                        if(replyBody.trim() && !confirm('舍弃当前回复草稿？')) return
+                        if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
+                        setReplyDraftId(''); setReplyBody(''); setReplyHtml(''); setReplyQuote(''); setScheduleAt('')
+                        setShowReply(false); setReplyMin(false)
+                      }} className="w-7 h-7 rounded text-gray-400 hover:bg-gray-100">🗑</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -1606,117 +1723,6 @@ export default function InboxPage(){
         </div>
       </div>
 
-      {/* 回复邮件：Gmail 式底部编辑器（富文本 + 引用原文 + 定时/排队发送） */}
-      {showReply && !replyMin && (
-        <div className={`fixed bottom-0 left-1/2 -translate-x-1/2 z-50 w-full ${replyWide?'max-w-5xl':'max-w-3xl'} px-2`}>
-          <div className="bg-white rounded-t-2xl shadow-2xl border border-b-0 flex flex-col max-h-[82vh]">
-            {/* 顶栏：↩ 收件人 + 最小化/加宽/关闭 */}
-            <div className="px-4 py-2 border-b flex items-center gap-2 bg-gray-50/80 rounded-t-2xl">
-              <span className="text-gray-500 text-sm">↩</span>
-              <span className="text-[13px] text-gray-700 truncate flex-1" title={replyTo}>{replyTo || '回复邮件'}</span>
-              {draftNote && <span className="text-[10px] text-gray-400 shrink-0">{draftNote}</span>}
-              <button type="button" onClick={()=> setReplyMin(true)} title="最小化" className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">─</button>
-              <button type="button" onClick={()=> setReplyWide(v=>!v)} title={replyWide?'还原':'加宽'} className="p-1 hover:bg-gray-200 rounded text-gray-500 text-sm leading-none">⤢</button>
-              <button type="button" onClick={()=> setShowReply(false)} title="关闭" className="p-1 hover:bg-gray-200 rounded"><X size={15} className="text-gray-500"/></button>
-            </div>
-            <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2">
-              <div className="flex items-center gap-2 text-xs border-b border-gray-100 pb-1.5">
-                <span className="text-gray-400 shrink-0">收件人</span>
-                <input value={replyTo} onChange={e=> setReplyTo(e.target.value)} className="flex-1 text-[13px] outline-none bg-transparent"/>
-                <span className="text-gray-400 shrink-0 hidden sm:inline">主题：{replySubject}</span>
-              </div>
-              <div
-                ref={editorRef}
-                contentEditable
-                suppressContentEditableWarning
-                onInput={()=> syncEditor()}
-                data-ph="输入回复内容…"
-                className="min-h-[180px] text-sm focus:outline-none empty:before:content-[attr(data-ph)] empty:before:text-gray-300"
-              />
-              {/* 引用原文：默认折叠（Gmail •••），发送时拼入 */}
-              {replyQuote && (
-                <div className="text-xs">
-                  <button type="button" onClick={()=> setQuoteOpen(v=>!v)} className="text-gray-400 hover:text-gray-600 tracking-widest" title={quoteOn?(quoteOpen?'收起引用原文':'展开引用原文'):'已移除引用原文，点击恢复并展开'}>
-                    •••
-                  </button>
-                  {quoteOpen && (
-                    <div className="mt-1 border-l-2 border-gray-200 pl-2 text-gray-500 max-h-48 overflow-y-auto">
-                      <div className="flex items-center justify-between mb-1">
-                        <span>引用原文（随邮件发出）</span>
-                        <button type="button" onClick={()=> setQuoteOn(v=>!v)} className={`px-1.5 py-0.5 border rounded text-[10px] ${quoteOn?'text-gray-500':'text-rose-500 border-rose-200'}`}>
-                          {quoteOn?'发送时包含':'已排除，点击恢复'}
-                        </button>
-                      </div>
-                      {quoteOn && <div dangerouslySetInnerHTML={{ __html: replyQuote }} className="opacity-80"/>}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            {/* 底栏：发送 + 格式工具（Gmail 式） */}
-            <div className="px-3 py-2 border-t flex items-center gap-1 flex-wrap bg-white rounded-b-none">
-              <button onClick={handleSendReply} disabled={sending || !replyBody.trim() || !replyTo || !!scheduleAt} title={scheduleAt?'已设定时，只能走定时/排队':'立即 SMTP 发送'} className="pl-4 pr-3 py-1.5 bg-blue-600 text-white rounded-full text-[13px] font-medium flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
-                {sending ? '发送中...' : '发送'}
-              </button>
-              <button onClick={handleQueueSend} disabled={sending || !replyBody.trim() || !replyTo} className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-full text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50" title={scheduleAt?`将在 ${scheduleAt} 发出`:'网络不稳时用这个，后台队列发出'}>
-                {scheduleAt ? '📅 定时' : '⏳ 排队'}
-              </button>
-              <input type="datetime-local" value={scheduleAt} onChange={e=> setScheduleAt(e.target.value)} title="定时发送（设了时间只能走排队）"
-                className="px-1 py-1 text-[11px] text-gray-500 bg-transparent outline-none"/>
-              {scheduleAt && (
-                <button type="button" onClick={()=> setScheduleAt('')} className="text-[11px] text-gray-400 hover:text-gray-600">✕</button>
-              )}
-              <span className="w-px h-5 bg-gray-200 mx-1"/>
-              {([
-                ['bold','B','加粗'],
-                ['italic','I','斜体'],
-                ['underline','U','下划线'],
-              ] as const).map(([cmd, label, tip])=>(
-                <button key={cmd} type="button" title={tip}
-                  onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
-                  className={`w-7 h-7 rounded text-xs font-bold hover:bg-gray-100 text-gray-600 ${cmd==='italic'?'italic':cmd==='underline'?'underline':''}`}
-                >{label}</button>
-              ))}
-              <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="文字颜色">
-                <span className="font-bold">A</span>
-                <input type="color" defaultValue="#111827" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
-                  onChange={e=>{ document.execCommand('foreColor', false, e.target.value); syncEditor() }}/>
-              </label>
-              <label className="flex items-center text-[10px] text-gray-500 px-0.5" title="背景色">
-                <span className="px-0.5 rounded bg-yellow-100">底</span>
-                <input type="color" defaultValue="#fef08a" className="w-5 h-5 border-0 bg-transparent cursor-pointer"
-                  onChange={e=>{ document.execCommand('hiliteColor', false, e.target.value); syncEditor() }}/>
-              </label>
-              {([
-                ['insertUnorderedList','•','无序列表'],
-                ['insertOrderedList','1.','有序列表'],
-              ] as const).map(([cmd, label, tip])=>(
-                <button key={cmd} type="button" title={tip}
-                  onMouseDown={e=>{ e.preventDefault(); document.execCommand(cmd); syncEditor()}}
-                  className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600"
-                >{label}</button>
-              ))}
-              <button type="button" title="插入链接"
-                onMouseDown={e=>{
-                  e.preventDefault()
-                  const url = prompt('链接地址 https://…')
-                  if(url) { document.execCommand('createLink', false, url); syncEditor() }
-                }}
-                className="w-7 h-7 rounded text-xs hover:bg-gray-100">🔗</button>
-              <button type="button" title="清除格式"
-                onMouseDown={e=>{ e.preventDefault(); document.execCommand('removeFormat'); syncEditor()}}
-                className="w-7 h-7 rounded text-xs hover:bg-gray-100 text-gray-600">Tx</button>
-              <span className="flex-1"/>
-              <button type="button" title="舍弃草稿" onClick={async()=>{
-                if(replyBody.trim() && !confirm('舍弃当前回复草稿？')) return
-                if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
-                setReplyDraftId(''); setReplyBody(''); setReplyHtml(''); setReplyQuote(''); setScheduleAt('')
-                setShowReply(false); setReplyMin(false)
-              }} className="w-7 h-7 rounded text-gray-400 hover:bg-gray-100">🗑</button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* 最小化药丸 */}
       {showReply && replyMin && (
         <button onClick={()=> setReplyMin(false)}
