@@ -13,6 +13,7 @@ import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags } from '../services/bucketOps'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 import { PRODUCT_TAGS, runProductClassify, formatProductResult, isProductTag } from '../services/productClassify'
+import { backfillCustomerPhones } from '../services/inquiryScan'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -109,6 +110,18 @@ export default function CustomersPage(){
     await db.customers.update(c.id, { tags: clean, updatedAt: new Date().toISOString() } as any)
     setList(prev => prev.map(x=> x.id===c.id ? { ...x, tags: clean } as Customer : x))
     if(selectedCustomer?.id === c.id) setSelectedCustomer({ ...selectedCustomer, tags: clean } as Customer)
+    window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  }
+  // 卡片头部电话编辑（询盘回填 + 手工改，同步跟进表）
+  const [phoneEditing, setPhoneEditing] = useState(false)
+  const [phoneInput, setPhoneInput] = useState('')
+  const savePhone = async () => {
+    if(!selectedCustomer) return
+    const v = phoneInput.trim()
+    await db.customers.update(selectedCustomer.id, { phone: v, updatedAt: new Date().toISOString() } as any)
+    setList(prev => prev.map(x=> x.id===selectedCustomer.id ? { ...x, phone: v } as Customer : x))
+    setSelectedCustomer({ ...selectedCustomer, phone: v } as Customer)
+    setPhoneEditing(false)
     window.dispatchEvent(new CustomEvent('evan-customers-updated'))
   }
   const deleteTagGlobal = async (tag: string) => {
@@ -892,6 +905,21 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
         <h1 className="text-xl font-bold">👥 客户</h1>
         <span className="text-xs text-gray-400">{sortedFiltered.length} / {list.length}</span>
         <button onClick={()=> { setImportText(IMPORT_TEMPLATE); setShowImport(true) }} className="px-3 py-1 rounded-full text-xs bg-green-600 text-white hover:bg-green-700" title="批量导入：等级/重点/阶段/多品类/复购/类型/多邮箱">📥 批量导入</button>
+        <button onClick={async()=>{
+          if(intelBusy) return
+          setIntelBusy('phone')
+          setIntelNote('📞 电话回填中…（先补回执正文再匹配客户，空号才补）')
+          try{
+            const r = await backfillCustomerPhones()
+            setIntelNote(`📞 回填完成：补上 ${r.fixed} 人 · 已有跳过 ${r.skipped} · 无匹配 ${r.unmatched} · 询盘无号 ${r.noPhone}（询盘 ${r.checked}，补正文 ${r.reloaded}）`)
+            await load()
+            if(selectedCustomer){
+              const fresh = await db.customers.get(selectedCustomer.id) as any
+              if(fresh) setSelectedCustomer(fresh)
+            }
+          }catch(e:any){ setIntelNote('电话回填失败：'+String(e.message||e).slice(0,100)) }
+          finally{ setIntelBusy('') }
+        }} disabled={!!intelBusy} className="px-3 py-1 rounded-full text-xs border bg-white disabled:opacity-50" title="从询盘回执批量回填客户电话（已有号不覆盖）">📞 回填电话</button>
         <button onClick={()=> { setSelectMode(v=>!v); setChecked(new Set()) }} className={`px-3 py-1 rounded-full text-xs border ${selectMode?'bg-gray-800 text-white':'bg-white'}`}>{selectMode?'退出多选':'☑️ 多选'}</button>
         <div className="relative">
           <button
@@ -1526,7 +1554,25 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
               <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">{(selectedCustomer.contactName||selectedCustomer.title||'?')[0]}</div>
               <div className="flex-1 min-w-0">
                 <div className="font-semibold text-sm">{selectedCustomer.contactName||selectedCustomer.title}</div>
-                <div className="text-xs text-gray-500">{selectedCustomer.email} · {selectedCustomer.company||'—'}</div>
+                <div className="text-xs text-gray-500">
+                  {selectedCustomer.email} · {selectedCustomer.company||'—'}
+                  {phoneEditing ? (
+                    <span className="ml-1 inline-flex items-center gap-1">
+                      <input value={phoneInput} onChange={e=> setPhoneInput(e.target.value)} placeholder="电话"
+                        onKeyDown={async e=>{
+                          if(e.key==='Enter'){ await savePhone() }
+                          if(e.key==='Escape'){ setPhoneEditing(false) }
+                        }}
+                        className="w-32 px-1.5 py-0.5 border rounded text-xs" autoFocus/>
+                      <button onClick={()=> void savePhone()} className="text-blue-600 hover:text-blue-800">✓</button>
+                      <button onClick={()=> setPhoneEditing(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+                    </span>
+                  ) : (
+                    <span className="ml-1">· 📞 {selectedCustomer.phone || '—'}
+                      <button onClick={()=>{ setPhoneInput(selectedCustomer.phone||''); setPhoneEditing(true) }} title="编辑电话" className="ml-0.5 text-gray-300 hover:text-blue-500">✎</button>
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-1 mt-1 flex-wrap">
                   {(selectedCustomer.tags || []).map(t=>(
                     <span key={t} className="text-[10px] px-1.5 py-0.5 bg-teal-50 text-teal-600 rounded-full flex items-center gap-0.5">{t}

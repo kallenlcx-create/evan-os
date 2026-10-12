@@ -191,11 +191,22 @@ function mergeInquiry(prev: InquiryRecord | undefined, next: Partial<InquiryReco
   return merged
 }
 
-/** 确保客户存在（噪声不建）；返回 id 或 null */
-export async function ensureInquiryCustomer(email: string, name: string): Promise<string | null> {
+/** 电话规范化：去空格/横杠/括号，保留 + 前缀；太短视为无效 */
+export function normalizePhone(raw: any): string {
+  let s = String(raw||'').trim()
+  if(!s) return ''
+  const plus = s.startsWith('+') ? '+' : ''
+  const digits = s.replace(/\D/g, '')
+  if(digits.length < 6) return ''
+  return plus + digits
+}
+
+/** 确保客户存在（噪声不建）；返回 id 或 null。phone：新建写入，已存在且为空才补，不覆盖手工号 */
+export async function ensureInquiryCustomer(email: string, name: string, phone?: string): Promise<string | null> {
   const addr = String(email||'').toLowerCase().trim()
   if(!addr || !addr.includes('@')) return null
   if(isNoiseEmailAddress(addr) || isBoardNoiseEmail(addr) || addr.includes('maxemblem.com')) return null
+  const cleanPhone = normalizePhone(phone)
   try {
     const existing = await db.customers.filter((c: any) =>
       String(c.email||'').toLowerCase() === addr
@@ -203,7 +214,9 @@ export async function ensureInquiryCustomer(email: string, name: string): Promis
     ).first() as Customer | undefined
     if(existing){
       const tags = new Set([...(existing.tags||[]).map(String), '询盘'])
-      await db.customers.update(existing.id, { tags: [...tags], updatedAt: now() } as any)
+      const patch: any = { tags: [...tags], updatedAt: now() }
+      if(cleanPhone && !normalizePhone((existing as any).phone)) patch.phone = cleanPhone
+      await db.customers.update(existing.id, patch)
       return existing.id
     }
     const rec: any = {
@@ -218,6 +231,7 @@ export async function ensureInquiryCustomer(email: string, name: string): Promis
       relations: [],
       company: '',
       email: addr,
+      phone: cleanPhone || '',
       stage: 'lead',
       isKey: false,
       level: 'C',
@@ -320,7 +334,7 @@ export async function syncInquiriesFromMails(emails?: EmailMessage[]): Promise<{
 
     let customerId = prev?.customerId
     if(email){
-      customerId = (await ensureInquiryCustomer(email, name)) || customerId
+      customerId = (await ensureInquiryCustomer(email, name, (partial as any).phone)) || customerId
     } else if(customerId){
       const c = await db.customers.get(customerId) as Customer | undefined
       if(c) { email = email || c.email || ''; name = name || c.contactName || c.title }
@@ -343,7 +357,7 @@ export async function syncInquiriesFromMails(emails?: EmailMessage[]): Promise<{
       const rf = parseReceiptFields(receipt)
       const m2 = mergeInquiry(next, { ...rf, inquiryNo: no, source: 'receipt' })
       if(rf.customerEmail && m2.customerId !== customerId && rf.customerEmail){
-        const id2 = await ensureInquiryCustomer(rf.customerEmail, rf.customerName||'')
+        const id2 = await ensureInquiryCustomer(rf.customerEmail, rf.customerName||'', rf.phone)
         if(id2) { m2.customerId = id2; customerId = id2 }
       }
       byNo.set(no, m2)
@@ -363,6 +377,9 @@ export async function syncInquiriesFromMails(emails?: EmailMessage[]): Promise<{
           const tags = [...new Set([...(c.tags||[]).map(String), '询盘'])]
           const nos = [...new Set([...(c.inquiryNos||[]).map(String), rec.inquiryNo])]
           const patch: any = { tags, inquiryNos: nos, updatedAt: now() }
+          // 询盘电话回填客户卡（空才补，不覆盖手工号）
+          const rp = normalizePhone((rec as any).phone)
+          if(rp && !normalizePhone(c.phone)) patch.phone = rp
           // 业务创建时间 = 询盘日（INQC），不改 createdAt
           const inqDate = String(rec.inquiryDate||'').slice(0,10)
           if(/^\d{4}-\d{2}-\d{2}$/.test(inqDate)){
@@ -407,4 +424,61 @@ export async function markInquiryStatus(inquiryNo: string, status: InquiryRecord
   const rec = (await loadInquiries()).find(x=> x.inquiryNo === inquiryNo)
   if(!rec) return
   await saveInquiry({ ...rec, status, updatedAt: now() })
+}
+
+/**
+ * 存量电话批量回填：
+ * 1) 无 phone 的询盘 → 加载回执正文重解析（正文缺失是提不到号的主因）
+ * 2) 有 phone 的询盘 → 按 customerId / 邮箱匹配客户，空才补
+ * 返回统计；需配合 UI 按钮调用
+ */
+export async function backfillCustomerPhones(): Promise<{
+  checked: number; reloaded: number; fixed: number; skipped: number; unmatched: number; noPhone: number
+}> {
+  const stat = { checked: 0, reloaded: 0, fixed: 0, skipped: 0, unmatched: 0, noPhone: 0 }
+  const recs = await loadInquiries()
+  stat.checked = recs.length
+  let loadMailBody: ((m: EmailMessage) => Promise<EmailMessage>) | null = null
+  try{ ({ loadMailBody } = await import('../repositories/emailRepository')) }catch{ loadMailBody = null }
+  // 1) 缺号询盘：补正文 → 重解析
+  for(const rec of recs){
+    if(normalizePhone(rec.phone)) continue
+    for(const mid of (rec.sourceMailIds||[])){
+      try{
+        let m = await db.emails.get(String(mid)) as EmailMessage | undefined
+        if(!m || !isInquiryReceipt(m)) continue
+        if((!m.text && !(m as any).html) && loadMailBody){
+          m = await loadMailBody(m).catch(()=> m)
+          stat.reloaded++
+        }
+        const rf = parseReceiptFields(m)
+        const p = normalizePhone(rf.phone)
+        if(p){
+          await saveInquiry({ ...rec, phone: p, updatedAt: now() })
+          rec.phone = p
+          break
+        }
+      }catch{ /* ignore */ }
+    }
+  }
+  // 2) 有号 → 回填客户
+  for(const rec of recs){
+    const p = normalizePhone(rec.phone)
+    if(!p){ stat.noPhone++; continue }
+    let c: any = rec.customerId ? await db.customers.get(rec.customerId).catch(()=> undefined) : undefined
+    if(!c && rec.customerEmail){
+      const addr = String(rec.customerEmail).toLowerCase()
+      c = await db.customers.filter((x: any) =>
+        String(x.email||'').toLowerCase() === addr
+        || (x.extraEmails||[]).some((e: string)=> String(e).toLowerCase() === addr)
+      ).first().catch(()=> undefined) as any
+      if(c){ rec.customerId = c.id; await saveInquiry({ ...rec, updatedAt: now() }) }
+    }
+    if(!c){ stat.unmatched++; continue }
+    if(normalizePhone(c.phone)){ stat.skipped++; continue }
+    await db.customers.update(c.id, { phone: p, updatedAt: now() } as any)
+    stat.fixed++
+  }
+  window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  return stat
 }
