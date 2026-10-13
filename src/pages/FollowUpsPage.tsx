@@ -4,7 +4,7 @@ import { db } from '../db'
 import type { FollowUpRecord, Customer, EmailMessage } from '../types'
 import { Calendar, Clock, Flame, AlertTriangle, DollarSign, Repeat, Megaphone, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders, probeSeqServer, getQuoteTemplates, deleteSeqTemplate } from '../repositories/emailRepository'
+import { listAccounts, sendEmail, enqueueMail, getSequences, startSequence, patchSequence, getSeqTemplates, saveSeqTemplate, getSeqConfig, saveSeqConfig, fetchCustomerAttachments, findLatestThreadHeaders, probeSeqServer, getQuoteTemplates, deleteSeqTemplate, syncOutboxCompletions } from '../repositories/emailRepository'
 import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
@@ -86,6 +86,7 @@ export default function FollowUpsPage() {
   },[])
   const [intellectBusy, setIntellectBusy] = useState(false)
   const [orderAlignBusy, setOrderAlignBusy] = useState(false)
+  const [cleanupBusy, setCleanupBusy] = useState(false)
   const [intellectNote, setIntellectNote] = useState('')
   const [batchSending, setBatchSending] = useState(false)
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, errors: 0 })
@@ -113,6 +114,8 @@ export default function FollowUpsPage() {
   const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
   const [batchScheduleAt, setBatchScheduleAt] = useState('')
   const [batchSkipped, setBatchSkipped] = useState(0)
+  /** C：发出后自动移出入队时的手动板块（默认关，勾选才移） */
+  const [batchAutoLeave, setBatchAutoLeave] = useState(false)
   /** 批量自定义图片：图片库持久化，多选后随每封邮件发出 */
   const BATCH_IMG_LIB_KEY = 'evan:batch-img-lib'
   const [batchImgLib, setBatchImgLib] = useState<Array<{id:string;name:string;mime:string;b64:string}>>(()=>{
@@ -361,6 +364,16 @@ export default function FollowUpsPage() {
     setEmails([])
     setList(await db.followUps.toArray() as FollowUpRecord[])
     try { setManualMap(await loadManualBucketsAsync()) } catch { /* ignore */ }
+    // B：对账已发出 → 跟进置 sent（退出今日/逾期）+ 客户首/末发件时间 + 勾选了才移出快照板块
+    try{
+      const r = await syncOutboxCompletions()
+      if(r.sent > 0){
+        setList(await db.followUps.toArray() as FollowUpRecord[])
+        setCustomers(await db.customers.toArray() as Customer[])
+        try { setManualMap(await loadManualBucketsAsync()) } catch { /* ignore */ }
+        setIntellectNote(`发件对账：${r.sent} 封已发出（跟进已关闭，发件时间已同步${r.left?`，自动移出板块 ${r.left} 人`:''}）`)
+      }
+    }catch{ /* ignore */ }
   }, [])
 
   useEffect(() => {
@@ -833,6 +846,7 @@ const handleBatchAiTpl = useCallback(async () => {
     if(!accs.length) return alert('请先绑定邮箱账号（云同步→邮箱账号）')
     const acc = accs[0]
     if(!batchSubject.trim() || !batchBody.trim()) return alert('请填写主题和正文')
+    const { getCustomerBuckets } = await import('../services/manualBuckets')
     let sendAt: string | null = null
     if(batchScheduleMode === 'at'){
       if(!batchScheduleAt) return alert('请选择定时发送时间')
@@ -942,6 +956,9 @@ const handleBatchAiTpl = useCallback(async () => {
             + (mid ? '会话回复' : hasHistory ? '历史主题(无MID)' : '新邮件') + ' ' + subj.slice(0,36),
           status: 'pending',
           createdAt: new Date().toISOString(),
+          outboxId: String(enq.id),
+          buckets: getCustomerBuckets(c.id),
+          autoLeave: batchAutoLeave,
         } as any)
       }catch(e:any){
         errors++
@@ -965,7 +982,7 @@ const handleBatchAiTpl = useCallback(async () => {
       alert('批量入队失败\n' + errList.slice(0,3).join('\n') + '\n\n请把此弹窗全文发给开发排查。')
     }
     await load()
-  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode])
+  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -1084,6 +1101,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }
     const { textToHtml } = await import('../utils/mailHtml')
     const selImgs = (aiReplyUseImgs ? batchImgLib.filter(im=> batchImgSel.has(im.id)) : [])
+    const { getCustomerBuckets } = await import('../services/manualBuckets')
     setAiReplySendBusy(true)
     setAiReplyProgress({ done: 0, total: list2.length })
     let ok = 0, errors = 0, threaded = 0
@@ -1124,6 +1142,9 @@ const handleBatchAiTpl = useCallback(async () => {
               note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '批量AI入队：') + (r.mid ? '会话回复' : '新邮件') + ' ' + r.subject.slice(0,36),
               status: 'pending',
               createdAt: new Date().toISOString(),
+              outboxId: String(enq.id),
+              buckets: getCustomerBuckets(c.id),
+              autoLeave: batchAutoLeave,
             } as any)
           }
           ok++
@@ -1138,7 +1159,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }finally{
       setAiReplySendBusy(false)
     }
-  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, load, loadSequences])
+  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, load, loadSequences])
 
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
@@ -1346,6 +1367,32 @@ const handleBatchAiTpl = useCallback(async () => {
             title="全量扫邮件订单 + 补「已下单」标签 + 关闭已成交客户的逾期跟进"
           >{orderAlignBusy ? '对齐中…' : '🧾 订单对齐'}</button>
           <button onClick={()=> setShowManualOnly(v=>!v)} className={`text-xs px-2 py-1 border rounded ${showManualOnly?'bg-indigo-600 text-white border-indigo-600':'bg-white'}`}>仅手动板块</button>
+          <button
+            onClick={async()=>{
+              if(cleanupBusy) return
+              const todayStr = new Date().toISOString().slice(0,10)
+              const stale = (list as any[]).filter(f=> f.status==='pending' && ((f.channel||[]).includes('批量跟进') || (f.channel||[]).includes('批量AI回复')) && String(f.dueAt||'') < todayStr)
+              if(!stale.length) return alert('没有过期的批量跟进 pending 记录')
+              if(!confirm(`将 ${stale.length} 条过期批量跟进（dueAt 早于今天）置为已发、退出今日/逾期？\n（先按待发箱对账，能对上的按真实发出时间；对不上的按 dueAt 记）`)) return
+              setCleanupBusy(true)
+              try{
+                const r = await syncOutboxCompletions()
+                const rest = (await db.followUps.toArray() as any[]).filter(f=> f.status==='pending' && ((f.channel||[]).includes('批量跟进') || (f.channel||[]).includes('批量AI回复')) && String(f.dueAt||'') < todayStr)
+                const ts = new Date().toISOString()
+                let n = 0
+                for(const f of rest){
+                  await db.followUps.update(f.id, { status: 'sent', sentAt: String(f.dueAt||ts).slice(0,10), updatedAt: ts }).catch(()=>{})
+                  n++
+                }
+                setIntellectNote(`存量清理：待发箱对账 ${r.sent} 封 + 过期批量 ${n} 条已置已发，雷达今日/逾期已干净`)
+                await load()
+              }catch(e:any){ setIntellectNote('清理失败：'+String(e.message||e).slice(0,100)) }
+              finally{ setCleanupBusy(false) }
+            }}
+            disabled={cleanupBusy}
+            className="text-xs px-2 py-1 bg-white border rounded disabled:opacity-50"
+            title="一次性：把过期未关的批量跟进置已发，退出今日/逾期"
+          >{cleanupBusy ? '清理中…' : '🧹 对齐已发'}</button>
           <button onClick={() => load()} className="text-xs px-2 py-1 bg-white border rounded">↻ 刷新</button>
         </div>
         {intellectNote && <div className="mb-2 text-[11px] px-2 py-1.5 bg-purple-50 text-purple-700 rounded-lg">{intellectNote}</div>}
@@ -2449,6 +2496,10 @@ const handleBatchAiTpl = useCallback(async () => {
                   <input type="checkbox" checked={aiReplyUseImgs} onChange={e=> setAiReplyUseImgs(e.target.checked)}/>
                   附图{batchImgSel.size?` ${batchImgSel.size} 张（${batchImgMode==='file'?'仅附件':batchImgMode==='inline'?'仅正文':'附件+正文'}）`:'（图片库未选）'}
                 </label>
+                <label className="flex items-center gap-1" title="发出成功后自动移出入队时的手动板块；不勾则只关跟进、不动板块">
+                  <input type="checkbox" checked={batchAutoLeave} onChange={e=> setBatchAutoLeave(e.target.checked)}/>
+                  发出后移出板块
+                </label>
                 <span className="text-[10px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 入队后邮件中心→📤 待发查看</span>
               </div>
               {aiReplyList.map((r, idx)=>(
@@ -2557,6 +2608,10 @@ const handleBatchAiTpl = useCallback(async () => {
                 {batchScheduleMode==='at' && (
                   <input type="datetime-local" value={batchScheduleAt} onChange={e=> setBatchScheduleAt(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
                 )}
+                <label className="flex items-center gap-1 text-[11px] text-gray-600" title="发出成功后自动移出入队时的手动板块；不勾则只关跟进、不动板块">
+                  <input type="checkbox" checked={batchAutoLeave} onChange={e=> setBatchAutoLeave(e.target.checked)}/>
+                  发出后移出板块
+                </label>
                 <span className="text-[10px] text-gray-400">支持 Hi + 客户名；图片默认用最新附件嵌正文</span>
               </div>
               {/* 自定义图片：图片库多选，每封都带 */}

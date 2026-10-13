@@ -633,6 +633,69 @@ export async function cancelOutbox(id: string): Promise<{ok:boolean;cancelled?:b
   return j
 }
 
+/**
+ * 发件完成联动（B）：扫待发箱 status=sent，按 outboxId 找到跟进记录 →
+ * 置 sent + 写客户首/末发件时间 +（勾选了自动移出才）移出快照手动板块
+ * 幂等：已 sent 跳过。返回 {sent, left}
+ */
+export async function syncOutboxCompletions(): Promise<{ sent: number; left: number }>{
+  const out = { sent: 0, left: 0 }
+  try{
+    const h = await serverHeaders()
+    if(!h) return out
+    const list = await getOutbox().catch(()=>[] as any[])
+    const sentJobs = (list||[]).filter((o:any)=> o.status==='sent')
+    if(!sentJobs.length) return out
+    const allFu = await db.followUps.toArray() as any[]
+    const byOutbox = new Map<string, any>()
+    for(const f of allFu){ if(f.outboxId) byOutbox.set(String(f.outboxId), f) }
+    const ts = new Date().toISOString()
+    for(const job of sentJobs){
+      const fu = byOutbox.get(String(job.id))
+      if(!fu || fu.status==='sent') continue
+      const sentAt = String(job.updated_at || job.send_at || job.created_at || ts)
+      await db.followUps.update(fu.id, { status: 'sent', sentAt, updatedAt: ts }).catch(()=>{})
+      out.sent++
+      // 客户发件时间同步（首/末）
+      try{
+        const c = await db.customers.get(fu.customerId) as any
+        if(c){
+          const patch: any = { lastSentAt: sentAt, updatedAt: ts }
+          if(!c.firstSentAt) patch.firstSentAt = sentAt
+          await db.customers.update(c.id, patch)
+        }
+      }catch{}
+      // C：勾选了才移出快照板块
+      if(fu.autoLeave && Array.isArray(fu.buckets) && fu.buckets.length){
+        try{
+          const { applyBuckets } = await import('../services/bucketOps')
+          await applyBuckets({ customerIds: [fu.customerId], remove: fu.buckets })
+          out.left++
+        }catch{}
+      }
+    }
+    if(out.sent) window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+  }catch{ /* ignore */ }
+  return out
+}
+
+/** 取消发送联动（D）：按 outboxId 把 pending 跟进置 cancelled，雷达按规则自然恢复 */
+export async function cancelLinkedFollowUps(outboxId: string): Promise<number>{
+  try{
+    const all = await db.followUps.toArray() as any[]
+    let n = 0
+    const ts = new Date().toISOString()
+    for(const f of all){
+      if(String(f.outboxId||'')===String(outboxId) && f.status==='pending'){
+        await db.followUps.update(f.id, { status: 'cancelled', updatedAt: ts }).catch(()=>{})
+        n++
+      }
+    }
+    if(n) window.dispatchEvent(new CustomEvent('evan-customers-updated'))
+    return n
+  }catch{ return 0 }
+}
+
 export async function getOutboxDetail(id: string): Promise<any>{
   const h = await serverHeaders()
   if(!h) throw new Error('请先登录云同步')

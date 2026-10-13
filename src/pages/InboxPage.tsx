@@ -5,7 +5,7 @@ import { Mail, Star, Clock, Languages, Sparkles, UserCheck, Calendar, Send, Sett
 import { db } from '../db'
 import type { EmailMessage, EmailAccount, Customer } from '../types'
 import { getGmailLabelSyncMap, modifyGmailLabel } from '../repositories/emailRepository'
-import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, getOutboxDetail, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
+import { listAccounts, upsertAccount, deleteAccount, PROVIDER_PRESETS, mockSync, syncReal, createAccountOnServer, markRead, listEmails, getEmailCount, sendEmail, dbMailStatus, startMailIngest, mailIngestStatus, searchDbMails, searchDbMailsAll, loadMailBody, listAttachments, appendGmailDraft, getUnreadCount, type DbMailFolderStatus, saveDraft, getDrafts, deleteDraft, enqueueMail, getOutbox, retryOutbox, cancelOutbox, cancelLinkedFollowUps, syncOutboxCompletions, getOutboxDetail, setWatchPaused, getWatchPaused, getSequences, startSequence, patchSequence } from '../repositories/emailRepository'
 import { classifyIntent, translateEnToZh, summarizeEmail, buildPortrait, suggestFollowUpDate } from '../services/emailAiService'
 import { MANUAL_BUCKETS, getCustomerBuckets } from '../services/manualBuckets'
 import { applyBuckets } from '../services/bucketOps'
@@ -501,6 +501,8 @@ export default function InboxPage(){
   const refreshOutbox = useCallback(async()=>{
     try{
       setOutboxList(await getOutbox())
+      // 顺带对账已发出：跟进置 sent + 客户发件时间同步（跟进页 load 也会做，双保险）
+      void syncOutboxCompletions()
     }catch(e:any){
       setOutboxList([])
       showToast('待发箱加载失败：' + String(e?.message||e).slice(0,120))
@@ -1768,7 +1770,7 @@ export default function InboxPage(){
               {outboxPreview && (outboxPreview.status==='queued'||outboxPreview.status==='failed') && (
                 <button onClick={async()=>{
                   if(!confirm('取消这封待发邮件？')) return
-                  try{ await cancelOutbox(outboxPreview.id); await refreshOutbox(); setOutboxPreview(null); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                  try{ await cancelOutbox(outboxPreview.id); const n = await cancelLinkedFollowUps(outboxPreview.id); await refreshOutbox(); setOutboxPreview(null); showToast(n?`已取消（联动关闭跟进 ${n} 条）`:'已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
                 }} className="px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs">取消发送</button>
               )}
             </div>
@@ -1788,11 +1790,15 @@ export default function InboxPage(){
                       const n = outboxList.filter(o=> o.status==='queued' || o.status==='failed').length
                       if(!confirm(`取消全部 ${n} 封待发/失败邮件？`)) return
                       try{
+                        let linked = 0
                         for(const o of outboxList){
-                          if(o.status==='queued' || o.status==='failed') await cancelOutbox(o.id).catch(()=>{})
+                          if(o.status==='queued' || o.status==='failed'){
+                            await cancelOutbox(o.id).catch(()=>{})
+                            linked += await cancelLinkedFollowUps(o.id)
+                          }
                         }
                         await refreshOutbox()
-                        showToast('已取消全部待发')
+                        showToast(linked?`已取消全部待发（联动关闭跟进 ${linked} 条）`:'已取消全部待发')
                       }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
                     }}
                     className="px-2 py-1 text-[11px] border border-rose-200 text-rose-600 rounded-lg hover:bg-rose-50"
@@ -1829,7 +1835,7 @@ export default function InboxPage(){
                       <button
                         onClick={async()=>{
                           if(!confirm('取消这封待发/定时邮件？')) return
-                          try{ await cancelOutbox(o.id); await refreshOutbox(); showToast('已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
+                          try{ await cancelOutbox(o.id); const n = await cancelLinkedFollowUps(o.id); await refreshOutbox(); showToast(n?`已取消（联动关闭跟进 ${n} 条）`:'已取消') }catch(e:any){ showToast(String(e.message||e).slice(0,80)) }
                         }}
                         className="px-3 py-1 border border-rose-200 text-rose-600 rounded-lg text-[11px] hover:bg-rose-50"
                       >取消发送</button>

@@ -350,6 +350,8 @@ async function init() {
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN references_headers TEXT`).catch(()=>{}) }catch{}
   try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN attachments_json MEDIUMTEXT`).catch(()=>{}) }catch{}
   try{ await pool.query(`ALTER TABLE mail_outbox MODIFY idempotency_key VARCHAR(191) NULL`).catch(()=>{}) }catch{}
+  // 发出/取消时间：供跟进页同步发件时间与自动退桶
+  try{ await pool.query(`ALTER TABLE mail_outbox ADD COLUMN updated_at TIMESTAMP(3) NULL`).catch(()=>{}) }catch{}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS us_holidays (
       date DATE PRIMARY KEY,
@@ -3503,7 +3505,7 @@ app.post('/email/outbox', auth, wrap(async (req,res)=>{
 app.get('/email/outbox', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const st = String(req.query.status || '')
-  const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at, idempotency_key'
+  const cols = 'id, account_id, to_list, subject, status, try_count, next_try_at, error, created_at, send_at, updated_at, idempotency_key'
   const [rows] = st
     ? await pool.query(`SELECT ${cols} FROM mail_outbox WHERE LOWER(username)=LOWER(?) AND status=? ORDER BY created_at DESC LIMIT 100`,[req.user, st])
     : await pool.query(`SELECT ${cols} FROM mail_outbox WHERE LOWER(username)=LOWER(?) ORDER BY created_at DESC LIMIT 100`,[req.user])
@@ -3624,8 +3626,8 @@ app.post('/email/outbox/:id/retry', auth, wrap(async (req,res)=>{
 app.post('/email/outbox/:id/cancel', auth, wrap(async (req,res)=>{
   if(!dbReady) return res.status(503).json({ error:'需要 MySQL（中台数据库未就绪：请确认 MySQL80 已启动，且 server/db.config.json 账号密码正确，然后重启 server.mjs）' })
   const [r] = await pool.query(
-    `UPDATE mail_outbox SET status='cancelled', error='用户取消' WHERE id=? AND LOWER(username)=LOWER(?) AND status IN ('queued','failed')`,
-    [req.params.id, req.user])
+    `UPDATE mail_outbox SET status='cancelled', error='用户取消', updated_at=? WHERE id=? AND LOWER(username)=LOWER(?) AND status IN ('queued','failed')`,
+    [sqlNow(), req.params.id, req.user])
   res.json({ ok:true, cancelled: r.affectedRows > 0 })
 }))
 
@@ -3663,7 +3665,7 @@ async function outboxTick(){
           references: job.references_headers || undefined,
           attachments: job.attachments_json ? JSON.parse(job.attachments_json) : undefined,
         })
-        await pool.query(`UPDATE mail_outbox SET status='sent', error='' WHERE id=?`,[job.id])
+        await pool.query(`UPDATE mail_outbox SET status='sent', error='', updated_at=? WHERE id=?`,[sqlNow(), job.id])
         console.log(`[outbox] sent ${job.id} -> ${job.to_list} ${info.messageId || ''}`)
       }catch(e){
         const c = classifySmtpError(e)

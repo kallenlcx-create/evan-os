@@ -1079,6 +1079,15 @@ export interface FollowUpRecord {
   dueAt: string // YYYY-MM-DD
   channel: ('workbench'|'telegram'|'email')[]
   note?: string
-  status: 'pending'|'done'|'overdue'
+  status: 'pending'|'done'|'overdue'|'sent'|'cancelled'
   createdAt: string
+  updatedAt?: string
+  /** 关联的发件队列 id（批量跟进/AI回复入队时写入，用于发出/取消联动） */
+  outboxId?: string
+  /** 入队时所在的手动板块快照（发出后自动移出用） */
+  buckets?: string[]
+  /** 发出后是否自动移出快照板块（用户勾选） */
+  autoLeave?: boolean
+  /** 实际发出时间（outbox updated_at） */
+  sentAt?: string
 }
