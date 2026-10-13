@@ -98,6 +98,22 @@ export default function FollowUpsPage() {
   const [batchBody, setBatchBody] = useState('')
   const [batchAiBusy, setBatchAiBusy] = useState(false)
   const [batchResult, setBatchResult] = useState<{ok:number;errors:number;threaded?:number;subjectOnly?:number;newMail?:number}|null>(null)
+  /** 批量模板库：可新增/编辑/删除，选择应用（localStorage；服务器报价模板只读） */
+  type BatchTpl = { id: string; name: string; subject: string; body: string }
+  const BATCH_TPL_LIB_KEY = 'evan:batch-tpl-lib'
+  const [batchTplLib, setBatchTplLib] = useState<BatchTpl[]>(()=>{
+    try{
+      const raw = JSON.parse(localStorage.getItem(BATCH_TPL_LIB_KEY) || '[]')
+      if(Array.isArray(raw)) return raw.filter(x=> x && x.subject!==undefined).map((x:any)=>({ id: String(x.id||('ct-'+Date.now())), name: String(x.name||'模板'), subject: String(x.subject||''), body: String(x.body||'') }))
+    }catch{}
+    return []
+  })
+  const [batchTplEdit, setBatchTplEdit] = useState<null | BatchTpl>(null)
+  const [showTplMgr, setShowTplMgr] = useState(false)
+  const saveBatchTplLib = (lib: BatchTpl[]) => {
+    setBatchTplLib(lib)
+    try{ localStorage.setItem(BATCH_TPL_LIB_KEY, JSON.stringify(lib)) }catch{}
+  }
   // 附件 + 会话回复
   const [custAtts, setCustAtts] = useState<any[]>([])
   const [pickedAttKeys, setPickedAttKeys] = useState<Set<string>>(new Set())
@@ -274,13 +290,14 @@ export default function FollowUpsPage() {
   const [newQuoteBody, setNewQuoteBody] = useState('Hi {{first_name}},\n\nPlease find our quotation for {{product}}:\n• Qty: {{qty}}\n• Unit price: {{unit_price}}\n• Lead time: {{lead_time}}\n\nBest regards,\nEvan')
   const [quoteEdit, setQuoteEdit] = useState<any>(null)
 
-  /** 发送/批量用模板：内置 + 服务器报价模板（可添加） */
+  /** 发送/批量用模板：内置 + 自存（可增删改） + 服务器报价模板（可添加） */
   const sendTemplates = useMemo(()=>{
     const server = quoteTpls.map(t=>({ id:String(t.id), name:String(t.name||'报价'), subject:String(t.subject||''), body:String(t.body||''), fromServer:true }))
     const serverNames = new Set(server.map(t=> t.name))
     const builtin = TEMPLATES.filter(t=> !serverNames.has(t.name))
-    return [...builtin, ...server]
-  },[quoteTpls])
+    const custom = batchTplLib.filter(t=> !serverNames.has(t.name))
+    return [...builtin, ...custom, ...server]
+  },[quoteTpls, batchTplLib])
   const [tplEdit, setTplEdit] = useState<any>(null)
   const loadSequences = useCallback(async () => {
     try{
@@ -1024,12 +1041,34 @@ const handleBatchAiTpl = useCallback(async () => {
   const [aiReplySendBusy, setAiReplySendBusy] = useState(false)
   const [aiReplyProgress, setAiReplyProgress] = useState({ done: 0, total: 0 })
   const [aiReplyUseImgs, setAiReplyUseImgs] = useState(true)
-  const AI_REPLY_PRESETS: Array<{ name: string; text: string }> = [
-    { name: '催单', text: '重点催客户确认订单和付款，语气坚定但礼貌，给出明确的回复截止引导。' },
-    { name: '报价跟进', text: '围绕已报价格跟进，询问客户对价格和交期的看法，引导客户提出目标价或确认样品。' },
-    { name: '复购唤醒', text: '唤醒沉寂老客户，提及上次合作的产品，推荐一款相关新品，问是否需要补货。' },
-    { name: '节日问候', text: '以节日问候开场，顺带问候客户近况，结尾自然过渡到项目跟进，不要太销售腔。' },
+  /** AI提示词预设库：可新增/编辑/删除，勾选组合使用（localStorage） */
+  type AiPreset = { id: string; name: string; text: string }
+  const AI_PRESET_LIB_KEY = 'evan:ai-reply-presets'
+  const AI_PRESET_DEFAULTS: AiPreset[] = [
+    { id: 'p-demand', name: '催单', text: '重点催客户确认订单和付款，语气坚定但礼貌，给出明确的回复截止引导。' },
+    { id: 'p-quote', name: '报价跟进', text: '围绕已报价格跟进，询问客户对价格和交期的看法，引导客户提出目标价或确认样品。' },
+    { id: 'p-rebuy', name: '复购唤醒', text: '唤醒沉寂老客户，提及上次合作的产品，推荐一款相关新品，问是否需要补货。' },
+    { id: 'p-fest', name: '节日问候', text: '以节日问候开场，顺带问候客户近况，结尾自然过渡到项目跟进，不要太销售腔。' },
   ]
+  const [aiPresetLib, setAiPresetLib] = useState<AiPreset[]>(()=>{
+    try{
+      const raw = JSON.parse(localStorage.getItem(AI_PRESET_LIB_KEY) || 'null')
+      if(Array.isArray(raw) && raw.length) return raw.filter(x=> x && x.text).map((x:any)=>({ id: String(x.id||('p-'+Date.now())), name: String(x.name||'预设'), text: String(x.text||'') }))
+    }catch{}
+    return AI_PRESET_DEFAULTS
+  })
+  const [aiPresetSel, setAiPresetSel] = useState<Set<string>>(new Set())
+  const [aiPresetEdit, setAiPresetEdit] = useState<null | { id: string; name: string; text: string }>(null)
+  const saveAiPresetLib = (lib: AiPreset[]) => {
+    setAiPresetLib(lib)
+    try{ localStorage.setItem(AI_PRESET_LIB_KEY, JSON.stringify(lib)) }catch{}
+  }
+  /** 最终提示词 = 勾选预设拼接 + 自由输入 */
+  const aiReplyFinalPrompt = useMemo(()=>{
+    const picked = aiPresetLib.filter(p=> aiPresetSel.has(p.id)).map(p=> p.text.trim()).filter(Boolean)
+    if(aiReplyPrompt.trim()) picked.push(aiReplyPrompt.trim())
+    return picked.join('\n')
+  }, [aiPresetLib, aiPresetSel, aiReplyPrompt])
   const aiReplyTargets = useCallback(() => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
     return customers.filter(c=> ids.includes(c.id) && c.email)
@@ -1058,7 +1097,7 @@ const handleBatchAiTpl = useCallback(async () => {
         const c = targets[i]
         setIntellectNote(`AI生成 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
         try{
-          const gen = await generateAiFollowReply(c, mails, aiReplyPrompt)
+          const gen = await generateAiFollowReply(c, mails, aiReplyFinalPrompt)
           const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'', subject:'' } as any))
           const mid = th.found && th.messageId ? th.messageId : undefined
           const subj = (th.found && th.subject) ? normalizeReplySubject(th.subject) : gen.subject
@@ -1075,7 +1114,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }finally{
       setAiReplyGenBusy(false)
     }
-  }, [aiReplyTargets, aiReplyPrompt])
+  }, [aiReplyTargets, aiReplyFinalPrompt])
   /** 第二步：审稿确认后入队（定时/图片/线程/配额与批量发跟进一致，走待发箱） */
   const handleAiReplyEnqueue = useCallback(async () => {
     const rows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
@@ -2439,14 +2478,46 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <div className="text-[11px] text-gray-400">AI 将结合每位客户的往来邮件（近15封）+ 十一维画像 + 你的补充要求逐个生成；有往来挂最新会话最下方，无往来新发。生成后可审稿再入队。</div>
               <div>
-                <div className="text-xs font-medium text-gray-700 mb-1">补充要求（自定义提示词，空=默认行为）</div>
-                <div className="flex gap-1 flex-wrap mb-1">
-                  {AI_REPLY_PRESETS.map(p=>(
-                    <button key={p.name} onClick={()=> setAiReplyPrompt(p.text)} className="px-2 py-0.5 border rounded-full text-[11px] text-purple-600 hover:bg-purple-50">{p.name}</button>
+                <div className="text-xs font-medium text-gray-700 mb-1">补充要求（勾选预设组合 + 自由输入，空=默认行为）</div>
+                <div className="border rounded-lg divide-y mb-1 max-h-36 overflow-y-auto">
+                  {aiPresetLib.map(p=>(
+                    <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+                      <input type="checkbox" checked={aiPresetSel.has(p.id)}
+                        onChange={()=> setAiPresetSel(prev=>{ const n=new Set(prev); if(n.has(p.id)) n.delete(p.id); else n.add(p.id); return n })}/>
+                      <span className="font-medium shrink-0">{p.name}</span>
+                      <span className="text-gray-400 truncate flex-1" title={p.text}>{p.text}</span>
+                      <button onClick={()=> setAiPresetEdit({ id: p.id, name: p.name, text: p.text })} className="text-blue-500 hover:text-blue-700 shrink-0">编辑</button>
+                      <button onClick={()=>{ if(!confirm(`删除预设「${p.name}」？`)) return; saveAiPresetLib(aiPresetLib.filter(x=> x.id!==p.id)); setAiPresetSel(prev=>{ const n=new Set(prev); n.delete(p.id); return n }) }} className="text-rose-400 hover:text-rose-600 shrink-0">删除</button>
+                    </div>
                   ))}
-                  {aiReplyPrompt && <button onClick={()=> setAiReplyPrompt('')} className="px-2 py-0.5 text-[11px] text-gray-400">清空</button>}
+                  {aiPresetLib.length===0 && <div className="px-2 py-2 text-[11px] text-gray-400">暂无预设，点下方新增</div>}
                 </div>
-                <textarea value={aiReplyPrompt} onChange={e=> setAiReplyPrompt(e.target.value)} rows={4} placeholder="如：重点催款，语气坚定；主推新品 Patch；…" className="w-full px-3 py-2 border rounded-lg text-sm resize-y"/>
+                {aiPresetEdit ? (
+                  <div className="border rounded-lg p-2 space-y-1 bg-blue-50/40">
+                    <input value={aiPresetEdit.name} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, name: e.target.value })} placeholder="预设名" className="w-full px-2 py-1 border rounded text-xs"/>
+                    <textarea value={aiPresetEdit.text} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, text: e.target.value })} rows={2} placeholder="提示词内容…" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                    <div className="flex gap-1">
+                      <button onClick={()=>{
+                        const name = aiPresetEdit.name.trim() || '预设'
+                        const text = aiPresetEdit.text.trim()
+                        if(!text) return alert('请填写提示词内容')
+                        if(aiPresetEdit.id === 'new'){
+                          const np = { id: 'p-'+Date.now().toString(36), name, text }
+                          saveAiPresetLib([...aiPresetLib, np])
+                          setAiPresetSel(prev=>{ const n=new Set(prev); n.add(np.id); return n })
+                        }else{
+                          saveAiPresetLib(aiPresetLib.map(x=> x.id===aiPresetEdit.id ? { ...x, name, text } : x))
+                        }
+                        setAiPresetEdit(null)
+                      }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                      <button onClick={()=> setAiPresetEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={()=> setAiPresetEdit({ id: 'new', name: '', text: '' })} className="px-2 py-1 border rounded-lg text-[11px] text-blue-600 hover:bg-blue-50">+ 新增预设</button>
+                )}
+                <textarea value={aiReplyPrompt} onChange={e=> setAiReplyPrompt(e.target.value)} rows={2} placeholder="自由补充（如：重点催款，语气坚定；主推新品 Patch；…）" className="w-full px-3 py-2 border rounded-lg text-sm resize-y mt-1"/>
+                {aiReplyFinalPrompt && <div className="text-[10px] text-gray-400 mt-0.5">将使用：{aiReplyFinalPrompt.slice(0,80)}{aiReplyFinalPrompt.length>80?'…':''}</div>}
               </div>
               <div className="max-h-32 overflow-y-auto border rounded-lg divide-y">
                 {aiReplyTargets().map(c=>(
@@ -2581,6 +2652,9 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> void handleBatchAiTpl()} disabled={batchAiBusy} className="px-2 py-1.5 bg-purple-600 text-white rounded-lg text-xs disabled:opacity-50">
                   {batchAiBusy ? 'AI 生成中…' : '✨ AI 生成模板'}
                 </button>
+                <button onClick={()=> setShowTplMgr(v=>!v)} className="px-2 py-1.5 border rounded-lg text-xs text-gray-600 hover:bg-gray-50" title="自存模板：新增/编辑/删除，选择应用">
+                  📋 模板{batchTplLib.length?` ${batchTplLib.length}`:''}
+                </button>
                 <label className="flex items-center gap-1 text-[11px] text-gray-600">
                   <input type="checkbox" checked={batchAutoAtt} onChange={e=> setBatchAutoAtt(e.target.checked)}/>
                   附带最新附件
@@ -2614,6 +2688,49 @@ const handleBatchAiTpl = useCallback(async () => {
                 </label>
                 <span className="text-[10px] text-gray-400">支持 Hi + 客户名；图片默认用最新附件嵌正文</span>
               </div>
+              {/* 自存模板管理：选择应用 / 新增 / 编辑 / 删除（服务器报价模板只读） */}
+              {showTplMgr && (
+                <div className="border rounded-lg p-2 bg-gray-50/60 space-y-1">
+                  <div className="text-[11px] text-gray-600">📋 自存模板（点名称直接应用；内置+服务器模板不在此改）</div>
+                  <div className="max-h-32 overflow-y-auto divide-y border rounded bg-white">
+                    {batchTplLib.map(t=>(
+                      <div key={t.id} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+                        <button onClick={()=> applyBatchTpl(t.id)} title="应用此模板" className="font-medium truncate flex-1 text-left hover:text-blue-600">{t.name}</button>
+                        <span className="text-gray-300 truncate max-w-[180px]">{t.subject}</span>
+                        <button onClick={()=> setBatchTplEdit({ ...t })} className="text-blue-500 hover:text-blue-700 shrink-0">编辑</button>
+                        <button onClick={()=>{ if(!confirm(`删除模板「${t.name}」？`)) return; saveBatchTplLib(batchTplLib.filter(x=> x.id!==t.id)) }} className="text-rose-400 hover:text-rose-600 shrink-0">删除</button>
+                      </div>
+                    ))}
+                    {batchTplLib.length===0 && <div className="px-2 py-2 text-[11px] text-gray-400">暂无自存模板，可把当前主题+正文存为模板</div>}
+                  </div>
+                  {batchTplEdit ? (
+                    <div className="border rounded-lg p-2 space-y-1 bg-blue-50/40">
+                      <input value={batchTplEdit.name} onChange={e=> setBatchTplEdit({ ...batchTplEdit, name: e.target.value })} placeholder="模板名" className="w-full px-2 py-1 border rounded text-xs"/>
+                      <input value={batchTplEdit.subject} onChange={e=> setBatchTplEdit({ ...batchTplEdit, subject: e.target.value })} placeholder="主题（支持{{product}}/{{first_name}}）" className="w-full px-2 py-1 border rounded text-xs"/>
+                      <textarea value={batchTplEdit.body} onChange={e=> setBatchTplEdit({ ...batchTplEdit, body: e.target.value })} rows={3} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                      <div className="flex gap-1">
+                        <button onClick={()=>{
+                          const name = batchTplEdit.name.trim() || '模板'
+                          if(batchTplEdit.id === 'new'){
+                            const nt = { id: 'ct-'+Date.now().toString(36), name, subject: batchTplEdit.subject, body: batchTplEdit.body }
+                            saveBatchTplLib([...batchTplLib, nt])
+                            applyBatchTpl(nt.id)
+                          }else{
+                            saveBatchTplLib(batchTplLib.map(x=> x.id===batchTplEdit.id ? { ...x, name, subject: batchTplEdit.subject, body: batchTplEdit.body } : x))
+                          }
+                          setBatchTplEdit(null)
+                        }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                        <button onClick={()=> setBatchTplEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex gap-1">
+                      <button onClick={()=> setBatchTplEdit({ id: 'new', name: '', subject: batchSubject, body: batchBody })} className="px-2 py-1 border rounded-lg text-[11px] text-blue-600 hover:bg-blue-50">+ 存当前为模板</button>
+                      <button onClick={()=> setBatchTplEdit({ id: 'new', name: '', subject: '', body: '' })} className="px-2 py-1 border rounded-lg text-[11px] text-gray-600 hover:bg-gray-50">+ 空白新增</button>
+                    </div>
+                  )}
+                </div>
+              )}
               {/* 自定义图片：图片库多选，每封都带 */}
               <div className="border rounded-lg p-2 bg-gray-50/60">
                 <div className="flex items-center gap-2 flex-wrap">
