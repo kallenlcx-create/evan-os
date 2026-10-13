@@ -280,7 +280,8 @@ export default function FollowUpsPage() {
   const [sendStart, setSendStart] = useState(8)
   const [sendEnd, setSendEnd] = useState(20)
   const [skipHolidays, setSkipHolidays] = useState(true)
-  const [showTplModal, setShowTplModal] = useState(false)
+  /** 模板中心：批量模板 / AI提示词 / 自动序列 / 报价模板，四处集中查看修改（逻辑与原各处完全一致） */
+  const [tplCenter, setTplCenter] = useState<null | 'batch' | 'ai' | 'seq' | 'quote'>(null)
   const [quoteTpls, setQuoteTpls] = useState<any[]>([])
   const [boardChips, setBoardChips] = useState<FilterChip[]>([])
   const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(()=> loadFilterPresets())
@@ -1303,7 +1304,8 @@ const handleBatchAiTpl = useCallback(async () => {
           className="px-2 py-1 rounded-full text-xs bg-white border disabled:opacity-50"
           title="扫描邮件回复、同步跟进方式/步骤/销售阶段，并联动自动序列"
         >{boardBusy?'同步中…':'🔄 同步跟进档案'}</button>
-        <button onClick={()=> setShowTplModal(true)} className="px-2 py-1 rounded-full text-xs bg-amber-50 border border-amber-200 text-amber-800" title="7步文案 · 每步间隔 · 报价模板（可添加）">📝 模板+间隔</button>
+          <button onClick={()=> setTplCenter('seq')} className="px-2 py-1 rounded-full text-xs bg-amber-50 border border-amber-200 text-amber-800" title="7步文案 · 每步间隔 · 报价模板（可添加）">📝 模板+间隔</button>
+          <button onClick={()=> setTplCenter('batch')} className="px-2 py-1 rounded-full text-xs bg-indigo-50 border border-indigo-200 text-indigo-700" title="批量模板 / AI提示词 / 自动序列 / 报价模板集中查看修改">🗂️ 模板中心</button>
         <button onClick={()=> setShowFollowRules(v=>!v)} className="px-2 py-1 rounded-full text-xs bg-white border">⚙️ 跟进规则</button>
       </div>
       {showFollowRules && (
@@ -1895,7 +1897,7 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <span className="font-semibold text-base">📋 跟进档案表</span>
               <span className="text-gray-500">共 {rows.length} 人</span>
-              <button onClick={()=> setShowTplModal(true)} className="px-2 py-1 text-xs border rounded-lg hover:border-blue-300" title="编辑7步文案、间隔天数、报价模板">📝 模板+间隔</button>
+              <button onClick={()=> setTplCenter('seq')} className="px-2 py-1 text-xs border rounded-lg hover:border-blue-300" title="编辑7步文案、间隔天数、报价模板">📝 模板+间隔</button>
               <button onClick={()=> exportFollowRowsCsv(rows, `跟进表筛选-${new Date().toISOString().slice(0,10)}.csv`)} className="px-2 py-1 text-xs border rounded-lg hover:border-blue-300" title="导出当前筛选结果为 CSV">⬇ 导出筛选</button>
             </div>
             <FilterBar search={boardQ} onSearch={(v)=>{ setBoardQ(v); setBoardPage(1) }} chips={boardChips} onChips={(c)=>{ setBoardChips(c); setBoardPage(1) }} />
@@ -2301,7 +2303,7 @@ const handleBatchAiTpl = useCallback(async () => {
               <button key={k} onClick={()=> setSeqTab(k)} className={`px-2 py-1 rounded-full text-xs ${seqTab===k?'bg-blue-600 text-white':'bg-gray-100 text-gray-500'}`}>{l}</button>
             ))}
           </div>
-          <button onClick={()=> setShowTplModal(true)} className="ml-auto px-2 py-1 text-xs border rounded-lg hover:border-blue-300">📝 模板+间隔</button>
+          <button onClick={()=> setTplCenter('seq')} className="ml-auto px-2 py-1 text-xs border rounded-lg hover:border-blue-300">📝 模板+间隔</button>
         </div>
         <div className="text-[11px] text-gray-400 mb-2">
           共 {seqStats.total} 个序列 · 进行中 {seqStats.auto} · 已回复 {seqStats.replied} · 沉睡 {seqStats.dormant} · 累计发出 {seqStats.sentSteps} 步
@@ -2822,37 +2824,151 @@ const handleBatchAiTpl = useCallback(async () => {
       )}
 
       {/* 模板+间隔编辑弹窗 */}
-      {showTplModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setShowTplModal(false)}>
-          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
-            <div className="px-5 py-3 border-b flex items-center justify-between">
-              <div className="text-sm font-semibold">📝 跟进模板与间隔</div>
-              <button onClick={()=> setShowTplModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
+      {/* 模板中心：四处模板同页查看修改 */}
+      {tplCenter && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> setTplCenter(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[88vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center gap-2">
+              <div className="text-sm font-semibold mr-2">🗂️ 模板中心</div>
+              {([['batch','批量模板'],['ai','AI提示词'],['seq','自动序列'],['quote','报价模板']] as const).map(([k,l])=>(
+                <button key={k} onClick={()=> setTplCenter(k)}
+                  className={`px-3 py-1 rounded-full text-xs border ${tplCenter===k?'bg-indigo-600 text-white border-indigo-600':'bg-white text-gray-600'}`}>{l}</button>
+              ))}
+              <button onClick={()=> setTplCenter(null)} className="ml-auto p-1 hover:bg-gray-100 rounded-lg">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              <div>
-                <div className="text-xs text-gray-500 mb-1">每步间隔天数（跟进1报价后X天，之后每步+…天，可改）</div>
-                <div className="flex gap-1 flex-wrap">
-                  {seqIntervals.map((v,i)=>(
-                    <label key={i} className="text-[11px] text-gray-500">第{i+1}步
-                      <input type="number" min={1} value={v} onChange={e=>{
-                        const n = [...seqIntervals]; n[i] = Math.max(1, Number(e.target.value)||1); setSeqIntervals(n)
-                      }} className="w-12 ml-1 px-1 py-0.5 border rounded text-xs" />
-                    </label>
+              {tplCenter==='batch' && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-gray-700">内置模板（只读）</div>
+                  {TEMPLATES.map(t=>(
+                    <details key={t.id} className="border rounded-xl px-2 py-1.5 text-xs">
+                      <summary className="cursor-pointer font-medium">{t.name} <span className="text-gray-400 font-normal">{t.subject}</span></summary>
+                      <div className="whitespace-pre-wrap text-gray-500 mt-1">{t.body}</div>
+                    </details>
                   ))}
-                  <button onClick={async()=>{ try{ await saveSeqConfig(seqIntervals, { sendStart, sendEnd, skipHolidays }); alert('间隔与发送窗口已保存，新启动序列生效') }catch(e:any){ alert(String(e.message||e)) } }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs">保存间隔</button>
+                  <div className="text-xs font-semibold text-gray-700 pt-2">自存模板（可增删改，批量弹窗下拉同步）</div>
+                  <div className="space-y-2">
+                    {batchTplLib.map(t=>(
+                      <div key={t.id} className="border rounded-xl p-2">
+                        {batchTplEdit?.id===t.id ? (
+                          <div className="space-y-1">
+                            <input value={batchTplEdit.name} onChange={e=> setBatchTplEdit({ ...batchTplEdit, name: e.target.value })} placeholder="模板名" className="w-full px-2 py-1 border rounded text-xs"/>
+                            <input value={batchTplEdit.subject} onChange={e=> setBatchTplEdit({ ...batchTplEdit, subject: e.target.value })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs"/>
+                            <textarea value={batchTplEdit.body} onChange={e=> setBatchTplEdit({ ...batchTplEdit, body: e.target.value })} rows={3} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                            <div className="flex gap-1">
+                              <button onClick={()=>{ const name = batchTplEdit.name.trim()||'模板'; saveBatchTplLib(batchTplLib.map(x=> x.id===batchTplEdit.id ? { ...x, name, subject: batchTplEdit.subject, body: batchTplEdit.body } : x)); setBatchTplEdit(null) }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                              <button onClick={()=> setBatchTplEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-semibold">{t.name}</span>
+                              <span className="text-[10px] text-gray-400 truncate flex-1">{t.subject}</span>
+                              <button onClick={()=> setBatchTplEdit({ ...t })} className="px-2 py-0.5 border rounded text-[11px] text-blue-600">编辑</button>
+                              <button onClick={()=>{ if(!confirm(`删除模板「${t.name}」？`)) return; saveBatchTplLib(batchTplLib.filter(x=> x.id!==t.id)) }} className="px-2 py-0.5 border rounded text-[11px] text-rose-600">删除</button>
+                            </div>
+                            <div className="whitespace-pre-wrap text-[11px] text-gray-500 max-h-24 overflow-y-auto">{t.body}</div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {batchTplLib.length===0 && <div className="text-[11px] text-gray-400">暂无自存模板，去批量发跟进弹窗「存当前为模板」</div>}
+                    {batchTplEdit?.id==='new' ? (
+                      <div className="border rounded-xl p-2 space-y-1 bg-blue-50/40">
+                        <input value={batchTplEdit.name} onChange={e=> setBatchTplEdit({ ...batchTplEdit, name: e.target.value })} placeholder="模板名" className="w-full px-2 py-1 border rounded text-xs"/>
+                        <input value={batchTplEdit.subject} onChange={e=> setBatchTplEdit({ ...batchTplEdit, subject: e.target.value })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs"/>
+                        <textarea value={batchTplEdit.body} onChange={e=> setBatchTplEdit({ ...batchTplEdit, body: e.target.value })} rows={3} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                        <div className="flex gap-1">
+                          <button onClick={()=>{ const name = batchTplEdit.name.trim()||'模板'; saveBatchTplLib([...batchTplLib, { id: 'ct-'+Date.now().toString(36), name, subject: batchTplEdit.subject, body: batchTplEdit.body }]); setBatchTplEdit(null) }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                          <button onClick={()=> setBatchTplEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={()=> setBatchTplEdit({ id: 'new', name: '', subject: batchSubject, body: batchBody })} className="px-2 py-1 border rounded-lg text-[11px] text-blue-600 hover:bg-blue-50">+ 新增模板（带入批量弹窗当前主题正文）</button>
+                    )}
+                  </div>
                 </div>
-                <div className="text-xs text-gray-500 mt-2">发送窗口（美东时间，自动序列/营销群发只在窗口内发出，用户手动发送不受限）</div>
-                <div className="flex gap-2 items-center mt-1 text-xs text-gray-500 flex-wrap">
-                  <label>开始 <input type="number" min={0} max={23} value={sendStart} onChange={e=> setSendStart(Number(e.target.value)||0)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
-                  <label>结束 <input type="number" min={1} max={24} value={sendEnd} onChange={e=> setSendEnd(Number(e.target.value)||24)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
-                  <label className="flex items-center gap-1"><input type="checkbox" checked={skipHolidays} onChange={e=> setSkipHolidays(e.target.checked)} className="accent-blue-600" /> 美国节假日避让</label>
+              )}
+              {tplCenter==='ai' && (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-gray-400">AI批量回复用：批量弹窗里勾选组合使用</div>
+                  {aiPresetLib.map(p=>(
+                    <div key={p.id} className="border rounded-xl p-2">
+                      {aiPresetEdit?.id===p.id ? (
+                        <div className="space-y-1">
+                          <input value={aiPresetEdit.name} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, name: e.target.value })} placeholder="预设名" className="w-full px-2 py-1 border rounded text-xs"/>
+                          <textarea value={aiPresetEdit.text} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, text: e.target.value })} rows={2} placeholder="提示词" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                          <div className="flex gap-1">
+                            <button onClick={()=>{ const name = aiPresetEdit.name.trim()||'预设'; const text = aiPresetEdit.text.trim(); if(!text) return alert('请填写提示词内容'); saveAiPresetLib(aiPresetLib.map(x=> x.id===aiPresetEdit.id ? { ...x, name, text } : x)); setAiPresetEdit(null) }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                            <button onClick={()=> setAiPresetEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-semibold">{p.name}</span>
+                            <span className="ml-auto flex gap-1">
+                              <button onClick={()=> setAiPresetEdit({ id: p.id, name: p.name, text: p.text })} className="px-2 py-0.5 border rounded text-[11px] text-blue-600">编辑</button>
+                              <button onClick={()=>{ if(!confirm(`删除预设「${p.name}」？`)) return; saveAiPresetLib(aiPresetLib.filter(x=> x.id!==p.id)); setAiPresetSel(prev=>{ const n=new Set(prev); n.delete(p.id); return n }) }} className="px-2 py-0.5 border rounded text-[11px] text-rose-600">删除</button>
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-gray-500">{p.text}</div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {aiPresetEdit?.id==='new' ? (
+                    <div className="border rounded-xl p-2 space-y-1 bg-blue-50/40">
+                      <input value={aiPresetEdit.name} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, name: e.target.value })} placeholder="预设名" className="w-full px-2 py-1 border rounded text-xs"/>
+                      <textarea value={aiPresetEdit.text} onChange={e=> setAiPresetEdit({ ...aiPresetEdit, text: e.target.value })} rows={2} placeholder="提示词" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                      <div className="flex gap-1">
+                        <button onClick={()=>{ const name = aiPresetEdit.name.trim()||'预设'; const text = aiPresetEdit.text.trim(); if(!text) return alert('请填写提示词内容'); const np = { id: 'p-'+Date.now().toString(36), name, text }; saveAiPresetLib([...aiPresetLib, np]); setAiPresetEdit(null) }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
+                        <button onClick={()=> setAiPresetEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={()=> setAiPresetEdit({ id: 'new', name: '', text: '' })} className="px-2 py-1 border rounded-lg text-[11px] text-blue-600 hover:bg-blue-50">+ 新增预设</button>
+                  )}
                 </div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold text-gray-700 mb-1">报价模板（手动/批量发报价用；发送弹窗「报价」下拉）</div>
-                <div className="text-[11px] text-gray-400 mb-2">在此添加或修改报价模板。保存后发送弹窗 / 批量发跟进 的模板下拉会出现它。</div>
-                <div className="space-y-2 mb-2">
+              )}
+              {tplCenter==='seq' && (
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs text-gray-500 mb-1">每步间隔天数（跟进1报价后X天，之后每步+…天，可改）</div>
+                    <div className="flex gap-1 flex-wrap">
+                      {seqIntervals.map((v,i)=>(
+                        <label key={i} className="text-[11px] text-gray-500">第{i+1}步
+                          <input type="number" min={1} value={v} onChange={e=>{
+                            const n = [...seqIntervals]; n[i] = Math.max(1, Number(e.target.value)||1); setSeqIntervals(n)
+                          }} className="w-12 ml-1 px-1 py-0.5 border rounded text-xs" />
+                        </label>
+                      ))}
+                      <button onClick={async()=>{ try{ await saveSeqConfig(seqIntervals, { sendStart, sendEnd, skipHolidays }); alert('间隔与发送窗口已保存，新启动序列生效') }catch(e:any){ alert(String(e.message||e)) } }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs">保存间隔</button>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-2">发送窗口（美东时间，自动序列/营销群发只在窗口内发出，用户手动发送不受限）</div>
+                    <div className="flex gap-2 items-center mt-1 text-xs text-gray-500 flex-wrap">
+                      <label>开始 <input type="number" min={0} max={23} value={sendStart} onChange={e=> setSendStart(Number(e.target.value)||0)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
+                      <label>结束 <input type="number" min={1} max={24} value={sendEnd} onChange={e=> setSendEnd(Number(e.target.value)||24)} className="w-12 px-1 py-0.5 border rounded text-xs" /> 点</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={skipHolidays} onChange={e=> setSkipHolidays(e.target.checked)} className="accent-blue-600" /> 美国节假日避让</label>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t text-xs font-semibold text-gray-700">自动跟进 7 步文案（也用于判断跟进表「跟进状态」相似度）</div>
+                  <div className="space-y-2">
+                    {seqTemplates.map(t=>(
+                      <div key={t.id} className="border rounded-xl p-2">
+                        <div className="text-xs font-semibold mb-1">{t.name}</div>
+                        <input value={tplEdit?.id===t.id ? tplEdit.subject : t.subject} onChange={e=> setTplEdit({ id:t.id, subject:e.target.value, body: tplEdit?.id===t.id ? tplEdit.body : t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                        <textarea value={tplEdit?.id===t.id ? tplEdit.body : t.body} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={3} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                        <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences(); alert('已保存。此文案也用于判断跟进表「跟进状态」相似度。') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {tplCenter==='quote' && (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-gray-400">保存后发送弹窗 / 批量发跟进 的模板下拉会出现它。</div>
                   {quoteTpls.length===0 && <div className="text-[11px] text-gray-400">服务器暂无报价模板，点下方「添加报价模板」创建。</div>}
                   {quoteTpls.map(t=>(
                     <div key={t.id} className="border rounded-xl p-2 bg-amber-50/40">
@@ -2866,34 +2982,23 @@ const handleBatchAiTpl = useCallback(async () => {
                       <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, kind:'quote', subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body: quoteEdit?.id===t.id?quoteEdit.body:t.body }); setQuoteEdit(null); await loadSequences(); alert('报价模板已保存') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">保存报价模板</button>
                     </div>
                   ))}
-                </div>
-                <div className="border rounded-xl p-2">
-                  <div className="text-xs font-semibold mb-1">＋ 添加报价模板</div>
-                  <input value={newQuoteName} onChange={e=> setNewQuoteName(e.target.value)} placeholder="名称，如：报价-硬币" className="w-full px-2 py-1 border rounded text-xs mb-1" />
-                  <input value={newQuoteSubject} onChange={e=> setNewQuoteSubject(e.target.value)} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
-                  <textarea value={newQuoteBody} onChange={e=> setNewQuoteBody(e.target.value)} rows={4} placeholder="正文，支持 {{first_name}} {{product}} {{qty}} {{unit_price}} 等" className="w-full px-2 py-1 border rounded text-xs resize-y" />
-                  <button onClick={async()=>{
-                    const name = newQuoteName.trim() || '报价'
-                    try{
-                      await saveSeqTemplate({ id: 'quote-'+Date.now(), name, kind:'quote', subject: newQuoteSubject, body: newQuoteBody })
-                      setNewQuoteName('')
-                      await loadSequences()
-                      alert('已添加报价模板「'+name+'」，发送弹窗/批量下拉可选')
-                    }catch(e:any){ alert(String(e.message||e)) }
-                  }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">添加报价模板</button>
-                </div>
-              </div>
-              <div className="pt-2 border-t text-xs font-semibold text-gray-700">自动跟进 7 步文案（也用于判断跟进状态相似度）</div>
-              <div className="space-y-2">
-                {seqTemplates.map(t=>(
-                  <div key={t.id} className="border rounded-xl p-2">
-                    <div className="text-xs font-semibold mb-1">{t.name}</div>
-                    <input value={tplEdit?.id===t.id ? tplEdit.subject : t.subject} onChange={e=> setTplEdit({ id:t.id, subject:e.target.value, body: tplEdit?.id===t.id ? tplEdit.body : t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
-                    <textarea value={tplEdit?.id===t.id ? tplEdit.body : t.body} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={3} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
-                    <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences(); alert('已保存。此文案也用于判断跟进表「跟进状态」相似度。') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
+                  <div className="border rounded-xl p-2">
+                    <div className="text-xs font-semibold mb-1">＋ 添加报价模板</div>
+                    <input value={newQuoteName} onChange={e=> setNewQuoteName(e.target.value)} placeholder="名称，如：报价-硬币" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                    <input value={newQuoteSubject} onChange={e=> setNewQuoteSubject(e.target.value)} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
+                    <textarea value={newQuoteBody} onChange={e=> setNewQuoteBody(e.target.value)} rows={4} placeholder="正文，支持 {{first_name}} {{product}} {{qty}} {{unit_price}} 等" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                    <button onClick={async()=>{
+                      const name = newQuoteName.trim() || '报价'
+                      try{
+                        await saveSeqTemplate({ id: 'quote-'+Date.now(), name, kind:'quote', subject: newQuoteSubject, body: newQuoteBody })
+                        setNewQuoteName('')
+                        await loadSequences()
+                        alert('已添加报价模板「'+name+'」，发送弹窗/批量下拉可选')
+                      }catch(e:any){ alert(String(e.message||e)) }
+                    }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">添加报价模板</button>
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
