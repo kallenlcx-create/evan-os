@@ -994,50 +994,151 @@ const handleBatchAiTpl = useCallback(async () => {
     setMainView('board')
   }
 
-  /** 批量 AI 回复：逐个生成并入队，挂在各自最新会话最下方 */
-  const [batchAiReplyBusy, setBatchAiReplyBusy] = useState(false)
-  const handleBatchAiReply = useCallback(async () => {
+  /** 批量 AI 回复：配置提示词 → 逐个生成 → 审稿 → 入队（与批量发跟进同发送能力：定时/图片/待发箱） */
+  const [batchAiReplyBusy] = useState(false)
+  const AI_REPLY_PROMPT_KEY = 'evan:ai-reply-prompt'
+  const [aiReplyPrompt, setAiReplyPrompt] = useState<string>(()=>{
+    try{ return localStorage.getItem(AI_REPLY_PROMPT_KEY) || '' }catch{ return '' }
+  })
+  const [showAiReplyModal, setShowAiReplyModal] = useState(false)
+  const [aiReplyList, setAiReplyList] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; mid?: string; references?: string; threaded: boolean; checked: boolean }>>([])
+  const [showAiReplyReview, setShowAiReplyReview] = useState(false)
+  const [aiReplyGenBusy, setAiReplyGenBusy] = useState(false)
+  const [aiReplySendBusy, setAiReplySendBusy] = useState(false)
+  const [aiReplyProgress, setAiReplyProgress] = useState({ done: 0, total: 0 })
+  const [aiReplyUseImgs, setAiReplyUseImgs] = useState(true)
+  const AI_REPLY_PRESETS: Array<{ name: string; text: string }> = [
+    { name: '催单', text: '重点催客户确认订单和付款，语气坚定但礼貌，给出明确的回复截止引导。' },
+    { name: '报价跟进', text: '围绕已报价格跟进，询问客户对价格和交期的看法，引导客户提出目标价或确认样品。' },
+    { name: '复购唤醒', text: '唤醒沉寂老客户，提及上次合作的产品，推荐一款相关新品，问是否需要补货。' },
+    { name: '节日问候', text: '以节日问候开场，顺带问候客户近况，结尾自然过渡到项目跟进，不要太销售腔。' },
+  ]
+  const aiReplyTargets = useCallback(() => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
-    const targets = customers.filter(c=> ids.includes(c.id) && c.email)
+    return customers.filter(c=> ids.includes(c.id) && c.email)
+  }, [customers, selectedIds, boardSelected])
+  const openAiReplyModal = useCallback(() => {
+    const targets = aiReplyTargets()
     if(!targets.length) return alert('请先勾选客户（雷达或跟进表）')
-    if(targets.length > 30 && !confirm(`将对 ${targets.length} 人逐个 AI 生成并入队（有往来会挂到最新会话最下方）？人多较慢，建议一次 ≤30。`)) return
-    if(targets.length <= 30 && !confirm(`为 ${targets.length} 人 AI 生成跟进并入队发送？\n有邮件来往 → 挂到该客户最新会话最下方；无来往 → 新邮件。`)) return
+    setShowAiReplyModal(true)
+  }, [aiReplyTargets])
+  /** 第一步：逐个 AI 生成（上下文+自定义提示词），进审稿列表 */
+  const handleAiReplyGenerate = useCallback(async () => {
+    const targets = aiReplyTargets()
+    if(!targets.length) return alert('请先勾选客户')
+    if(targets.length > 30 && !confirm(`将对 ${targets.length} 人逐个 AI 生成（人多较慢，建议一次 ≤30），继续？`)) return
     const { getAiSettings } = await import('../config/aiProviders')
     const ai = getAiSettings()
     if(!(ai.apiKey || ai.proxyUrl) && !confirm('未配置 AI Key，生成可能失败。继续？')) return
-    setBatchAiReplyBusy(true)
-    const accs = await listAccounts()
-    if(!accs.length){ alert('请先绑定邮箱'); setBatchAiReplyBusy(false); return }
+    try{ localStorage.setItem(AI_REPLY_PROMPT_KEY, aiReplyPrompt) }catch{}
+    setAiReplyGenBusy(true)
+    setAiReplyList([])
     const mails = await db.emails.toArray()
     const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
-    const { textToHtml } = await import('../utils/mailHtml')
-    let ok = 0, fail = 0, threaded = 0
+    const out: typeof aiReplyList = []
     try{
       for(let i=0;i<targets.length;i++){
         const c = targets[i]
-        setIntellectNote(`批量AI回复 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
+        setIntellectNote(`AI生成 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
         try{
-          const gen = await generateAiFollowReply(c, mails)
-          const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
+          const gen = await generateAiFollowReply(c, mails, aiReplyPrompt)
+          const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'', subject:'' } as any))
           const mid = th.found && th.messageId ? th.messageId : undefined
-          await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
-            html: textToHtml(gen.body),
-            inReplyTo: mid,
-            references: mid,
-          })
-          await setCustomerFollowMode(c, 'manual', 'user')
-          ok++
-          if(mid) threaded++
-        }catch{ fail++ }
+          const subj = (th.found && th.subject) ? normalizeReplySubject(th.subject) : gen.subject
+          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: subj, body: gen.body, mid, references: mid ? (th.references || mid) : undefined, threaded: !!mid, checked: true })
+        }catch(e:any){
+          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: '(生成失败)', body: String(e?.message||e).slice(0,200), threaded: false, checked: false })
+        }
+        setAiReplyList([...out])
         if(i < targets.length-1) await new Promise(r=> setTimeout(r, 1000))
       }
-      setIntellectNote(`批量AI回复已入队 ${ok}/${targets.length}${fail?`，失败 ${fail}`:''} · 挂会话 ${threaded} · 邮件中心→待发查看`)
+      setIntellectNote(`AI生成完成 ${out.filter(x=> x.checked).length}/${targets.length}，请审稿后入队`)
+      setShowAiReplyModal(false)
+      setShowAiReplyReview(true)
+    }finally{
+      setAiReplyGenBusy(false)
+    }
+  }, [aiReplyTargets, aiReplyPrompt])
+  /** 第二步：审稿确认后入队（定时/图片/线程/配额与批量发跟进一致，走待发箱） */
+  const handleAiReplyEnqueue = useCallback(async () => {
+    const rows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
+    if(!rows.length) return alert('请至少勾选一封可发送的邮件')
+    const used = getTodaySendCount()
+    if(used >= BATCH_SEND.dailyLimit) return alert('今日批量已达上限 '+BATCH_SEND.dailyLimit+' 封，请明天再发')
+    const remain = BATCH_SEND.dailyLimit - used
+    const list2 = rows.slice(0, remain)
+    if(rows.length > remain && !confirm('今日剩余额度 '+remain+'，仅入队前 '+remain+' 封，继续？')) return
+    const { serverHeaders } = await import('../repositories/emailRepository')
+    const sh = await serverHeaders()
+    if(!sh) return alert('请先到「云同步」登录，否则无法入队发送')
+    const accs = await listAccounts()
+    if(!accs.length) return alert('请先绑定邮箱账号（云同步→邮箱账号）')
+    const acc = accs[0]
+    let sendAt: string | null = null
+    if(batchScheduleMode === 'at'){
+      if(!batchScheduleAt) return alert('请选择定时发送时间')
+      const t = new Date(batchScheduleAt)
+      if(!Number.isFinite(t.getTime())) return alert('定时时间无效')
+      if(t.getTime() < Date.now() + 30000) return alert('定时时间需在约 1 分钟之后')
+      sendAt = t.toISOString()
+    }
+    const { textToHtml } = await import('../utils/mailHtml')
+    const selImgs = (aiReplyUseImgs ? batchImgLib.filter(im=> batchImgSel.has(im.id)) : [])
+    setAiReplySendBusy(true)
+    setAiReplyProgress({ done: 0, total: list2.length })
+    let ok = 0, errors = 0, threaded = 0
+    const dayKey = new Date().toISOString().slice(0,10)
+    try{
+      for(let i=0;i<list2.length;i++){
+        const r = list2[i]
+        const c = customers.find(x=> x.id===r.id)
+        try{
+          let html = textToHtml(r.body)
+          const atts: any[] = []
+          selImgs.forEach((im, idx)=>{
+            const cid = 'cimg'+idx
+            if(batchImgMode === 'file'){
+              atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime })
+            }else{
+              atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime, cid })
+              html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+im.name+'" style="max-width:360px;border-radius:6px"/></p>'
+            }
+          })
+          const idem = `ai${dayKey.replace(/-/g,'')}-${String(r.id).replace(/-/g,'').slice(0,12)}-${String(r.subject).replace(/\s+/g,'').slice(0,24)}`
+          const enq = await enqueueMail(acc.id, r.email, r.subject, r.body, idem, false, {
+            html, sendAt,
+            inReplyTo: r.mid,
+            references: r.references,
+            attachments: atts.length ? atts : undefined,
+          })
+          if(!enq?.id) throw new Error('入队未返回邮件ID')
+          bumpTodaySendCount(1)
+          if(r.mid) threaded++
+          if(c){
+            await setCustomerFollowMode(c, 'manual', 'user')
+            await db.followUps.put({
+              id: 'fu-aireply-'+Date.now()+'-'+c.id,
+              customerId: c.id,
+              dueAt: new Date().toISOString().slice(0,10),
+              channel: ['批量AI回复'],
+              note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '批量AI入队：') + (r.mid ? '会话回复' : '新邮件') + ' ' + r.subject.slice(0,36),
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+            } as any)
+          }
+          ok++
+        }catch{ errors++ }
+        setAiReplyProgress({ done: i+1, total: list2.length })
+        if(i < list2.length-1) await new Promise(rr=> setTimeout(rr, BATCH_SEND.intervalMs))
+      }
+      setIntellectNote(`批量AI回复已入队 ${ok}/${list2.length}${errors?`，失败 ${errors}`:''} · 挂会话 ${threaded}${sendAt?' · 定时'+new Date(sendAt).toLocaleString():''}${selImgs.length?` · 附图 ${selImgs.length}`:''} · 邮件中心→📤 待发查看`)
+      setShowAiReplyReview(false)
       await loadSequences()
       await load()
     }finally{
-      setBatchAiReplyBusy(false)
+      setAiReplySendBusy(false)
     }
-  }, [customers, selectedIds, boardSelected, load, loadSequences])
+  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, load, loadSequences])
 
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
@@ -1267,7 +1368,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 {batchSending ? `批量发送 ${batchProgress.done}/${batchProgress.total}` : `📣 批量发跟进（${selectedIds.size}）`}
               </button>
               <button onClick={()=> void handleBatchAiDrafts()} disabled={aiDraftBusy || batchSending} className="px-2 py-1 border rounded-lg text-purple-600 disabled:opacity-50" title="只生成草稿，不入队不发送">✍️ AI草稿</button>
-              <button onClick={()=> void handleBatchAiReply()} disabled={batchAiReplyBusy || batchSending || aiDraftBusy} className="px-2 py-1 border rounded-lg bg-purple-600 text-white disabled:opacity-50" title="AI 生成并入队；有往来挂最新会话最下方">🤖 批量AI回复</button>
+              <button onClick={()=> openAiReplyModal()} disabled={batchAiReplyBusy || batchSending || aiDraftBusy} className="px-2 py-1 border rounded-lg bg-purple-600 text-white disabled:opacity-50" title="AI 生成并入队；有往来挂最新会话最下方">🤖 批量AI回复</button>
               <button onClick={()=> void Promise.all([...selectedIds].map(id=> handleStartSeq(customers.find(c=>c.id===id)!).catch(()=>{})))} className="px-2 py-1 border rounded-lg text-purple-600">批量序列</button>
               <span className="text-gray-300">|</span>
               <input value={radarTagInput} onChange={e=> setRadarTagInput(e.target.value)} placeholder="标签…" className="w-20 px-1.5 py-1 border rounded text-[11px]"/>
@@ -1561,7 +1662,7 @@ const handleBatchAiTpl = useCallback(async () => {
           if(!selectedCustomers.length) return alert('请先勾选客户')
           const n = selectedCustomers.length
           if(kind==='ai-reply'){
-            await handleBatchAiReply()
+            openAiReplyModal()
             return
           }
           if(kind.startsWith('edit-')){
@@ -2275,6 +2376,109 @@ const handleBatchAiTpl = useCallback(async () => {
                 setIntellectNote(`已复制全部草稿 ${aiDrafts.length} 条`)
               }} className="px-4 py-2 border rounded-lg text-xs">复制全部</button>
               <button onClick={()=> setShowAiDrafts(false)} className="px-4 py-2 bg-gray-900 text-white rounded-lg text-xs">关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量AI回复：自定义提示词 */}
+      {showAiReplyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> !aiReplyGenBusy && setShowAiReplyModal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">🤖 批量AI回复 · {aiReplyTargets().length} 位客户</div>
+              <button onClick={()=> setShowAiReplyModal(false)} disabled={aiReplyGenBusy} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              <div className="text-[11px] text-gray-400">AI 将结合每位客户的往来邮件（近15封）+ 十一维画像 + 你的补充要求逐个生成；有往来挂最新会话最下方，无往来新发。生成后可审稿再入队。</div>
+              <div>
+                <div className="text-xs font-medium text-gray-700 mb-1">补充要求（自定义提示词，空=默认行为）</div>
+                <div className="flex gap-1 flex-wrap mb-1">
+                  {AI_REPLY_PRESETS.map(p=>(
+                    <button key={p.name} onClick={()=> setAiReplyPrompt(p.text)} className="px-2 py-0.5 border rounded-full text-[11px] text-purple-600 hover:bg-purple-50">{p.name}</button>
+                  ))}
+                  {aiReplyPrompt && <button onClick={()=> setAiReplyPrompt('')} className="px-2 py-0.5 text-[11px] text-gray-400">清空</button>}
+                </div>
+                <textarea value={aiReplyPrompt} onChange={e=> setAiReplyPrompt(e.target.value)} rows={4} placeholder="如：重点催款，语气坚定；主推新品 Patch；…" className="w-full px-3 py-2 border rounded-lg text-sm resize-y"/>
+              </div>
+              <div className="max-h-32 overflow-y-auto border rounded-lg divide-y">
+                {aiReplyTargets().map(c=>(
+                  <div key={c.id} className="px-2 py-1.5 text-xs flex items-center gap-2">
+                    <span className="font-medium truncate">{c.contactName || c.title}</span>
+                    <span className="text-gray-400 truncate flex-1">{c.email}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t flex items-center gap-2">
+              <button onClick={()=> setShowAiReplyModal(false)} disabled={aiReplyGenBusy} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">取消</button>
+              <div className="flex-1"/>
+              <button onClick={()=> void handleAiReplyGenerate()} disabled={aiReplyGenBusy}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg text-xs disabled:opacity-50">
+                {aiReplyGenBusy ? '生成中…' : `开始生成 ${aiReplyTargets().length} 封`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量AI回复：审稿 + 入队（定时/图片与批量发跟进一致） */}
+      {showAiReplyReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={()=> !aiReplySendBusy && !aiReplyGenBusy && setShowAiReplyReview(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e=> e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div className="text-sm font-semibold">📝 审稿 · {aiReplyList.filter(x=>x.checked).length}/{aiReplyList.length} 封将入队</div>
+              <button onClick={()=> setShowAiReplyReview(false)} disabled={aiReplySendBusy} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap text-[11px] text-gray-600">
+                <button onClick={()=> setAiReplyList(prev=> prev.map(x=> ({...x, checked: true})))} className="px-2 py-0.5 border rounded">全选</button>
+                <button onClick={()=> setAiReplyList(prev=> prev.map(x=> ({...x, checked: false})))} className="px-2 py-0.5 border rounded">全不选</button>
+                <label className="flex items-center gap-1">
+                  <input type="radio" name="aiSch" checked={batchScheduleMode==='now'} onChange={()=> setBatchScheduleMode('now')}/>
+                  立即
+                </label>
+                <label className="flex items-center gap-1">
+                  <input type="radio" name="aiSch" checked={batchScheduleMode==='at'} onChange={()=> setBatchScheduleMode('at')}/>
+                  定时
+                </label>
+                {batchScheduleMode==='at' && (
+                  <input type="datetime-local" value={batchScheduleAt} onChange={e=> setBatchScheduleAt(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
+                )}
+                <label className="flex items-center gap-1" title="与批量发跟进共用图片库（去批量发跟进弹窗上传/勾选）">
+                  <input type="checkbox" checked={aiReplyUseImgs} onChange={e=> setAiReplyUseImgs(e.target.checked)}/>
+                  附图{batchImgSel.size?` ${batchImgSel.size} 张（${batchImgMode==='file'?'仅附件':batchImgMode==='inline'?'仅正文':'附件+正文'}）`:'（图片库未选）'}
+                </label>
+                <span className="text-[10px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 入队后邮件中心→📤 待发查看</span>
+              </div>
+              {aiReplyList.map((r, idx)=>(
+                <div key={r.id} className={`border rounded-lg p-2 ${r.checked?'bg-white':'bg-gray-50 opacity-70'}`}>
+                  <div className="flex items-center gap-2 text-xs mb-1">
+                    <input type="checkbox" checked={r.checked} onChange={()=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, checked: !x.checked} : x))}/>
+                    <span className="font-medium truncate">{r.name}</span>
+                    <span className="text-gray-400 truncate flex-1">{r.email}</span>
+                    {r.threaded
+                      ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 shrink-0">挂会话</span>
+                      : <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 shrink-0">新邮件</span>}
+                    <button onClick={()=> setAiReplyList(prev=> prev.filter((_,i)=> i!==idx))} className="text-rose-400 hover:text-rose-600 text-xs shrink-0">删除</button>
+                  </div>
+                  <input value={r.subject} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, subject: e.target.value} : x))}
+                    className="w-full px-2 py-1 border rounded text-xs mb-1" placeholder="主题"/>
+                  <textarea value={r.body} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, body: e.target.value} : x))}
+                    rows={4} className="w-full px-2 py-1 border rounded text-xs resize-y font-mono" placeholder="正文"/>
+                </div>
+              ))}
+              {aiReplySendBusy && (
+                <div className="text-xs text-blue-600">入队中 {aiReplyProgress.done}/{aiReplyProgress.total}…</div>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t flex items-center gap-2">
+              <button onClick={()=> setShowAiReplyReview(false)} disabled={aiReplySendBusy} className="px-4 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-lg">返回修改</button>
+              <div className="flex-1"/>
+              <button onClick={()=> void handleAiReplyEnqueue()} disabled={aiReplySendBusy || !aiReplyList.some(x=>x.checked)}
+                className="px-4 py-2 bg-pink-600 text-white rounded-lg text-xs disabled:opacity-50">
+                {aiReplySendBusy ? '入队中…' : `确认入队 ${aiReplyList.filter(x=>x.checked).length} 封`}
+              </button>
             </div>
           </div>
         </div>
