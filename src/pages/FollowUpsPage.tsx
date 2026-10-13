@@ -38,6 +38,34 @@ function PresetNameInput({ onSave, onCancel }: { onSave: (n: string)=>void; onCa
   )
 }
 
+/** 2天内发过自动排除：lastSentAt/lastFollowAt + 待发箱（排队中/2天内发出） */
+const RECENT_SEND_DAYS = 2
+const recentSendCut = () => Date.now() - RECENT_SEND_DAYS * 86400000
+function customerSentRecent(c: any): boolean {
+  for (const v of [c?.lastSentAt, c?.lastFollowAt]) {
+    const t = new Date(String(v || '')).getTime()
+    if (Number.isFinite(t) && t >= recentSendCut()) return true
+  }
+  return false
+}
+function customerEmailOf(c: any){ return String(c?.email || '').toLowerCase().trim() }
+async function outboxRecentEmails(): Promise<Set<string>> {
+  try {
+    const { getOutbox } = await import('../repositories/emailRepository')
+    const ob = await getOutbox().catch(() => [] as any[])
+    const set = new Set<string>()
+    for (const o of (ob || [])) {
+      const st = String((o as any).status || '')
+      const ct = new Date(String((o as any).created_at || '')).getTime()
+      const recent = Number.isFinite(ct) && ct >= recentSendCut()
+      if (st === 'queued' || st === 'sending' || (st === 'sent' && recent)) {
+        String((o as any).to_list || '').split(',').forEach(e => { const a = e.trim().toLowerCase(); if (a.includes('@')) set.add(a) })
+      }
+    }
+    return set
+  } catch { return new Set<string>() }
+}
+
 export default function FollowUpsPage() {
   const navigate = useNavigate()
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -130,6 +158,11 @@ export default function FollowUpsPage() {
   const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
   const [batchScheduleAt, setBatchScheduleAt] = useState('')
   const [batchSkipped, setBatchSkipped] = useState(0)
+  /** 2天内发过自动排除（批量发跟进/AI回复共用口径） */
+  const [batchSkipRecent, setBatchSkipRecent] = useState(true)
+  const [batchExcluded, setBatchExcluded] = useState(0)
+  const [aiSkipRecent, setAiSkipRecent] = useState(true)
+  const [aiOutboxMails, setAiOutboxMails] = useState<Set<string>>(new Set())
   /** C：发出后自动移出入队时的手动板块（默认关，勾选才移） */
   const [batchAutoLeave, setBatchAutoLeave] = useState(false)
   /** 批量自定义图片：图片库持久化，多选后随每封邮件发出 */
@@ -785,9 +818,9 @@ export default function FollowUpsPage() {
     setBatchBody(tpl.body.replace(/\{\{first_name\}\}/g, name).replace(/\{\{product\}\}/g, product))
   }, [batchTargets])
 
-  const openBatchModal = useCallback(async () => {
+  const openBatchModal = useCallback(async (skip?: boolean) => {
     const seen = new Set<string>()
-    const targets = catFiltered
+    const picked = catFiltered
       .filter(x=> selectedIds.has(x.c.id) && x.c.email)
       .map(x=> x.c)
       .filter(c=>{
@@ -796,7 +829,23 @@ export default function FollowUpsPage() {
         seen.add(key)
         return true
       })
-    if(!targets.length) return alert('请先勾选有邮箱的客户')
+    if(!picked.length) return alert('请先勾选有邮箱的客户')
+    // 2天内发过自动排除
+    const sk = skip ?? batchSkipRecent
+    let targets = picked
+    let excluded = 0
+    if(sk){
+      const obm = await outboxRecentEmails()
+      targets = picked.filter(c=>{
+        if(customerSentRecent(c)) return false
+        const e = customerEmailOf(c)
+        if(e && obm.has(e)) return false
+        return true
+      })
+      excluded = picked.length - targets.length
+    }
+    setBatchExcluded(excluded)
+    if(!targets.length) return alert('勾选客户 2 天内都发过（或待发中），已全部排除')
     setBatchTargets(targets)
     setBatchResult(null)
     applyBatchTpl(sendTemplates[0]?.id || TEMPLATES[0].id, targets[0])
@@ -815,7 +864,7 @@ export default function FollowUpsPage() {
       setBatchAttPolicy('optional')
       setIntellectNote('未找到历史附件，已改为「无附件也发」（否则会全部跳过、待发箱为空）')
     }
-  }, [catFiltered, selectedIds, applyBatchTpl])
+  }, [catFiltered, selectedIds, applyBatchTpl, batchSkipRecent])
 
 const handleBatchAiTpl = useCallback(async () => {
     if(!batchTargets.length) return
@@ -1072,13 +1121,17 @@ const handleBatchAiTpl = useCallback(async () => {
   }, [aiPresetLib, aiPresetSel, aiReplyPrompt])
   const aiReplyTargets = useCallback(() => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
-    return customers.filter(c=> ids.includes(c.id) && c.email)
-  }, [customers, selectedIds, boardSelected])
-  const openAiReplyModal = useCallback(() => {
-    const targets = aiReplyTargets()
-    if(!targets.length) return alert('请先勾选客户（雷达或跟进表）')
+    let t = customers.filter(c=> ids.includes(c.id) && c.email)
+    if(aiSkipRecent) t = t.filter(c=> !customerSentRecent(c) && !aiOutboxMails.has(customerEmailOf(c)))
+    return t
+  }, [customers, selectedIds, boardSelected, aiSkipRecent, aiOutboxMails])
+  const openAiReplyModal = useCallback(async () => {
+    const ids = [...new Set([...selectedIds, ...boardSelected])]
+    const picked = customers.filter(c=> ids.includes(c.id) && c.email)
+    if(!picked.length) return alert('请先勾选客户（雷达或跟进表）')
+    setAiOutboxMails(await outboxRecentEmails())
     setShowAiReplyModal(true)
-  }, [aiReplyTargets])
+  }, [customers, selectedIds, boardSelected])
   /** 第一步：逐个 AI 生成（上下文+自定义提示词），进审稿列表 */
   const handleAiReplyGenerate = useCallback(async () => {
     const targets = aiReplyTargets()
@@ -1109,13 +1162,15 @@ const handleBatchAiTpl = useCallback(async () => {
         setAiReplyList([...out])
         if(i < targets.length-1) await new Promise(r=> setTimeout(r, 1000))
       }
-      setIntellectNote(`AI生成完成 ${out.filter(x=> x.checked).length}/${targets.length}，请审稿后入队`)
+      const selTotal = customers.filter(c=> (selectedIds.has(c.id)||boardSelected.has(c.id)) && c.email).length
+      const exCount = selTotal - targets.length
+      setIntellectNote(`AI生成完成 ${out.filter(x=> x.checked).length}/${targets.length}${exCount>0?`（2天内已排除 ${exCount} 人）`:''}，请审稿后入队`)
       setShowAiReplyModal(false)
       setShowAiReplyReview(true)
     }finally{
       setAiReplyGenBusy(false)
     }
-  }, [aiReplyTargets, aiReplyFinalPrompt])
+  }, [aiReplyTargets, aiReplyFinalPrompt, customers, selectedIds, boardSelected])
   /** 第二步：审稿确认后入队（定时/图片/线程/配额与批量发跟进一致，走待发箱） */
   const handleAiReplyEnqueue = useCallback(async () => {
     const rows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
@@ -2521,6 +2576,13 @@ const handleBatchAiTpl = useCallback(async () => {
                 <textarea value={aiReplyPrompt} onChange={e=> setAiReplyPrompt(e.target.value)} rows={2} placeholder="自由补充（如：重点催款，语气坚定；主推新品 Patch；…）" className="w-full px-3 py-2 border rounded-lg text-sm resize-y mt-1"/>
                 {aiReplyFinalPrompt && <div className="text-[10px] text-gray-400 mt-0.5">将使用：{aiReplyFinalPrompt.slice(0,80)}{aiReplyFinalPrompt.length>80?'…':''}</div>}
               </div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除">
+                  <input type="checkbox" checked={aiSkipRecent} onChange={e=> setAiSkipRecent(e.target.checked)}/>
+                  2天内发过自动排除
+                </label>
+                {(()=>{ const total = customers.filter(c=> (selectedIds.has(c.id)||boardSelected.has(c.id)) && c.email).length; const ex = total - aiReplyTargets().length; return ex>0 ? <span>已排除 {ex} 人</span> : null })()}
+              </div>
               <div className="max-h-32 overflow-y-auto border rounded-lg divide-y">
                 {aiReplyTargets().map(c=>(
                   <div key={c.id} className="px-2 py-1.5 text-xs flex items-center gap-2">
@@ -2618,6 +2680,13 @@ const handleBatchAiTpl = useCallback(async () => {
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <div className="text-[11px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 间隔 5 秒入队 · 发出由「待发」队列完成</div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除，关掉可重进恢复">
+                  <input type="checkbox" checked={batchSkipRecent} onChange={e=>{ const v = e.target.checked; setBatchSkipRecent(v); if(!batchSending) void openBatchModal(v) }}/>
+                  2天内发过自动排除
+                </label>
+                {batchExcluded>0 && <span>已排除 {batchExcluded} 人</span>}
+              </div>
               <div>
                 <div className="text-xs font-medium text-gray-700 mb-1">入队名单（{batchTargets.length}）· 同邮箱已去重</div>
                 <div className="max-h-36 overflow-y-auto border rounded-lg divide-y">
