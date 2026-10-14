@@ -80,7 +80,23 @@ export default function FollowUpsPage() {
     return [...m.entries()].sort((a,b)=> b[1]-a[1])
   },[customers])
   const [page, setPage] = useState(1)
-  /** 每分区各自可配每页条数，默认 10（逾期等桶人多时更干净） */
+  /** 雷达排序：默认更新时间 / 最近发信↓↑（lastFollowAt||lastSentAt，无时间沉底） */
+  const RADAR_SORT_KEY = 'evan:radarSort'
+  const [radarSort, setRadarSort] = useState<'updated'|'sent_desc'|'sent_asc'>(()=>{
+    try{
+      const v = localStorage.getItem(RADAR_SORT_KEY)
+      return (v==='sent_desc' || v==='sent_asc') ? v : 'updated'
+    }catch{ return 'updated' }
+  })
+  const setRadarSortPersist = (v: 'updated'|'sent_desc'|'sent_asc') => {
+    setRadarSort(v)
+    try{ localStorage.setItem(RADAR_SORT_KEY, v) }catch{}
+    setPage(1)
+  }
+  const radarSentTs = (c: any) => {
+    const t = new Date(String(c?.lastFollowAt || c?.lastSentAt || '')).getTime()
+    return Number.isFinite(t) ? t : -1
+  }  /** 每分区各自可配每页条数，默认 10（逾期等桶人多时更干净） */
   const PER_PAGE_LS = 'evan:followupPerPage'
   const PER_PAGE_OPTIONS = [5, 10, 20, 30, 50] as const
   type PerPageKey = 'all' | ManualBucket
@@ -528,9 +544,20 @@ export default function FollowUpsPage() {
       if (tagFilter !== 'all' && !(c.tags || []).includes(tagFilter)) continue
       out.push({ c, days, stage: st })
     }
-    out.sort((x, y) => ts(y.c.updatedAt || '') - ts(x.c.updatedAt || ''))
+    if(radarSort === 'sent_desc' || radarSort === 'sent_asc'){
+      const dir = radarSort === 'sent_desc' ? -1 : 1
+      out.sort((x, y) => {
+        const a = radarSentTs(x.c), b = radarSentTs(y.c)
+        if(a < 0 && b < 0) return ts(y.c.updatedAt || '') - ts(x.c.updatedAt || '')
+        if(a < 0) return 1
+        if(b < 0) return -1
+        return dir * (a - b) || (ts(y.c.updatedAt || '') - ts(x.c.updatedAt || ''))
+      })
+    }else{
+      out.sort((x, y) => ts(y.c.updatedAt || '') - ts(x.c.updatedAt || ''))
+    }
     return out
-  }, [customers, daysByCustomer, followIndex, catFilter, tagFilter, manualMap, showManualOnly])
+  }, [customers, daysByCustomer, followIndex, catFilter, tagFilter, manualMap, showManualOnly, radarSort])
 
   // 序列速览：按客户 id 索引 + 今日待发
   const seqMap = useMemo(()=>{
@@ -1620,6 +1647,14 @@ const handleBatchAiTpl = useCallback(async () => {
             {' · 第 '}{safePage}/{totalPages} 页
           </span>
           <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1" title="按我方最近发信时间（lastFollowAt/lastSentAt）排序，无时间沉底">
+              排序
+              <select value={radarSort} onChange={e=> setRadarSortPersist(e.target.value as any)} className="border rounded px-1 py-1 text-xs">
+                <option value="updated">默认更新</option>
+                <option value="sent_desc">最近发信↓</option>
+                <option value="sent_asc">最近发信↑</option>
+              </select>
+            </label>
             <label className="flex items-center gap-1">
               每页
               <select
