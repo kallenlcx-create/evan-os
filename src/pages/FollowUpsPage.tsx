@@ -3013,7 +3013,7 @@ const handleBatchAiTpl = useCallback(async () => {
                           <div className="space-y-1">
                             <input value={batchTplEdit.name} onChange={e=> setBatchTplEdit({ ...batchTplEdit, name: e.target.value })} placeholder="模板名" className="w-full px-2 py-1 border rounded text-xs"/>
                             <input value={batchTplEdit.subject} onChange={e=> setBatchTplEdit({ ...batchTplEdit, subject: e.target.value })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs"/>
-                            <textarea value={batchTplEdit.body} onChange={e=> setBatchTplEdit({ ...batchTplEdit, body: e.target.value })} rows={3} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
+                      <textarea value={batchTplEdit.body} onChange={e=> setBatchTplEdit({ ...batchTplEdit, body: e.target.value })} rows={6} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y"/>
                             <div className="flex gap-1">
                               <button onClick={()=>{ const name = batchTplEdit.name.trim()||'模板'; saveBatchTplLib(batchTplLib.map(x=> x.id===batchTplEdit.id ? { ...x, name, subject: batchTplEdit.subject, body: batchTplEdit.body } : x)); setBatchTplEdit(null) }} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-[11px]">保存</button>
                               <button onClick={()=> setBatchTplEdit(null)} className="px-3 py-1 border rounded-lg text-[11px]">取消</button>
@@ -3114,14 +3114,17 @@ const handleBatchAiTpl = useCallback(async () => {
                   </div>
                   <div className="pt-2 border-t text-xs font-semibold text-gray-700">自动跟进 7 步文案（也用于判断跟进表「跟进状态」相似度）</div>
                   <div className="space-y-2">
-                    {seqTemplates.map(t=>(
+                    {seqTemplates.map(t=>{
+                      const bodyText = tplEdit?.id===t.id ? tplEdit.body : t.body
+                      return (
                       <div key={t.id} className="border rounded-xl p-2">
-                        <div className="text-xs font-semibold mb-1">{t.name}</div>
+                        <div className="text-xs font-semibold mb-1">{t.name} <span className="font-normal text-gray-400">（{String(bodyText||'').length} 字）</span></div>
                         <input value={tplEdit?.id===t.id ? tplEdit.subject : t.subject} onChange={e=> setTplEdit({ id:t.id, subject:e.target.value, body: tplEdit?.id===t.id ? tplEdit.body : t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
-                        <textarea value={tplEdit?.id===t.id ? tplEdit.body : t.body} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={3} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                        <textarea value={bodyText} onChange={e=> setTplEdit({ id:t.id, subject: tplEdit?.id===t.id ? tplEdit.subject : t.subject, body:e.target.value })} rows={8} placeholder="正文（支持{{first_name}}，图片占位{{image:1}}）" className="w-full px-2 py-1 border rounded text-xs resize-y" />
                         <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name:t.name, kind:t.kind, subject: tplEdit?.id===t.id?tplEdit.subject:t.subject, body: tplEdit?.id===t.id?tplEdit.body:t.body }); setTplEdit(null); await loadSequences(); alert('已保存。此文案也用于判断跟进表「跟进状态」相似度。') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-green-600 text-white rounded-lg text-[11px]">保存此步</button>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -3129,18 +3132,21 @@ const handleBatchAiTpl = useCallback(async () => {
                 <div className="space-y-2">
                   <div className="text-[11px] text-gray-400">保存后发送弹窗 / 批量发跟进 的模板下拉会出现它。</div>
                   {quoteTpls.length===0 && <div className="text-[11px] text-gray-400">服务器暂无报价模板，点下方「添加报价模板」创建。</div>}
-                  {quoteTpls.map(t=>(
+                  {quoteTpls.map(t=>{
+                    const qb = quoteEdit?.id===t.id ? quoteEdit.body : t.body
+                    return (
                     <div key={t.id} className="border rounded-xl p-2 bg-amber-50/40">
                       <div className="flex items-center gap-2 mb-1">
                         <input value={quoteEdit?.id===t.id ? quoteEdit.name : t.name} onChange={e=> setQuoteEdit({ id:t.id, name:e.target.value, subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body: quoteEdit?.id===t.id?quoteEdit.body:t.body })} className="px-2 py-1 border rounded text-xs font-semibold w-32" />
-                        <span className="text-[10px] text-gray-400">kind=quote</span>
+                        <span className="text-[10px] text-gray-400">kind=quote · {String(qb||'').length} 字</span>
                         <button onClick={async()=>{ if(!confirm('删除报价模板「'+t.name+'」？')) return; try{ await deleteSeqTemplate(t.id); setQuoteEdit(null); await loadSequences(); }catch(e:any){ alert(String(e.message||e)) } }} className="ml-auto px-2 py-1 border rounded text-[11px] text-rose-600">删除</button>
                       </div>
                       <input value={quoteEdit?.id===t.id ? quoteEdit.subject : t.subject} onChange={e=> setQuoteEdit({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, subject:e.target.value, body: quoteEdit?.id===t.id?quoteEdit.body:t.body })} placeholder="主题" className="w-full px-2 py-1 border rounded text-xs mb-1" />
-                      <textarea value={quoteEdit?.id===t.id ? quoteEdit.body : t.body} onChange={e=> setQuoteEdit({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body:e.target.value })} rows={4} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y" />
+                      <textarea value={qb} onChange={e=> setQuoteEdit({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body:e.target.value })} rows={6} placeholder="正文" className="w-full px-2 py-1 border rounded text-xs resize-y" />
                       <button onClick={async()=>{ try{ await saveSeqTemplate({ id:t.id, name: quoteEdit?.id===t.id?quoteEdit.name:t.name, kind:'quote', subject: quoteEdit?.id===t.id?quoteEdit.subject:t.subject, body: quoteEdit?.id===t.id?quoteEdit.body:t.body }); setQuoteEdit(null); await loadSequences(); alert('报价模板已保存') }catch(e:any){ alert(String(e.message||e)) } }} className="mt-1 px-3 py-1 bg-amber-600 text-white rounded-lg text-[11px]">保存报价模板</button>
                     </div>
-                  ))}
+                    )
+                  })}
                   <div className="border rounded-xl p-2">
                     <div className="text-xs font-semibold mb-1">＋ 添加报价模板</div>
                     <input value={newQuoteName} onChange={e=> setNewQuoteName(e.target.value)} placeholder="名称，如：报价-硬币" className="w-full px-2 py-1 border rounded text-xs mb-1" />
