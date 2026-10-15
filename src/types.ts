@@ -186,6 +186,8 @@ export interface Customer extends BaseObject {
   repurchaseCount?: number // 复购次数
   linkedin?: string
   followUpAt?: string // YYYY-MM-DD 下次跟进
+  followStep?: number // 跟进1-7
+  followStepLocked?: boolean // 手改锁定：同步不再覆盖步号（发送推进仍可+1）
   aiSummary?: string // AI总结
   score?: number // 0-100 自动评分
   portrait?: {
@@ -1090,4 +1092,6 @@ export interface FollowUpRecord {
   autoLeave?: boolean
   /** 实际发出时间（outbox updated_at） */
   sentAt?: string
+  /** 该次发送命中的模板步号（发送时写入，供步号重算；0=非模板） */
+  stepHit?: number
 }

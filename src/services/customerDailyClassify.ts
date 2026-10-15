@@ -28,6 +28,8 @@ export type IntellectConfig = {
   followStopSeqOnCancel: boolean
   followAutoEnrollNoReply: boolean
   followSimThreshold: number
+  /** 相似度胜出裕量：最佳与次佳分差需≥此值才判（防7步 boilerplate 全过线） */
+  followSimMargin: number
   /** 成交/下单关键词（不区分大小写） */
   dealKeywords: string[]
   /** 排除词：命中则不当作成交 */
@@ -64,6 +66,7 @@ export function loadIntellectConfig(): IntellectConfig {
     followStopSeqOnCancel: true,
     followAutoEnrollNoReply: false,
     followSimThreshold: 0.6,
+    followSimMargin: 0.08,
     dealKeywords: [...DEFAULT_DEAL_KEYWORDS],
     dealExcludeWords: [...DEFAULT_DEAL_EXCLUDES],
   }

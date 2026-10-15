@@ -17,6 +17,12 @@ export type FollowStepTemplate = {
   n: number
   name: string
   keywords: string[]
+  /** 模板全文本（主题+正文原文），用于相似度双条件判定 */
+  text?: string
+  /** 本步独有特征（归一化后跨步去重，用于覆盖率判定） */
+  uniq?: string[]
+  /** 独有主题（归一化后），单独计分 */
+  subjU?: string
 }
 
 export const DEFAULT_FOLLOW_STEP_TEMPLATES: FollowStepTemplate[] = [
@@ -275,6 +281,43 @@ export function detectQuoteFromMails(c: Customer, emails: EmailMessage[], selfAd
 }
 
 /** 从用户保存的序列模板提取关键词，供「跟进状态」相似度判断 */
+/** 邮件/模板归一化：剥变量/URL/图片/邮箱/引用/落款，中文逐字散开，英文保留整词 */
+export function normalizeMailText(raw: string): string {
+  let s = String(raw || '')
+  s = s.replace(/<img\b[^>]*>/gi, ' ')
+  s = s.replace(/<[^>]+>/g, ' ')
+  s = s.replace(/\{\{[^}]*\}\}/g, ' ')
+  s = s.replace(/https?:\/\/[^\s"'<>]+/gi, ' ')
+  s = s.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, ' ')
+  s = s.replace(/^On .* wrote:.*$/gim, ' ')
+  s = s.replace(/^>.*$/gim, ' ')
+  s = s.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;/g, ' ')
+  s = s.toLowerCase()
+  s = s.replace(/([\u4e00-\u9fff])/g, ' $1 ')
+  s = s.replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ').replace(/\s+/g, ' ').trim()
+  // 落款高频词（双方共有，不具区分度）
+  s = s.replace(/\b(best regards|kind regards|warm regards|thanks|thank you|cheers|sincerely|hi|dear|hello|evan|ulead|uleadgroup|maxemblem|regards)\b/g, ' ')
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/** 词二元组 Jaccard 相似度：大段相同+小改动的模板场景下稳定 */
+export function shingleSim(a: string, b: string): number {
+  const grams = (t: string): Set<string> => {
+    const norm = normalizeMailText(t)
+    if (!norm) return new Set()
+    const w = norm.split(' ').filter(x => x && x.length >= 2)
+    if (w.length < 2) return new Set(w)
+    const s = new Set<string>()
+    for (let i = 0; i < w.length - 1; i++) s.add(w[i] + ' ' + w[i + 1])
+    return s
+  }
+  const A = grams(a), B = grams(b)
+  if (!A.size || !B.size) return 0
+  let inter = 0
+  for (const g of A) if (B.has(g)) inter++
+  return inter / (A.size + B.size - inter)
+}
+
 export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
   if (!list?.length) return []
   const sorted = [...list].map((t, i) => {
@@ -287,18 +330,28 @@ export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
     return { t, n }
   }).sort((a, b) => a.n - b.n).slice(0, 7)
 
-  // 只保留「本步独有」关键词，避免跟进1–5 主题/客套话雷同导致乱跳
+  // 只保留「本步独有」特征：归一化先行（剥变量/URL/图片/落款），数字保留，中文逐字二元
+  // 关键：按句子切分后组短语，短语不出句子——否则 boilerplate 与独有句拼接处的
+  // 伪短语（如 production slot month）只在模板原文里成立，邮件稍一改邻居就 miss
   const bags = sorted.map(({ t }) => {
-    const raw = `${t.subject || ''}\n${t.body || ''}`
-    const text = raw.toLowerCase()
-    const cjk = (raw.match(/[\u4e00-\u9fff]{2,12}/g) || []).map(x => x.toLowerCase())
-    const words = text.split(/[^a-z0-9']+/).filter(w => w.length >= 3 && !STOP.has(w))
+    const clean = normalizeMailText(`${t.subject || ''}\n${t.body || ''}`)
+    const sentences = clean.split(/[.!?。！？\n]+/).map(x => x.trim()).filter(Boolean)
     const phrases: string[] = []
-    for (let k = 0; k < words.length - 1; k++) {
-      phrases.push(words[k] + ' ' + words[k + 1])
-      if (k < words.length - 2) phrases.push(words[k] + ' ' + words[k + 1] + ' ' + words[k + 2])
+    const wordAll: string[] = []
+    const cjk: string[] = []
+    for (const sent of sentences) {
+      const toks = sent.split(' ').filter(Boolean)
+      const words = toks.filter(w => w.length >= 3 || /^\d+$/.test(w))
+      const noStop = words.filter(w => !STOP.has(w))
+      wordAll.push(...noStop)
+      for (let k = 0; k < noStop.length - 1; k++) {
+        phrases.push(noStop[k] + ' ' + noStop[k + 1])
+        if (k < noStop.length - 2) phrases.push(noStop[k] + ' ' + noStop[k + 1] + ' ' + noStop[k + 2])
+      }
+      const chars = sent.replace(/ /g, '').match(/[\u4e00-\u9fff]/g) || []
+      for (let k = 0; k < chars.length - 1; k++) cjk.push(chars[k] + ' ' + chars[k + 1])
     }
-    return { subj: String(t.subject || '').toLowerCase().trim(), cjk, phrases, words }
+    return { subj: normalizeMailText(String(t.subject || '')), cjk, phrases, words: wordAll }
   })
   const countMap = new Map<string, number>()
   for (const b of bags) {
@@ -324,22 +377,78 @@ export function templatesFromSeqTemplates(list: any[]): FollowStepTemplate[] {
       ...uniqWords.slice(0, 10),
     ])].filter(k => k && k.length >= 2).slice(0, 16)
     const def = DEFAULT_FOLLOW_STEP_TEMPLATES[n - 1]
+    const uniq = [...new Set([
+      ...uniqCjk.slice(0, 8),
+      ...uniqPhrases.slice(0, 12),
+      ...uniqWords.slice(0, 12),
+    ])].filter(k => k && k.length >= 2)
     out.push({
       n,
       name,
       keywords: keywords.length >= 2 ? keywords : (def?.keywords || keywords),
+      text: `${String(t.subject || '')}\n${String(t.body || '')}`,
+      uniq: uniq.length ? uniq : undefined,
+      subjU: (b.subj && bags.filter(x => x.subj === b.subj).length === 1) ? b.subj : undefined,
     })
   }
   return out
 
 }
 
-/** 关键词/片段相似度：覆盖 + 主题包含；templates 优先用「用户在序列模板里填的文案」 */
-export function matchFollowStep(subject: string, body: string, templates?: FollowStepTemplate[], threshold?: number){
+/**
+ * 跟进步号判定（v2：独有特征覆盖率双条件）
+ * - 有 uniq（用户模板跨步去重后的本步独有句/词）：覆盖率≥阈值 且 与次佳分差≥裕量 才判
+ *   大段相同+小插入的模板，插入部分正是 uniq，天然对症；插入新句不影响覆盖率
+ * - 无 uniq（内置默认库）→ 关键词覆盖（已删保底分，阈值 0.6）
+ * - 平局保留小编号（改掉原来取大的系统性偏高）
+ */
+export function matchFollowStep(subject: string, body: string, templates?: FollowStepTemplate[], threshold?: number, margin?: number){
   const list = templates?.length ? templates : DEFAULT_FOLLOW_STEP_TEMPLATES
-  const th = threshold ?? (loadIntellectConfig().followSimThreshold || 0.6)
-  const s = `${subject||''}\n${body||''}`.toLowerCase()
-  if (!s.trim()) return { step: 0, score: 0, matched: '' }
+  const cfg = loadIntellectConfig() as any
+  const th = threshold ?? (cfg.followSimThreshold || 0.6)
+  const mg = margin ?? (cfg.followSimMargin ?? 0.08)
+  const s = `${subject||''}\n${body||''}`
+  if (!s.trim()) return { step: 0, score: 0, matched: '', sim: 0 }
+  const withUniq = list.filter(t => (t as any).uniq && (t as any).uniq.length)
+  if (withUniq.length) {
+    // 邮件侧建同一特征空间（去停用词后的词/短语/中文二元集合），集合命中而非子串包含——
+    // 否则模板侧"reserve production"对不上邮件里的"reserve a production"
+    const mailFeats = new Set<string>()
+    const mailSubjNorm = normalizeMailText(subject || '')
+    const mailNormAll = normalizeMailText(s)
+    for (const sent of mailNormAll.split(/[.!?。！？\n]+/).map(x => x.trim()).filter(Boolean)) {
+      const toks = sent.split(' ').filter(Boolean)
+      const words = toks.filter(w => w.length >= 3 || /^\d+$/.test(w)).filter(w => !STOP.has(w))
+      for (const w of words) mailFeats.add(w)
+      for (let k = 0; k < words.length - 1; k++) {
+        mailFeats.add(words[k] + ' ' + words[k + 1])
+        if (k < words.length - 2) mailFeats.add(words[k] + ' ' + words[k + 1] + ' ' + words[k + 2])
+      }
+      const chars = sent.replace(/ /g, '').match(/[\u4e00-\u9fff]/g) || []
+      for (let k = 0; k < chars.length - 1; k++) mailFeats.add(chars[k] + ' ' + chars[k + 1])
+    }
+    const scored = withUniq.map(t => {
+      const uniq = (t as any).uniq as string[]
+      const subjU = String((t as any).subjU || '')
+      const total = uniq.length + (subjU ? 1 : 0)
+      let hit = 0
+      const hitList: string[] = []
+      for (const f of uniq) {
+        if (mailFeats.has(f)) { hit++; if (hitList.length < 5) hitList.push(f) }
+      }
+      if (subjU && (mailSubjNorm.includes(subjU) || mailNormAll.includes(subjU))) { hit++; if (hitList.length < 5) hitList.unshift('主题:' + subjU.slice(0, 20)) }
+      return { t, cov: total ? hit / total : 0, hitList }
+    })
+    scored.sort((a, b) => b.cov - a.cov)
+    const best = scored[0]
+    const second = scored.length > 1 ? scored[1].cov : 0
+    if (best && best.cov >= th && (best.cov - second) >= mg) {
+      return { step: best.t.n, score: best.cov, matched: `${best.t.name}·${best.cov.toFixed(2)}:${best.hitList.slice(0, 3).join('/')}`, sim: best.cov }
+    }
+    return { step: 0, score: best ? best.cov : 0, matched: '', sim: best ? best.cov : 0 }
+  }
+  // 关键词兜底（内置库无全文本）：收紧版，无保底分
+  const sLow = s.toLowerCase()
   let best = { step: 0, score: 0, matched: '' }
   for (const t of list) {
     const kws = (t.keywords || []).map(k => String(k).toLowerCase()).filter(Boolean)
@@ -348,7 +457,7 @@ export function matchFollowStep(subject: string, body: string, templates?: Follo
     let phraseHit = 0
     const hitList: string[] = []
     for (const k of kws) {
-      if (s.includes(k)) {
+      if (sLow.includes(k)) {
         hit++
         if (k.includes(' ') || /[一-鿿]/.test(k)) phraseHit++
         hitList.push(k)
@@ -357,15 +466,21 @@ export function matchFollowStep(subject: string, body: string, templates?: Follo
     let score = hit / Math.max(kws.length, 1)
     if (phraseHit > 0) score = Math.min(1, score + 0.15 * Math.min(phraseHit, 3))
     const subj = String(subject || '').toLowerCase()
-    if (subj && kws.some(k => subj.includes(k))) score = Math.min(1, score + 0.25)
-    if (kws.length <= 3 && hit >= 1) score = Math.max(score, 0.7)
-    if (hit >= 3) score = Math.max(score, 0.65)
+    if (hit >= 2 && subj && kws.some(k => subj.includes(k))) score = Math.min(1, score + 0.25)
     const total = score
-    if (total >= th && (total > best.score || (total === best.score && t.n > best.step))) {
+    if (total >= th && total > best.score) {
       best = { step: t.n, score: total, matched: hitList.slice(0, 5).join(',') || t.name }
     }
   }
   return best
+}
+
+/** 发送时记步号：有 seq 模板全文本用相似度，否则关键词兜底；返回步号（0=非模板） */
+export function matchSendStep(subject: string, body: string, seqTpls?: any[]): number {
+  try {
+    const tpls = seqTpls?.length ? templatesFromSeqTemplates(seqTpls) : undefined
+    return matchFollowStep(subject || '', body || '', tpls).step
+  } catch { return 0 }
 }
 
 export function stepLabel(n?: number): string {
@@ -470,13 +585,24 @@ export async function runFollowBoardSync(opts?: {
   const ts = new Date().toISOString()
   let replies = 0, modeChanged = 0, stepsUpdated = 0, highQueued = 0, ordersStopped = 0, quotesUpdated = 0
   const scanned = customers.length
+  // followUps按客户分组（步号事件/次数三源之一，只读一次）
+  const fuByCust = new Map<string, any[]>()
+  try{
+    const allFu = await db.followUps.toArray() as any[]
+    for(const f of allFu){
+      const k = String((f as any).customerId || '')
+      if(!k) continue
+      const arr = fuByCust.get(k)
+      if(arr) arr.push(f)
+      else fuByCust.set(k, [f])
+    }
+  }catch{}
 
   for (const c of customers) {
     if (!c.email && !(c.extraEmails||[]).length) continue
     if (isNoiseEmailAddress(c.email)) continue
     const addrs = customerAddrs(c)
     const { lastReply, lastSent } = computeMailTimes(emails, addrs)
-    const followCount = countFollowsSinceReply(emails, addrs, lastReply)
     const stage = salesStageOf(c)
     let followMode = followModeOf(c)
     let hasReply = String((c as any).hasReply || '') === 'yes'
@@ -514,33 +640,79 @@ export async function runFollowBoardSync(opts?: {
         followMode = 'manual'
       }
     }
-    let followStep = Number((c as any).followStep || 0)
-    let followStepMatched = String((c as any).followStepMatched || '')
-    if (seq && Number(seq.current_step) > 0) {
-      const sentSteps = (seq.steps || []).filter((t: any) => t.status === 'sent').length
-      const step = sentSteps > 0 ? sentSteps : 0
-      if (step > 0) {
-        followStep = Math.max(followStep, step)
-        followStepMatched = `序列 ${step}/7`
-        stepsUpdated++
-      }
-    } else if (lastSent || (c as any).followCountSinceReply > 0 || opts?.forceStepScan) {
-      const scan = bestFollowStepFromMails(emails, addrs, templates, th)
-      if (scan.step > 0 && scan.step !== followStep) {
-        followStep = scan.step
-        followStepMatched = scan.matched
-        stepsUpdated++
-      } else if (!followStep && scan.step > 0) {
-        followStep = scan.step
-        followStepMatched = scan.matched
-        stepsUpdated++
+    // 事件步号重算（v2）：新一轮起点=最后一次客户回复（回复重置）；轮内按时间推进：
+    // 报价事件→cursor=1；模板命中k→cursor=max(cursor,k)；非模板发送→cursor>0时+1
+    // 事件三源：本地发出邮件 + followUps已发（含批量/序列/outbox，stepHit发送时已记） + 序列已发步兜底
+    // 手改锁定：followStepLocked 时自动判断永不下调（发送推进仍可上调，锁跟随向上）
+    const locked = !!(c as any).followStepLocked
+    const lockedVal = Number((c as any).followStep || 0)
+    const roundStart = lastReply || ''
+    const cset = new Set(addrs.map(a => String(a).toLowerCase()))
+    const mineSorted = emails.filter(e => isSelfSender(e.from, e.folder) && involvesCustomer(e, cset))
+      .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+    const myFus = fuByCust.get(String(c.id)) || []
+    type StepEvt = { d: string; hit: number; quote: boolean; label: string }
+    const stepEvts: StepEvt[] = []
+    let fuSentInRound = 0
+    let fuMaxDate = ''
+    for (const e of mineSorted) {
+      const d = String(e.date || '')
+      if (!d || (roundStart && d <= roundStart)) continue
+      const mm = matchFollowStep(e.subject || '', mailBodyText(e), templates, th)
+      const blob = `${e.subject || ''}\n${mailBodyText(e)}`
+      const hasLink = !!extractPurchaseLink(blob)
+      const hasQuote = hasLink || detectQuoteFromText(blob).status !== 'none'
+      stepEvts.push({ d, hit: mm.step, quote: hasQuote, label: mm.matched })
+    }
+    for (const f of myFus) {
+      if ((f as any).status !== 'sent') continue
+      const d = String((f as any).sentAt || (f as any).dueAt || (f as any).createdAt || '')
+      if (!d || (roundStart && d <= roundStart)) continue
+      fuSentInRound++
+      if (!fuMaxDate || d > fuMaxDate) fuMaxDate = d
+      const note = String((f as any).note || '')
+      stepEvts.push({ d, hit: Number((f as any).stepHit || 0), quote: /报价|付款|第1步/i.test(note), label: note.slice(0, 24) })
+    }
+    stepEvts.sort((a, b) => String(a.d).localeCompare(String(b.d)))
+    let cursor = 0
+    let cursorWhy = ''
+    for (const ev of stepEvts) {
+      if (ev.quote) { cursor = 1; cursorWhy = '报价' }
+      else if (ev.hit > 0) { if (ev.hit > cursor) { cursor = ev.hit; cursorWhy = ev.label } }
+      else if (cursor > 0) { cursor += 1; cursorWhy = '发送推进' }
+    }
+    // 序列已发步兜底（云同步未到时）：仅计入本轮
+    if (seq && Array.isArray((seq as any).steps)) {
+      for (const t of (seq as any).steps) {
+        if ((t as any).status !== 'sent') continue
+        const d = String((t as any).sentAt || '')
+        if (!d || (roundStart && d <= roundStart)) continue
+        const n = Number((t as any).n || 0)
+        if (n > cursor) { cursor = n; cursorWhy = `序列${n}/7` }
       }
     }
+    const prevStep = Number((c as any).followStep || 0)
+    let followStep: number
+    let followStepMatched = String((c as any).followStepMatched || '')
+    if (locked) {
+      if (cursor > lockedVal) {
+        followStep = cursor
+        followStepMatched = cursorWhy || '发送推进'
+      } else {
+        followStep = lockedVal
+      }
+    } else {
+      followStep = cursor
+      followStepMatched = cursor > 0 ? (cursorWhy || '') : ''
+    }
+    if (followStep !== prevStep) stepsUpdated++
+    const followCount = countFollowsSinceReply(emails, addrs, lastReply) + fuSentInRound
+    const lastFollowDate = [lastSent || '', fuMaxDate, String((c as any).lastFollowAt || '')].filter(Boolean).sort().pop() || null
 
     const patch: any = {
       hasReply: hasReply ? 'yes' : 'no',
       lastReplyAt: lastReply || null,
-      lastFollowAt: lastSent || (c as any).lastFollowAt || null,
+      lastFollowAt: lastFollowDate,
       followCountSinceReply: followCount,
       followMode,
       followModeSource: hasReply && followMode === 'manual' && followModeOf(c) !== 'manual' ? 'reply' : ((c as any).followModeSource || 'system'),

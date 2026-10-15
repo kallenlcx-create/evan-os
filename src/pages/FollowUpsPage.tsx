@@ -11,7 +11,7 @@ import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } 
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
-import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, type FollowMode, type SalesStage } from '../services/followProfile'
+import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, matchSendStep, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 import FilterBar from '../components/FollowFilterBar'
@@ -393,10 +393,32 @@ export default function FollowUpsPage() {
     try{
       const accs = await listAccounts()
       if(!accs.length) return alert('请先绑定邮箱账号')
-      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？（档案将标为「自动跟进」）`)) return
-      await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      // 从当前步号+1续跑（跟进3→下次发跟进5），而不是永远从1重来
+      const fresh = await db.customers.get(c.id) as any
+      const persisted = Number(fresh?.followStep || (c as any).followStep || 0)
+      let seqCur = 0
+      try{
+        const j = await getSequences()
+        const s = (j.sequences || []).find((x:any)=> x.customer_id === c.id)
+        if(s) seqCur = Math.max(0, Number(s.current_step || 1) - 1)
+      }catch{}
+      const cur = Math.max(persisted, seqCur)
+      const from = Math.min(7, cur + 1)
+      if(cur >= 7) return alert('已到跟进7，无需再启动序列')
+      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？（当前跟进${cur}，将从第${from}步继续发；档案将标为「自动跟进」）`)) return
+      try{
+        const j = await getSequences()
+        const s = (j.sequences || []).find((x:any)=> x.customer_id === c.id)
+        if(s) await patchSequence(c.id, { mode: 'auto', fromStep: from })
+        else {
+          await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+          if(from > 1) await patchSequence(c.id, { mode: 'auto', fromStep: from })
+        }
+      }catch{
+        await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      }
       await setCustomerFollowMode(c, 'auto', 'user')
-      alert('自动跟进已启动')
+      alert(`自动跟进已启动，将从第${from}步继续`)
       await loadSequences()
       window.dispatchEvent(new CustomEvent('evan-customers-updated'))
     }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
@@ -1053,6 +1075,7 @@ const handleBatchAiTpl = useCallback(async () => {
           outboxId: String(enq.id),
           buckets: getCustomerBuckets(c.id),
           autoLeave: batchAutoLeave,
+          stepHit: matchSendStep(subj, body, seqTemplates),
         } as any)
       }catch(e:any){
         errors++
@@ -1076,7 +1099,7 @@ const handleBatchAiTpl = useCallback(async () => {
       alert('批量入队失败\n' + errList.slice(0,3).join('\n') + '\n\n请把此弹窗全文发给开发排查。')
     }
     await load()
-  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave])
+  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -1267,6 +1290,7 @@ const handleBatchAiTpl = useCallback(async () => {
               outboxId: String(enq.id),
               buckets: getCustomerBuckets(c.id),
               autoLeave: batchAutoLeave,
+              stepHit: matchSendStep(r.subject, r.body, seqTemplates),
             } as any)
           }
           ok++
@@ -1281,7 +1305,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }finally{
       setAiReplySendBusy(false)
     }
-  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, load, loadSequences])
+  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates, load, loadSequences])
 
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
@@ -1690,11 +1714,23 @@ const handleBatchAiTpl = useCallback(async () => {
         const liveFollowCount = (c: Customer) => {
           const addrs = customerAddrs(c)
           const { lastReply } = computeMailTimes(mailList, addrs)
-          return countFollowsSinceReply(mailList, addrs, lastReply)
+          let n = countFollowsSinceReply(mailList, addrs, lastReply)
+          // 跟进记录已发（含批量/序列/outbox）同样计入本轮次数
+          try{
+            for(const f of (list as any[])){
+              if(String((f as any).customerId) !== String(c.id) || (f as any).status !== 'sent') continue
+              const d = String((f as any).sentAt || (f as any).dueAt || (f as any).createdAt || '')
+              if(!d) continue
+              if(!lastReply || d > String(lastReply)) n++
+            }
+          }catch{}
+          return n
         }
         const followStepOf = (c: Customer) => {
           const seq = seqMapB.get(c.id)
-          const sentSteps = seq ? (seq.steps||[]).filter((t:any)=> t.status==='sent').length : 0
+          // 序列已发步只计本轮（客户回复后重置）；存档优先（含手改锁定），无存档才实时扫描
+          const lastR = String((c as any).lastReplyAt || '')
+          const sentSteps = seq ? (seq.steps||[]).filter((t:any)=> t.status==='sent' && (!lastR || String(t.sentAt||'') > lastR)).length : 0
           const persisted = Number((c as any).followStep || 0)
           if(sentSteps > 0) return Math.max(persisted, sentSteps)
           if(persisted > 0) return persisted
@@ -1815,11 +1851,28 @@ const handleBatchAiTpl = useCallback(async () => {
             const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
             const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'' } as any))
             const mid = th.found && th.messageId ? th.messageId : undefined
-            await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, 'ai-reply-'+c.id+'-'+Date.now(), false, {
+            const dayKey = new Date().toISOString().slice(0,10).replace(/-/g,'')
+            const idem = `ai${dayKey}-${String(c.id).replace(/-/g,'').slice(0,12)}-${String(gen.subject).replace(/\s+/g,'').slice(0,24)}`
+            const enq = await enqueueMail(accs[0].id, c.email||'', gen.subject, gen.body, idem, false, {
               html: (await import('../utils/mailHtml')).textToHtml(gen.body),
               inReplyTo: mid,
               references: mid,
             })
+            if(!enq?.id) throw new Error('入队未返回邮件ID')
+            const { getCustomerBuckets } = await import('../services/manualBuckets')
+            await db.followUps.put({
+              id: 'fu-aireply-'+Date.now()+'-'+c.id,
+              customerId: c.id,
+              dueAt: new Date().toISOString().slice(0,10),
+              channel: ['AI回复'],
+              note: 'AI单发入队：' + (mid ? '会话回复' : '新邮件') + ' ' + gen.subject.slice(0,36),
+              status: 'pending',
+              createdAt: new Date().toISOString(),
+              outboxId: String(enq.id),
+              buckets: getCustomerBuckets(c.id),
+              autoLeave: false,
+              stepHit: matchSendStep(gen.subject, gen.body, seqTemplates),
+            } as any)
             await setCustomerFollowMode(c, 'manual', 'user')
             setIntellectNote(`AI回复已入队：${c.contactName||c.email} · ${mid?'会话回复':'新邮件'}`)
             await loadSequences()
@@ -1870,7 +1923,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 await db.customers.update(c.id, { level: val as any, updatedAt: ts } as any)
               } else if(field==='step'){
                 const stepN = Number(val)||1
-                await db.customers.update(c.id, { followStep: stepN, followStepLabel: `跟进${stepN}`, followStepMatched: '批量设置', updatedAt: ts } as any)
+                await db.customers.update(c.id, { followStep: stepN, followStepLabel: `跟进${stepN}`, followStepMatched: '批量设置', followStepLocked: true, updatedAt: ts } as any)
               } else if(field==='stage'){
                 await setCustomerSalesStage(c, val as SalesStage)
               } else if(field==='mode'){
@@ -1919,6 +1972,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 followStep: stepN,
                 followStepLabel: `跟进${stepN}`,
                 followStepMatched: '批量设置',
+                followStepLocked: true,
                 updatedAt: ts,
               } as any)
             }
@@ -2315,6 +2369,7 @@ const handleBatchAiTpl = useCallback(async () => {
                                 followStep: n,
                                 followStepLabel: n ? `跟进${n}` : '',
                                 followStepMatched: n ? '手动设置' : '',
+                                followStepLocked: n > 0,
                                 updatedAt: new Date().toISOString(),
                               } as any)
                               await load()

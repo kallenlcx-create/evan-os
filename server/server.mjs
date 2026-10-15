@@ -3933,7 +3933,7 @@ async function seqTick(){
           const fuId = `fu-seq-${s.customer_id}-${s.current_step}`
           const fuDue = new Date().toISOString().slice(0,10)
           const fu = { id: fuId, customerId: s.customer_id, dueAt: fuDue, channel:['auto-seq'],
-            note:`自动跟进第${s.current_step}步已发`, status:'sent', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+            note:`自动跟进第${s.current_step}步已发`, status:'sent', stepHit: Number(s.current_step)||0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
           await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at, deleted) VALUES (?,?,?,?,?,0)
             ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
             [s.username, 'followUps', fuId, JSON.stringify(fu), fu.updatedAt.slice(0,23)])

@@ -488,6 +488,25 @@ export default function InboxPage(){
         false,
         { html: replyFinalHtml(), sendAt }
       )
+      // 排队发送同样建跟进记录（带 outboxId + 模板命中步号），发出后联动步号/退桶
+      try{
+        const { matchSendStep } = await import('../services/followProfile')
+        const cust = customer || (selected ? await ensureCustomer(selected.from, selected.from) : null)
+        if(cust){
+          await db.followUps.put({
+            id: 'fu-reply-'+Date.now()+'-'+cust.id,
+            customerId: cust.id,
+            dueAt: new Date().toISOString().slice(0,10),
+            channel: ['手动回复'],
+            note: (sendAt ? '定时'+new Date(sendAt).toLocaleString()+'：' : '回复排队：') + replySubject.slice(0,36),
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            outboxId: String(r.id),
+            autoLeave: false,
+            stepHit: matchSendStep(replySubject, replyBody),
+          } as any)
+        }
+      }catch{}
       if(replyDraftId) await deleteDraft(replyDraftId).catch(()=>{})
       setReplyDraftId(''); setShowReply(false); setScheduleAt('')
       alert(sendAt
@@ -606,9 +625,31 @@ export default function InboxPage(){
     try{
       const accs = await listAccounts()
       if(!accs.length) return alert('请先绑定邮箱账号')
-      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？`)) return
-      await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
-      alert('自动跟进已启动，去跟进页查看进度')
+      // 从当前步号+1续跑，而不是从1重来
+      const fresh = await db.customers.get(c.id) as any
+      const persisted = Number(fresh?.followStep || (c as any).followStep || 0)
+      let seqCur = 0
+      try{
+        const j = await getSequences()
+        const s = (j.sequences || []).find((x:any)=> x.customer_id === c.id)
+        if(s) seqCur = Math.max(0, Number(s.current_step || 1) - 1)
+      }catch{}
+      const cur = Math.max(persisted, seqCur)
+      const from = Math.min(7, cur + 1)
+      if(cur >= 7) return alert('已到跟进7，无需再启动序列')
+      if(!confirm(`为 ${c.contactName || c.title} 启动7步自动跟进？（当前跟进${cur}，将从第${from}步继续发）`)) return
+      try{
+        const j = await getSequences()
+        const s = (j.sequences || []).find((x:any)=> x.customer_id === c.id)
+        if(s) await patchSequence(c.id, { mode: 'auto', fromStep: from })
+        else {
+          await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+          if(from > 1) await patchSequence(c.id, { mode: 'auto', fromStep: from })
+        }
+      }catch{
+        await startSequence({ customerId: c.id, email: c.email, accountId: accs[0].id })
+      }
+      alert(`自动跟进已启动，将从第${from}步继续，去跟进页查看进度`)
       await refreshCustSeq(c.id)
     }catch(e:any){ alert('启动失败：' + String(e.message||e).slice(0,150)) }
   }
