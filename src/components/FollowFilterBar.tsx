@@ -136,8 +136,9 @@ export default function FilterBar({ search, onSearch, chips, onChips }: {
       <div className="relative">
         <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
         <input value={search} onChange={e=> onSearch(e.target.value)}
-          placeholder="搜索客户/邮箱/公司"
-          className="pl-7 pr-2 py-1.5 border rounded-lg text-xs w-48"/>
+          placeholder="搜索客户/邮箱/公司（可批量）"
+          title="多个值用空格/逗号/换行分隔=任一命中；&quot;引号&quot;内=精确短语"
+          className="pl-7 pr-2 py-1.5 border rounded-lg text-xs w-56"/>
       </div>
       {chips.map((chip, i)=>(
         <div key={i} className="relative">

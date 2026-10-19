@@ -13,6 +13,7 @@ import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManual
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, matchSendStep, type FollowMode, type SalesStage } from '../services/followProfile'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
+import { matchSearch } from '../services/searchTerms'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 import FilterBar from '../components/FollowFilterBar'
 import { applyFollowFilters, bucketPresetChips, exportFollowRowsCsv, loadFilterPresets, upsertFilterPreset, removeFilterPreset, type FilterChip, type FilterPreset, type FilterCtx } from '../services/followFilters'
@@ -1783,9 +1784,7 @@ const handleBatchAiTpl = useCallback(async () => {
             if(!ok) return false
           }
           if(boardQ.trim()){
-            const q = boardQ.trim().toLowerCase()
-            const hay = `${c.contactName||''} ${c.title||''} ${c.email||''} ${c.company||''} ${inq?.inquiryNo||''} ${(c as any).inquiryNos?.join?.(' ')||''}`.toLowerCase()
-            if(!hay.includes(q)) return false
+            if(!matchSearch(boardQ, `${c.contactName||''} ${c.title||''} ${c.email||''} ${c.company||''} ${inq?.inquiryNo||''} ${(c as any).inquiryNos?.join?.(' ')||''}`, [c.email||'', ...(c.extraEmails||[])])) return false
           }
           return true
         })
@@ -2086,7 +2085,7 @@ const handleBatchAiTpl = useCallback(async () => {
               <select value={boardStage} onChange={e=>{ setBoardStage(e.target.value as any); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value="all">销售阶段：全部</option><option value="following">跟进中</option><option value="ordered">已下单</option><option value="direct_order">直接下单</option><option value="cancelled">取消</option>
               </select>
-              <input value={boardQ} onChange={e=>{ setBoardQ(e.target.value); setBoardPage(1) }} placeholder="搜客户/邮箱/公司" className="border rounded px-2 py-1.5 text-sm w-40"/>
+              <input value={boardQ} onChange={e=>{ setBoardQ(e.target.value); setBoardPage(1) }} placeholder="搜客户/邮箱/公司（可批量）" title="多个值用空格/逗号/换行分隔=任一命中；&quot;引号&quot;内=精确短语" className="border rounded px-2 py-1.5 text-sm w-52"/>
               <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={boardHighOnly} onChange={e=> setBoardHighOnly(e.target.checked)}/> 仅高意向</label>
               <select value={boardStepMin} onChange={e=>{ setBoardStepMin(Number(e.target.value)||0); setBoardPage(1) }} className="border rounded px-2 py-1.5 text-sm">
                 <option value={0}>跟进步：全部</option>

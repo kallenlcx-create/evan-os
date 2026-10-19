@@ -14,6 +14,7 @@ import { applyBuckets, applyCustomerTags } from '../services/bucketOps'
 import { refreshSentDatesFromLocal, sentDatesOf, formatDays } from '../services/sentDates'
 import { PRODUCT_TAGS, runProductClassify, formatProductResult, isProductTag } from '../services/productClassify'
 import { backfillCustomerPhones } from '../services/inquiryScan'
+import { matchSearch } from '../services/searchTerms'
 
 // ====== 邮箱后缀自动分类 ======
 const EMAIL_SUFFIX_MAP: Record<string, { label: string; icon: any; color: string }> = {
@@ -817,7 +818,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
       const emailType = classifyEmailType(c.email)
       if(emailType.label !== '企业') return false
     }
-    if(q && !`${c.title} ${c.company} ${c.email}`.toLowerCase().includes(q.toLowerCase())) return false
+    if(q && !matchSearch(q, `${c.contactName||''} ${c.title||''} ${c.company||''} ${c.email||''}`, [c.email||'', ...(c.extraEmails||[])])) return false
     // 未跟进天数筛选（与卡片「⏳未跟进」同源：邮件发送时间）
     if(minSilentDays > 0 || maxSilentDays > 0){
       const days = silentDaysOf(c)
@@ -1262,7 +1263,7 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
             title="按未跟进天数等条件筛选"
           >⚗️ 筛选{(minSilentDays>0||maxSilentDays>0||hideOrdered) ? ` · ${sortedFiltered.length}` : ''}</button>
           <Search size={12} className="absolute left-[68px] top-2 text-gray-300 pointer-events-none hidden"/>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱" className="px-2 py-1 border rounded-lg text-xs w-40"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜公司/邮箱（可批量粘贴）" title="多个值用空格/逗号/换行分隔=任一命中；&quot;引号&quot;内=精确短语" className="px-2 py-1 border rounded-lg text-xs w-52"/>
         </div>
       </div>
       {showFilters && (
