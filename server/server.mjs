@@ -64,6 +64,13 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   charset: 'utf8mb4',
 })
+// 会话时区必须与 Node 本地一致：sqlDate/sqlNow 写本地墙钟、TIMESTAMP 读写、NOW() 到点比较全部同源。
+// 否则 UTC 墙钟被 MySQL 按本地时区解释 → 定时早/晚 8 小时（send_at<=NOW() 立即为真 → 定时邮件全部立即发出）
+const TZ_OFF = (()=>{
+  const m = -new Date().getTimezoneOffset(); const a = Math.abs(m)
+  return `${m<0?'-':'+'}${String(Math.floor(a/60)).padStart(2,'0')}:${String(a%60).padStart(2,'0')}`
+})()
+pool.on('connection', (conn)=>{ try{ conn.query(`SET time_zone='${TZ_OFF}'`).catch(()=>{}) }catch{} })
 // 内存降级（MySQL 不可用时）+ 文件持久（重启不丢绑定）
 const memUsers = new Map()
 const memEmailAccounts = new Map() // username -> accounts[]
@@ -451,7 +458,8 @@ app.get('/changes', auth, wrap(async (req, res) => {
     const dels=(memDeletions.get(req.user)||[]).filter(d=> d.deletedAt>since)
     return res.json({ serverNow: new Date().toISOString(), changes, deletions: dels })
   }
-  const since = String(req.query.since ?? '1970-01-01T00:00:00.000Z')
+  // 客户端 since 是 ISO(UTC)；data.updated_at 存本地墙钟 → 统一转成本地墙钟再比较
+  const since = sqlDate(String(req.query.since ?? '1970-01-01T00:00:00.000Z')) || '1970-01-01 00:00:00'
   const serverNow = new Date().toISOString()
 
   const [dataRows] = await pool.query(
@@ -521,7 +529,7 @@ app.post('/upsert/:table', auth, wrap(async (req, res) => {
       `INSERT INTO data (username, table_name, row_id, data, updated_at, deleted)
        VALUES (?,?,?,?,?,0)
        ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at), deleted = 0`,
-      [req.user, tableName, rid, JSON.stringify({ ...row, id: rid }), updatedAt.slice(0, 23)])
+      [req.user, tableName, rid, JSON.stringify({ ...row, id: rid }), sqlDate(updatedAt) || sqlNow()])
     accepted++
   }
   res.json({ ok: true, accepted })
@@ -545,7 +553,7 @@ app.post('/deletions', auth, wrap(async (req, res) => {
   const list = Array.isArray(req.body?.deletions) ? req.body.deletions : []
   for (const d of list.slice(0, 500)) {
     if (!d.tableName || !d.rowId) continue
-    const deletedAt = (d.deletedAt || new Date().toISOString()).slice(0, 23)
+    const deletedAt = sqlDate(d.deletedAt || Date.now()) || sqlNow()
     const [existing] = await pool.query(
       'SELECT updated_at FROM data WHERE username=? AND table_name=? AND row_id=?',
       [req.user, d.tableName, d.rowId])
@@ -1885,10 +1893,15 @@ function sqlDate(d){
   try{
     const t = d instanceof Date ? d : new Date(d)
     if(isNaN(t.getTime())) return null
-    return t.toISOString().slice(0,19).replace('T',' ')
+    return localWall(t, false)
   }catch{ return null }
 }
-function sqlNow(){ return new Date().toISOString().slice(0,23).replace('T',' ') }
+function sqlNow(){ return localWall(new Date(), true) }
+/** 本地时区墙钟字符串：与会话 time_zone（pool 连接已 SET 为 Node 本地偏移）同源 */
+function localWall(t, withMs){
+  const p=(n,w=2)=>String(n).padStart(w,'0')
+  return `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}${withMs?'.'+p(t.getMilliseconds(),3):''}`
+}
 // 通用硬超时：任何 IMAP 等待超过 ms 即抛，调用方跳过本批下轮重试
 function withTimeout(promise, ms, label){
   let timer = null
@@ -3936,7 +3949,7 @@ async function seqTick(){
             note:`自动跟进第${s.current_step}步已发`, status:'sent', stepHit: Number(s.current_step)||0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
           await pool.query(`INSERT INTO data (username, table_name, row_id, data, updated_at, deleted) VALUES (?,?,?,?,?,0)
             ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=VALUES(updated_at), deleted=0`,
-            [s.username, 'followUps', fuId, JSON.stringify(fu), fu.updatedAt.slice(0,23)])
+            [s.username, 'followUps', fuId, JSON.stringify(fu), sqlDate(fu.updatedAt) || sqlNow()])
         }catch{}
         console.log(`[seq] sent step${s.current_step} -> ${s.email}`)
       }catch(e){ console.log('[seq] step skip:', s.customer_id, String(e.message||e).slice(0,100)) }
