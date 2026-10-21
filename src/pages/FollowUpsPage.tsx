@@ -16,6 +16,7 @@ import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '
 import { matchSearch } from '../services/searchTerms'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
 import FilterBar from '../components/FollowFilterBar'
+import CustomerNoteInput from '../components/CustomerNoteInput'
 import { applyFollowFilters, bucketPresetChips, exportFollowRowsCsv, loadFilterPresets, upsertFilterPreset, removeFilterPreset, type FilterChip, type FilterPreset, type FilterCtx } from '../services/followFilters'
 void MANUAL_BUCKETS
 void removeManualBucket
@@ -663,7 +664,8 @@ export default function FollowUpsPage() {
     try {
       const c = sendTarget
       const product = c.portrait?.products?.[0] || 'Challenge Coin'
-      const prompt = `你是Maxemblem的外贸业务员Evan，给客户写一封英文跟进邮件。只返回邮件正文，不要解释。\n客户：${c.contactName || c.title}（${c.email}，${c.company || '公司未知'}）\n等级：${c.level || 'C'}${c.isKey ? '（重点客户）' : ''}，阶段：${c.stage || 'lead'}，复购${c.repurchaseCount || 0}次\n产品：${product}\n客户画像：${c.aiSummary || '无'}\n要求：简短亲切，提一下产品，结尾问一句是否需要报价或样品，落款Evan。`
+      const note = String((c as any).notes || '').trim()
+      const prompt = `你是Maxemblem的外贸业务员Evan，给客户写一封英文跟进邮件。只返回邮件正文，不要解释。\n客户：${c.contactName || c.title}（${c.email}，${c.company || '公司未知'}）\n等级：${c.level || 'C'}${c.isKey ? '（重点客户）' : ''}，阶段：${c.stage || 'lead'}，复购${c.repurchaseCount || 0}次\n产品：${product}\n客户画像：${c.aiSummary || '无'}${note ? `\n人工备注（最高优先级，邮件必须遵循）：${note}` : ''}\n要求：简短亲切，提一下产品，结尾问一句是否需要报价或样品，落款Evan。`
       const draft = await chatOnce(prompt)
       if (draft && !draft.startsWith('⚠️')) {
         setSendBody(draft.trim())
@@ -922,7 +924,8 @@ const handleBatchAiTpl = useCallback(async () => {
     try{
       const c = batchTargets[0]
       const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
-      const prompt = `你是Maxemblem外贸业务员Evan。写一封简短英文跟进邮件主题+正文，适合群发给类似客户。只返回两行：第一行Subject:，第二行Body:。\n客户示例：${c.contactName||c.title}（${product}），阶段${c.stage||'lead'}。\n语气友好，问是否需要报价或样品，落款Evan。`
+      const note = String((c as any).notes || '').trim()
+      const prompt = `你是Maxemblem外贸业务员Evan。写一封简短英文跟进邮件主题+正文，适合群发给类似客户。只返回两行：第一行Subject:，第二行Body:。\n客户示例：${c.contactName||c.title}（${product}），阶段${c.stage||'lead'}。${note ? `\n人工备注（最高优先级，须遵循）：${note}` : ''}\n语气友好，问是否需要报价或样品，落款Evan。`
       const out = await chatOnce(prompt)
       const sIdx = out.indexOf('Subject:')
       const bIdx = out.indexOf('Body:')
@@ -2228,6 +2231,7 @@ const handleBatchAiTpl = useCallback(async () => {
                       { key:'step', label:'跟进状态', w:'step', sort:'step' },
                       { key:'no_follow', label:'未跟进天数', w:'no_follow', sort:'no_follow' },
                       { key:'stage', label:'销售阶段', w:'stage', sort:'stage' },
+                      { key:'note', label:'备注', w:'note' },
                       { key:'ops', label:'操作', w:'ops' },
                     ] as const).map(col=>{
                       const sortKey = (col as any).sort as string | undefined
@@ -2236,7 +2240,7 @@ const handleBatchAiTpl = useCallback(async () => {
                         <th
                           key={col.key}
                           className="p-2 select-none relative"
-                          style={{ width: colW(col.w, col.key==='name'?180:110), minWidth: 56 }}
+                          style={{ width: colW(col.w, col.key==='name'?180:col.key==='note'?160:110), minWidth: 56 }}
                           onClick={()=>{ if(sortable && sortKey) toggleBoardSort(sortKey as any) }}
                         >
                           <span className={sortable?'cursor-pointer inline-flex items-center':''}>
@@ -2399,6 +2403,14 @@ const handleBatchAiTpl = useCallback(async () => {
                             <option value="direct_order">直接下单</option>
                             <option value="cancelled">取消</option>
                           </select>
+                        </td>
+                        <td className="p-1" style={{ width: colW('note', 160) }}>
+                          <CustomerNoteInput
+                            customer={c}
+                            className="w-full border rounded px-1 py-0.5 text-[11px] bg-transparent focus:bg-white"
+                            placeholder="备注…"
+                            title="人工备注：与客户界面「AI 客户画像」是同一份数据，双向实时同步；AI 画像分析/AI 跟进邮件会读取此备注"
+                          />
                         </td>
                         <td className="p-2">
                           <div className="flex flex-wrap gap-1">

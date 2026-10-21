@@ -1745,7 +1745,8 @@ export default function InboxPage(){
                     const c = customer || await ensureCustomer(selected.from, selected.from)
                     const hist = thread.slice(-10).map(e=> `[${e.date}] ${e.folder==='sent'?'我':'客'}: ${(e.text||'').slice(0,300)}`).join('\n')
                     const amounts = (hist.match(/\$\s*[\d,]+/g)||[]).slice(0,5).join(' ')
-                    const prompt = `你是Maxemblem外贸业务员Evan，给下面这位客户写一封专属英文回复邮件（不是模板，必须结合他的背景和往来记录）。只返回正文，落款Evan。\n客户：${c?.contactName||c?.title}（${c?.email}，${c?.company||'公司未知'}），等级${c?.level||'C'}${c?.isKey?'重点':''}，阶段${c?.stage||''}，复购${c?.repurchaseCount||0}次\n画像：${c?.aiSummary||'无'}，常购：${(c?.portrait as any)?.products?.join('/')||'未知'}，出现过的金额：${amounts||'无'}\n最近往来：\n${hist}\n当前这封：${selected.subject}\n${(selected.text||'').slice(0,1500)}`
+                    const cNote = String((c as any)?.notes || '').trim()
+                    const prompt = `你是Maxemblem外贸业务员Evan，给下面这位客户写一封专属英文回复邮件（不是模板，必须结合他的背景和往来记录）。只返回正文，落款Evan。\n客户：${c?.contactName||c?.title}（${c?.email}，${c?.company||'公司未知'}），等级${c?.level||'C'}${c?.isKey?'重点':''}，阶段${c?.stage||''}，复购${c?.repurchaseCount||0}次\n画像：${c?.aiSummary||'无'}，常购：${(c?.portrait as any)?.products?.join('/')||'未知'}，出现过的金额：${amounts||'无'}${cNote?`\n人工备注（最高优先级，必须遵循）：${cNote}`:''}\n最近往来：\n${hist}\n当前这封：${selected.subject}\n${(selected.text||'').slice(0,1500)}`
                     const { chatOnce } = await import('../services/aiChat')
                     const draft = await chatOnce(prompt)
                     if(!draft || draft.startsWith('⚠️')){ alert(draft||'AI 生成失败'); return }

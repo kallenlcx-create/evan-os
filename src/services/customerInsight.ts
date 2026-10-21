@@ -9,6 +9,7 @@ import {
   coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile,
   isFillableDim,
 } from '../config/portrait'
+import { noteForPrompt } from './customerNotes'
 
 export type InsightResult = {
   customerId: string
@@ -110,11 +111,15 @@ export async function runAiInsight(opts?: {
     )
     const prevEdited = !!(c as any).portraitEditedAt
     const prevText = formatPortraitText(prevPortrait)
+    const humanNote = noteForPrompt(c)
     const prompt = `你是 Maxemblem 外贸销售分析助手。根据客户邮件/订单输出 JSON，不要其它文字。
 客户：${c.contactName||c.title}（${c.email}，${c.company||''}）等级${c.level||'C'}${c.isKey?'重点':''} 阶段${c.stage||'lead'} 复购${c.repurchaseCount||0}
 订单：${ords||'无'}
 邮件：
 ${mailText||'无'}
+
+【人工备注（人工填写，最高优先级，AI 必须遵循，不得推翻；与邮件冲突时以备注为准）】
+${humanNote||'无'}
 
 【已有十一维画像（可能含人工修正${prevEdited?'，人工已修订，优先采用':''}）】
 ${prevText}
@@ -132,7 +137,7 @@ ${prevText}
 10 repurchase_potential 复购潜力（高/中/低）
 11 next_marketing 下一次营销策略（复购提醒/新产品推荐/优惠/节日营销）
 
-输出 JSON：
+输出 JSON（profile_cn 必须体现人工备注里的约束与偏好；备注未覆盖的部分按邮件推断）：
 {"profile_cn":"中文背景2-4句","portrait":{"order_times":"","order_count":"","customer_type":"","product_preference":"","craft_preference":"","procurement_scale":"","budget_sensitivity":"","decision_mode":"","time_pattern":"","repurchase_potential":"","next_marketing":""},"intent":"high|medium|low","opportunity":"deal|repurchase|cross_sell|none","needs_followup":true/false,"followup_at":"YYYY-MM-DD可空","deal_hint":"一句话","confidence":0到1}`
     try{
       const raw = await chatOnce(prompt)
@@ -324,6 +329,7 @@ export async function runPurchaseLoop(opts?: {
       parsePortraitFromProfile((c as any).aiProfile) || {},
     )
     const portraitText = formatPortraitText(portrait)
+    const humanNote = noteForPrompt(c)
     let ai: any = null
     try{
       const addrs = new Set([c.email, ...(c.extraEmails||[])].filter(Boolean).map(e=> String(e).toLowerCase()))
@@ -337,13 +343,16 @@ export async function runPurchaseLoop(opts?: {
 【客户背景 · 十一维画像（可能含人工修正，优先采用）】
 ${portraitText}
 
+【人工备注（人工填写，最高优先级，不得推翻；与邮件冲突时以备注为准）】
+${humanNote||'无'}
+
 【基础】${c.contactName||c.title} ${c.email} 等级${c.level||'C'} 阶段${c.stage||''} 复购次数${c.repurchaseCount||0}
 【订单】${os.map(o=> o.order_date+' '+o.products.join('/')+' $'+(o.amount||'?')).join('; ')||'无'}
 距上次订单 ${daysSince} 天，估算周期 ${cycle} 天
-【邮件往来（结合画像分析，勿覆盖画像）】
+【邮件往来（结合画像与人工备注分析，勿覆盖画像）】
 ${mailText||'无'}
 
-综合画像+订单+邮件输出复购经营建议：
+综合画像+人工备注+订单+邮件输出复购经营建议：
 {"buyer_type":"once|repeat|dormant|high_value","pattern":"same_product|multi_product|seasonal|unknown","cycle_days_est":数字,"next_products":["…"],"nba":"reorder|cross_sell|reactivation|nurture|none","nba_reason":"中文一句","should_contact_now":true/false,"repurchase_score":0到100,"purchase_ai_note":"3-6句中文经营分析，可引用画像维度","confidence":0到1}`
       const raw = await chatOnceSafe(prompt)
       const m = raw.match(/\{[\s\S]*\}/)

@@ -541,12 +541,14 @@ export async function generateAiFollowReply(c: Customer, emails: EmailMessage[],
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).slice(-15)
   const portrait = mergePortrait(coercePortrait((c as any).aiPortrait), parsePortraitFromProfile((c as any).aiProfile) || {})
   const portraitText = formatPortraitText(portrait)
+  const { noteForPrompt } = await import('./customerNotes')
+  const humanNote = noteForPrompt(c)
   const mailText = hist.map(e => `[${e.date}] ${isSelfSender(e.from, e.folder) ? '我方' : '客户'} ${e.subject}\n${mailBodyText(e).slice(0, 300)}`).join('\n---\n').slice(0, 4500)
   const extra = String(extraPrompt||'').trim().slice(0, 1000)
   const prompt = `你是 Maxemblem 外贸业务员 Evan。根据客户画像与邮件上下文，写一封专业、简洁的英文跟进邮件正文。
 【十一维画像】
 ${portraitText}
-【客户】${c.contactName||c.title} ${c.email} 等级${c.level||'C'}
+${humanNote ? `【人工备注（人工填写，最高优先级，邮件内容与话术必须遵循，不得违反）】\n${humanNote}\n` : ''}【客户】${c.contactName||c.title} ${c.email} 等级${c.level||'C'}
 【往来】
 ${mailText||'无'}
 ${extra ? `【用户补充要求】\n${extra}\n` : ''}要求：只输出邮件正文（不要主题、不要解释）；语气专业友好；结合产品/订单/画像；结尾留一句明确行动引导；落款 Best regards,\\nEvan。不超过180词。`

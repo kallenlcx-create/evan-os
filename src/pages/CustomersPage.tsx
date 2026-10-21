@@ -4,6 +4,7 @@ import type { Customer, EmailMessage } from '../types'
 import { Star, Search, Calendar, X, GraduationCap, Shield, Users, Globe, Briefcase, Landmark } from 'lucide-react'
 import { fetchFullEmailBatch, fetchDbMail, fetchCustomerThreads, listAccounts } from '../repositories/emailRepository'
 import MailHtml from '../components/MailHtml'
+import CustomerNoteInput from '../components/CustomerNoteInput'
 import { runDailyClassify, formatClassifyResult, loadIntellectConfig, saveIntellectConfig, syncTiersFromRules, levelFromSignals, type IntellectConfig, SYSTEM_TAG_SET } from '../services/customerDailyClassify'
 import { coercePortrait, mergePortrait, formatPortraitText, parsePortraitFromProfile, portraitDisplay, PORTRAIT_DIMENSIONS, isFillableDim, type AiPortraitV2 } from '../config/portrait'
 import { runOrderScan, importOrdersCsv } from '../services/orderScan'
@@ -1702,6 +1703,26 @@ Pete Escanilla,pete.escamilla82@gmail.com,ABC Corp,A,是,contacted,pin/patch,2,�
                       >读邮件生成画像</button>
                     </>
                   )}
+                </div>
+              </div>
+              {/* 人工备注：与跟进表「备注」列同源（customers.notes），双向实时同步；AI 分析会读取 */}
+              <div className="flex items-start gap-2 pt-0.5">
+                <span className="w-24 shrink-0 text-[11px] text-purple-800 pt-1.5">📝 人工备注</span>
+                <div className="flex-1">
+                  <CustomerNoteInput
+                    customer={selectedCustomer}
+                    multiline
+                    onSaved={async()=>{
+                      try{
+                        const fresh = await db.customers.get(selectedCustomer.id) as any
+                        if(fresh) setSelectedCustomer(fresh)
+                      }catch{ /* ignore */ }
+                      await load()
+                    }}
+                  />
+                  <div className="text-[10px] text-gray-500 mt-0.5">
+                    跟进表「备注」列与此处是同一份数据，任意一侧修改都会实时同步；AI 画像分析、复购分析与 AI 跟进邮件都会读取此备注。
+                  </div>
                 </div>
               </div>
               {portraitEdit ? (
