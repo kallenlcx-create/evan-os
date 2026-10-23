@@ -74,6 +74,15 @@ export function formatPortraitText(p?: AiPortraitV2 | null): string {
     .join('\n')
 }
 
+/** 仅用于 AI prompt：跳过空/占位维度，全空返回空串（避免渲染成 11 行「—」导致题干同质） */
+export function formatPortraitTextForPrompt(p?: AiPortraitV2 | null): string {
+  const po = coercePortrait(p)
+  return PORTRAIT_DIMENSIONS
+    .filter(d => isFillableDim(po[d.key]))
+    .map(d => `${d.label.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪]\s*/, '')}：${po[d.key]}`)
+    .join('\n')
+}
+
 export function portraitHasContent(p?: AiPortraitV2 | null): boolean {
   return PORTRAIT_DIMENSIONS.some(d => isFillableDim(coercePortrait(p)[d.key]))
 }

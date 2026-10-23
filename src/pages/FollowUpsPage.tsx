@@ -12,6 +12,7 @@ import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, matchSendStep, type FollowMode, type SalesStage } from '../services/followProfile'
+import { generateSmartFollowReply, maxSimAgainst } from '../services/aiFollowReply'
 import { loadIntellectConfig, saveIntellectConfig, type IntellectConfig } from '../services/customerDailyClassify'
 import { matchSearch } from '../services/searchTerms'
 import { syncInquiriesFromMails, listInquiries, isInquiryCustomer, type InquiryRecord } from '../services/inquiryScan'
@@ -179,7 +180,8 @@ export default function FollowUpsPage() {
   /** 2天内发过自动排除（批量发跟进/AI回复共用口径） */
   const [batchSkipRecent, setBatchSkipRecent] = useState(true)
   const [batchExcluded, setBatchExcluded] = useState(0)
-  const [aiSkipRecent, setAiSkipRecent] = useState(true)
+  // 默认 false：不再主动排除近期有往来的客户 —— 排除会专挑冷线索，反而放大同质化
+  const [aiSkipRecent, setAiSkipRecent] = useState(false)
   const [aiOutboxMails, setAiOutboxMails] = useState<Set<string>>(new Set())
   /** C：发出后自动移出入队时的手动板块（默认关，勾选才移） */
   const [batchAutoLeave, setBatchAutoLeave] = useState(false)
@@ -1139,12 +1141,14 @@ const handleBatchAiTpl = useCallback(async () => {
     try{ return localStorage.getItem(AI_REPLY_PROMPT_KEY) || '' }catch{ return '' }
   })
   const [showAiReplyModal, setShowAiReplyModal] = useState(false)
-  const [aiReplyList, setAiReplyList] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; mid?: string; references?: string; threaded: boolean; checked: boolean }>>([])
+  const [aiReplyList, setAiReplyList] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; mid?: string; references?: string; threaded: boolean; checked: boolean; dupSim?: number; dupWith?: string }>>([])
   const [showAiReplyReview, setShowAiReplyReview] = useState(false)
   const [aiReplyGenBusy, setAiReplyGenBusy] = useState(false)
   const [aiReplySendBusy, setAiReplySendBusy] = useState(false)
   const [aiReplyProgress, setAiReplyProgress] = useState({ done: 0, total: 0 })
   const [aiReplyUseImgs, setAiReplyUseImgs] = useState(true)
+  /** 深度分析（两阶段：先分析客户状态/策略，再写信）—— 慢且费额度，但策略级差异化 */
+  const [aiReplyDeep, setAiReplyDeep] = useState(true)
   /** AI提示词预设库：可新增/编辑/删除，勾选组合使用（localStorage） */
   type AiPreset = { id: string; name: string; text: string }
   const AI_PRESET_LIB_KEY = 'evan:ai-reply-presets'
@@ -1200,31 +1204,46 @@ const handleBatchAiTpl = useCallback(async () => {
     const mails = await db.emails.toArray()
     const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
     const out: typeof aiReplyList = []
+    const prior: { opening?: string; strategy?: string }[] = []
+    const priorBodies: { name: string; body: string }[] = []
+    const total = targets.length
     try{
       for(let i=0;i<targets.length;i++){
         const c = targets[i]
-        setIntellectNote(`AI生成 ${i+1}/${targets.length} · ${c.contactName||c.email} …`)
+        const label = c.contactName || c.email
+        setIntellectNote(`AI生成 ${i+1}/${total} · ${label} …${aiReplyDeep?'（深度分析）':''}`)
         try{
-          const gen = await generateAiFollowReply(c, mails, aiReplyFinalPrompt)
+          const gen = await generateSmartFollowReply(c, mails, {
+            extraPrompt: aiReplyFinalPrompt,
+            deep: aiReplyDeep,
+            index: i+1,
+            total,
+            prior,
+            priorBodies,
+            temperature: 0.9,
+          })
           const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'', subject:'' } as any))
           const mid = th.found && th.messageId ? th.messageId : undefined
           const subj = (th.found && th.subject) ? normalizeReplySubject(th.subject) : gen.subject
-          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: subj, body: gen.body, mid, references: mid ? (th.references || mid) : undefined, threaded: !!mid, checked: true })
+          out.push({ id: c.id, email: c.email||'', name: label, subject: subj, body: gen.body, mid, references: mid ? (th.references || mid) : undefined, threaded: !!mid, checked: true, dupSim: gen.dupSim, dupWith: gen.dupWith })
+          prior.push({ opening: gen.body.split(/\n/).find(l=>l.trim()) || '', strategy: gen.analysis?.strategy || gen.analysis?.state || '' })
+          priorBodies.push({ name: label, body: gen.body })
         }catch(e:any){
-          out.push({ id: c.id, email: c.email||'', name: c.contactName||c.title||'', subject: '(生成失败)', body: String(e?.message||e).slice(0,200), threaded: false, checked: false })
+          out.push({ id: c.id, email: c.email||'', name: label, subject: '(生成失败)', body: String(e?.message||e).slice(0,200), threaded: false, checked: false })
         }
         setAiReplyList([...out])
         if(i < targets.length-1) await new Promise(r=> setTimeout(r, 1000))
       }
       const selTotal = customers.filter(c=> (selectedIds.has(c.id)||boardSelected.has(c.id)) && c.email).length
       const exCount = selTotal - targets.length
-      setIntellectNote(`AI生成完成 ${out.filter(x=> x.checked).length}/${targets.length}${exCount>0?`（2天内已排除 ${exCount} 人）`:''}，请审稿后入队`)
+      const dups = out.filter(x=> (x.dupSim||0) > 0.55).length
+      setIntellectNote(`AI生成完成 ${out.filter(x=> x.checked).length}/${total}${exCount>0?`（2天内已排除 ${exCount} 人）`:''}${dups>0?` · ${dups} 封与本批其他邮件相似，请重点审稿`:''}，请审稿后入队`)
       setShowAiReplyModal(false)
       setShowAiReplyReview(true)
     }finally{
       setAiReplyGenBusy(false)
     }
-  }, [aiReplyTargets, aiReplyFinalPrompt, customers, selectedIds, boardSelected])
+  }, [aiReplyTargets, aiReplyFinalPrompt, aiReplyDeep, customers, selectedIds, boardSelected])
   /** 第二步：审稿确认后入队（定时/图片/线程/配额与批量发跟进一致，走待发箱） */
   const handleAiReplyEnqueue = useCallback(async () => {
     const rows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
@@ -2634,7 +2653,7 @@ const handleBatchAiTpl = useCallback(async () => {
               <button onClick={()=> setShowAiReplyModal(false)} disabled={aiReplyGenBusy} className="p-1 hover:bg-gray-100 rounded-lg">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              <div className="text-[11px] text-gray-400">AI 将结合每位客户的往来邮件（近15封）+ 十一维画像 + 你的补充要求逐个生成；有往来挂最新会话最下方，无往来新发。生成后可审稿再入队。</div>
+              <div className="text-[11px] text-gray-400">AI 将结合每位客户的往来邮件（近15封）+ 十一维画像 + 客户档案 + 你的补充要求逐个生成；并参考本批已生成邮件的开篇与角度避免重复。有往来挂最新会话最下方，无往来新发。生成后可审稿再入队。</div>
               <div>
                 <div className="text-xs font-medium text-gray-700 mb-1">补充要求（勾选预设组合 + 自由输入，空=默认行为）</div>
                 <div className="border rounded-lg divide-y mb-1 max-h-36 overflow-y-auto">
@@ -2677,8 +2696,12 @@ const handleBatchAiTpl = useCallback(async () => {
                 <textarea value={aiReplyPrompt} onChange={e=> setAiReplyPrompt(e.target.value)} rows={2} placeholder="自由补充（如：重点催款，语气坚定；主推新品 Patch；…）" className="w-full px-3 py-2 border rounded-lg text-sm resize-y mt-1"/>
                 {aiReplyFinalPrompt && <div className="text-[10px] text-gray-400 mt-0.5">将使用：{aiReplyFinalPrompt.slice(0,80)}{aiReplyFinalPrompt.length>80?'…':''}</div>}
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-gray-500">
-                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除">
+              <div className="flex items-center gap-3 text-[11px] text-gray-500 flex-wrap">
+                <label className="flex items-center gap-1 cursor-pointer" title="两阶段：先让 AI 分析该客户状态/策略，再写信。策略级差异化，更慢且更费额度">
+                  <input type="checkbox" checked={aiReplyDeep} onChange={e=> setAiReplyDeep(e.target.checked)}/>
+                  深度分析（两阶段，慢/费额度）
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除。注意：排除后名单偏向冷线索，个性化程度会下降">
                   <input type="checkbox" checked={aiSkipRecent} onChange={e=> setAiSkipRecent(e.target.checked)}/>
                   2天内发过自动排除
                 </label>
@@ -2737,13 +2760,36 @@ const handleBatchAiTpl = useCallback(async () => {
                   发出后移出板块
                 </label>
                 <span className="text-[10px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 入队后邮件中心→📤 待发查看</span>
+                {(()=> {
+                  const dups = aiReplyList.filter(x=> {
+                    const others = aiReplyList.filter(o=> o.id!==x.id).map(o=> ({ name:o.name, body:o.body }))
+                    return maxSimAgainst(x.body, others).sim > 0.55
+                  })
+                  return dups.length ? (
+                    <button onClick={()=> setAiReplyList(prev=> [...prev].sort((a,b)=>{
+                      const sa = maxSimAgainst(a.body, prev.filter(o=>o.id!==a.id).map(o=>({name:o.name,body:o.body}))).sim
+                      const sb = maxSimAgainst(b.body, prev.filter(o=>o.id!==b.id).map(o=>({name:o.name,body:o.body}))).sim
+                      return sb - sa
+                    }))} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100" title="按与本批其他邮件的相似度从高到低排序，便于集中修改">
+                      ⚠ {dups.length} 封相似，高亮排序
+                    </button>
+                  ) : null
+                })()}
               </div>
-              {aiReplyList.map((r, idx)=>(
-                <div key={r.id} className={`border rounded-lg p-2 ${r.checked?'bg-white':'bg-gray-50 opacity-70'}`}>
+              {aiReplyList.map((r, idx)=>{
+                const dup = maxSimAgainst(r.body, aiReplyList.filter(x=> x.id!==r.id).map(x=> ({ name:x.name, body:x.body })))
+                const dupCls = dup.sim > 0.7 ? 'bg-rose-50 border-rose-300' : dup.sim > 0.55 ? 'bg-amber-50 border-amber-300' : ''
+                return (
+                <div key={r.id} className={`border rounded-lg p-2 ${dupCls || (r.checked?'bg-white':'bg-gray-50 opacity-70')}`}>
                   <div className="flex items-center gap-2 text-xs mb-1">
                     <input type="checkbox" checked={r.checked} onChange={()=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, checked: !x.checked} : x))}/>
                     <span className="font-medium truncate">{r.name}</span>
                     <span className="text-gray-400 truncate flex-1">{r.email}</span>
+                    {dup.sim > 0.55 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0" title={`与「${dup.with}」的正文高度相似，建议换角度改写`}>
+                        相似 {Math.round(dup.sim*100)}%
+                      </span>
+                    )}
                     {r.threaded
                       ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 shrink-0">挂会话</span>
                       : <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 shrink-0">新邮件</span>}
@@ -2754,7 +2800,8 @@ const handleBatchAiTpl = useCallback(async () => {
                   <textarea value={r.body} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, body: e.target.value} : x))}
                     rows={4} className="w-full px-2 py-1 border rounded text-xs resize-y font-mono" placeholder="正文"/>
                 </div>
-              ))}
+                )
+              })}
               {aiReplySendBusy && (
                 <div className="text-xs text-blue-600">入队中 {aiReplyProgress.done}/{aiReplyProgress.total}…</div>
               )}

@@ -2,6 +2,8 @@
 // 与自动跟进序列互通：followMode=auto|manual 控制序列
 import { db } from '../db'
 import type { Customer, EmailMessage } from '../types'
+import { mergePortrait, coercePortrait, parsePortraitFromProfile, formatPortraitTextForPrompt } from '../config/portrait'
+import { noteForPrompt } from './customerNotes'
 import { loadIntellectConfig } from './customerDailyClassify'
 import { addManualBuckets, isBucketOptOut } from './manualBuckets'
 import { isNoiseEmailAddress } from '../utils/emailHelpers'
@@ -531,36 +533,122 @@ export function countFollowsSinceReply(emails: EmailMessage[], addrs: string[], 
   return n
 }
 
-/** 读邮件上下文 + 十一维 → 生成专业跟进英文（只返回正文）。extraPrompt：用户自定义补充要求 */
-export async function generateAiFollowReply(c: Customer, emails: EmailMessage[], extraPrompt?: string): Promise<{ subject: string; body: string }>{
-  const { chatOnce } = await import('./aiChat')
-  const { mergePortrait, coercePortrait, parsePortraitFromProfile, formatPortraitText } = await import('../config/portrait')
+/** 客户档案（真实字段）供 prompt 用：目前这些字段此前完全没进 prompt，是「题干只差姓名」的直接原因 */
+export function buildCustomerProfileText(c: Customer): string {
+  const p: string[] = []
+  const put = (label: string, v?: string | number | boolean | string[]) => {
+    const s = Array.isArray(v) ? v.filter(Boolean).join(' / ') : (v == null ? '' : String(v).trim())
+    if (s) p.push(`${label}：${s}`)
+  }
+  const portrait = (c as any).portrait || {}
+  put('公司', c.company)
+  put('国家/地区', c.country)
+  put('客户类型', (c as any).customerType)
+  put('等级', c.level)
+  put('销售阶段', c.stage)
+  put('标签', c.tags)
+  put('常购产品', portrait.products)
+  put('常购数量', portrait.avgQty)
+  put('客单价', portrait.avgAmount != null ? `${portrait.avgAmount} ${c.currency || ''}`.trim() : '')
+  put('价格敏感度(1-5)', portrait.priceSensitive)
+  put('回复速度', portrait.replySpeed)
+  put('复购次数', (c as any).repurchaseCount)
+  put('跟进步号', (c as any).followStep)
+  put('AI总结', (c as any).aiSummary ? String((c as any).aiSummary).slice(0, 200) : '')
+  put('评分', (c as any).score)
+  const created = String(c.createdAt || '')
+  if (created) {
+    const days = Math.round((Date.now() - new Date(created).getTime()) / 86400000)
+    if (Number.isFinite(days) && days >= 0) p.push(`建联时长：约 ${days} 天`)
+  }
+  return p.join('\n')
+}
+
+export type FollowReplyOpts = {
+  /** 本批第几封（1 起） */
+  index?: number
+  /** 本批总封数 */
+  total?: number
+  /** 本批已生成邮件的开篇与核心角度（用于避重） */
+  prior?: { opening?: string; strategy?: string }[]
+  /** 阶段A 的分析结果（提供则用其 subject / state） */
+  analysis?: { subject?: string; state?: string; strategy?: string }
+  /** 临时覆盖 temperature（批量生成时提高多样性，不写 localStorage） */
+  temperature?: number
+}
+
+export type FollowReplyContext = {
+  customerLabel: string
+  portraitText: string
+  mailText: string
+  profileText: string
+  humanNote: string
+  insufficient: boolean
+  addrs: string[]
+}
+
+/** 组装 prompt 用上下文（画像 / 往来 / 档案 + 冷线索判定），供单发与两阶段共用 */
+export function buildFollowReplyContext(c: Customer, emails: EmailMessage[]): FollowReplyContext {
   const addrs = customerAddrs(c)
   const set = new Set(addrs.map(a => a.toLowerCase()))
   const hist = emails.filter(e => involvesCustomer(e, set))
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).slice(-15)
   const portrait = mergePortrait(coercePortrait((c as any).aiPortrait), parsePortraitFromProfile((c as any).aiProfile) || {})
-  const portraitText = formatPortraitText(portrait)
-  const { noteForPrompt } = await import('./customerNotes')
-  const humanNote = noteForPrompt(c)
+  const portraitText = formatPortraitTextForPrompt(portrait)
+  const profileText = buildCustomerProfileText(c)
   const mailText = hist.map(e => `[${e.date}] ${isSelfSender(e.from, e.folder) ? '我方' : '客户'} ${e.subject}\n${mailBodyText(e).slice(0, 300)}`).join('\n---\n').slice(0, 4500)
+  const insufficient = !mailText && !portraitText && !profileText
+  const humanNote = noteForPrompt(c)
+  return { customerLabel: `${c.contactName || c.title} ${c.email} 等级${c.level || 'C'}`, portraitText, mailText, profileText, humanNote, insufficient, addrs }
+}
+
+/** 本批上下文文本：让模型知道「这是第几封」以及前几封的开篇/角度，避免撞车 */
+export function buildBatchContextText(opts?: FollowReplyOpts): string {
+  const prior = (opts?.prior || []).filter(x => x && (x.opening || x.strategy)).slice(-8)
+  if (!opts?.index || !opts?.total) return ''
+  const lines: string[] = [`这是本批批量触达的第 ${opts.index}/${opts.total} 封。`]
+  if (prior.length) {
+    lines.push('本批已生成邮件的开篇与核心角度（你的开篇首句与核心角度必须与之明显不同）：')
+    prior.forEach((p, i) => {
+      const opening = String(p.opening || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+      const strategy = String(p.strategy || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+      lines.push(`- #${i + 1} 开篇：${opening || '（未记录）'}｜角度：${strategy || '（未记录）'}`)
+    })
+  } else {
+    lines.push('（本批暂无前序邮件记录）')
+  }
+  return lines.join('\n')
+}
+
+/** 读邮件上下文 + 客户档案 → 生成专业跟进英文（只返回正文）。extraPrompt：用户自定义补充要求 */
+export async function generateAiFollowReply(c: Customer, emails: EmailMessage[], extraPrompt?: string, opts?: FollowReplyOpts): Promise<{ subject: string; body: string }>{
+  const { chatOnce } = await import('./aiChat')
+  const ctx = buildFollowReplyContext(c, emails)
+  const portraitBlock = [
+    ctx.portraitText ? `【十一维画像】\n${ctx.portraitText}` : '',
+    ctx.profileText ? `【客户档案】\n${ctx.profileText}` : '',
+    ctx.humanNote ? `【人工备注（人工填写，最高优先级，邮件内容与话术必须遵循，不得违反）】\n${ctx.humanNote}` : '',
+  ].filter(Boolean).join('\n')
+  const batchContext = buildBatchContextText(opts)
   const extra = String(extraPrompt||'').trim().slice(0, 1000)
   const prompt = `你是 Maxemblem 外贸业务员 Evan。根据客户画像与邮件上下文，写一封专业、简洁的英文跟进邮件正文。
-【十一维画像】
-${portraitText}
-${humanNote ? `【人工备注（人工填写，最高优先级，邮件内容与话术必须遵循，不得违反）】\n${humanNote}\n` : ''}【客户】${c.contactName||c.title} ${c.email} 等级${c.level||'C'}
+${portraitBlock || '（该客户暂无画像/档案/备注，请仅依据下方客户信息合理发挥，不得编造往来、报价、交期或折扣）'}
+【客户】${ctx.customerLabel}
 【往来】
-${mailText||'无'}
-${extra ? `【用户补充要求】\n${extra}\n` : ''}要求：只输出邮件正文（不要主题、不要解释）；语气专业友好；结合产品/订单/画像；结尾留一句明确行动引导；落款 Best regards,\\nEvan。不超过180词。`
-  const body = String(await chatOnce(prompt) || '').trim()
+${ctx.mailText||'无'}
+${batchContext ? `${batchContext}\n` : ''}${extra ? `【用户补充要求（最高优先级，必须遵守）】\n${extra}\n` : ''}要求：只输出邮件正文（不要主题、不要解释）；语气专业友好；结合产品/订单/画像；结尾留一句明确行动引导；落款 Best regards,\\nEvan。不超过180词。`
+  const body = String(await chatOnce(prompt, undefined, opts?.temperature ? { temperature: opts.temperature } : undefined) || '').trim()
+  const fallback = body || `Hi ${c.contactName||c.title||'there'},\n\nJust wanted to follow up on your project. Let me know if you have any questions.\n\nBest regards,\nEvan`
+  // 主题：优先用阶段A 的分析结果；否则挂会话；否则退回产品式
   const { findLatestThreadHeaders } = await import('../repositories/emailRepository')
-  const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', subject:'' } as any))
   const { normalizeReplySubject } = await import('../utils/mailHtml')
+  const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', subject:'' } as any))
+  const analysisSubject = String(opts?.analysis?.subject || '').trim()
   const product = (c.portrait as any)?.products?.[0] || 'your project'
-  const subject = th.found && th.subject
-    ? normalizeReplySubject(th.subject)
-    : `Following up - ${product}`
-  return { subject, body: body || `Hi ${c.contactName||c.title||'there'},\n\nJust wanted to follow up on your project. Let me know if you have any questions.\n\nBest regards,\nEvan` }
+  const subject = analysisSubject
+    ? normalizeReplySubject(analysisSubject)
+    : (th.found && th.subject ? normalizeReplySubject(th.subject) : `Following up - ${product}`)
+  return { subject, body: fallback }
 }
 
 /**

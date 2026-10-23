@@ -251,18 +251,23 @@ async function* streamClaude(request: ChatRequest): AsyncGenerator<ChatChunk> {
 }
 
 /** 非流式调用（商汤默认非流式；批量/画像更稳） */
-export async function chatOnce(userMessage: string, systemPrompt?: string): Promise<string> {
+export type ChatOverride = { temperature?: number; maxTokens?: number; topP?: number }
+
+export async function chatOnce(userMessage: string, systemPrompt?: string, override?: ChatOverride): Promise<string> {
   const messages: { role: string; content: string }[] = []
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
   messages.push({ role: 'user', content: userMessage })
-  return chatCompletionsOnce(messages)
+  return chatCompletionsOnce(messages, override)
 }
 
 /** 一次非流式 chat/completions */
-export async function chatCompletionsOnce(messages: { role: string; content: string }[]): Promise<string> {
+export async function chatCompletionsOnce(messages: { role: string; content: string }[], override?: ChatOverride): Promise<string> {
   const settings = getAiSettings()
   if (!settings.apiKey) throw new Error('未配置 API Key（AI 中心右上角齿轮）')
   const isClaude = settings.providerId === 'claude'
+  const temperature = override?.temperature ?? settings.temperature
+  const maxTokens = override?.maxTokens ?? settings.maxTokens
+  const topP = override?.topP ?? settings.topP
   const targetUrl = isClaude
     ? `${settings.baseUrl.replace(/\/+$/, '')}/v1/messages`
     : buildChatCompletionsUrl(settings.baseUrl)
@@ -276,17 +281,17 @@ export async function chatCompletionsOnce(messages: { role: string; content: str
   const body: Record<string, any> = isClaude
     ? {
         model: settings.model,
-        max_tokens: settings.maxTokens,
-        temperature: settings.temperature,
+        max_tokens: maxTokens,
+        temperature,
         messages: messages.filter(m => m.role !== 'system'),
         ...(messages.find(m => m.role === 'system') ? { system: messages.find(m => m.role === 'system')!.content } : {}),
       }
     : {
         model: settings.model,
         messages,
-        temperature: settings.temperature,
-        max_tokens: settings.maxTokens,
-        top_p: settings.topP,
+        temperature,
+        max_tokens: maxTokens,
+        top_p: topP,
         stream: false,
       }
 
