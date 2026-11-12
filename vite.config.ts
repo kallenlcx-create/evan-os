@@ -4,7 +4,7 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
-  base: './',
+  base: '/evan-os/',
   build: {
     cssCodeSplit: false,
     assetsInlineLimit: 100000000,
