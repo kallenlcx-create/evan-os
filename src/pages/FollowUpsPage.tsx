@@ -41,20 +41,19 @@ function PresetNameInput({ onSave, onCancel }: { onSave: (n: string)=>void; onCa
   )
 }
 
-/** 近期发过自动排除：lastSentAt/lastFollowAt + 待发箱（排队中/天数内发出） */
-const [recentSendDays, setRecentSendDays] = useState(() => {
-  try { return parseInt(localStorage.getItem('evan:recent-send-days') || '2') || 2 } catch { return 2 }
-})
-const recentSendCut = () => Date.now() - recentSendDays * 86400000
-function customerSentRecent(c: any): boolean {
+/** 近期发过自动排除：lastSentAt/lastFollowAt + 待发箱（排队中/天数内发出）
+ * 注意：天数必须由组件（FollowUpsPage 的 recentSendDays 状态）作为参数传入。
+ * 模块顶层严禁调用 useState —— 导入时 React 尚未渲染，dispatcher 为 null，会直接崩掉整页。 */
+const recentSendCut = (days: number) => Date.now() - days * 86400000
+function customerSentRecent(c: any, days: number): boolean {
   for (const v of [c?.lastSentAt, c?.lastFollowAt]) {
     const t = new Date(String(v || '')).getTime()
-    if (Number.isFinite(t) && t >= recentSendCut()) return true
+    if (Number.isFinite(t) && t >= recentSendCut(days)) return true
   }
   return false
 }
 function customerEmailOf(c: any){ return String(c?.email || '').toLowerCase().trim() }
-async function outboxRecentEmails(): Promise<Set<string>> {
+async function outboxRecentEmails(days: number): Promise<Set<string>> {
   try {
     const { getOutbox } = await import('../repositories/emailRepository')
     const ob = await getOutbox().catch(() => [] as any[])
@@ -62,7 +61,7 @@ async function outboxRecentEmails(): Promise<Set<string>> {
     for (const o of (ob || [])) {
       const st = String((o as any).status || '')
       const ct = new Date(String((o as any).created_at || '')).getTime()
-      const recent = Number.isFinite(ct) && ct >= recentSendCut()
+      const recent = Number.isFinite(ct) && ct >= recentSendCut(days)
       if (st === 'queued' || st === 'sending' || (st === 'sent' && recent)) {
         String((o as any).to_list || '').split(',').forEach(e => { const a = e.trim().toLowerCase(); if (a.includes('@')) set.add(a) })
       }
@@ -187,6 +186,15 @@ export default function FollowUpsPage() {
   const [batchExcluded, setBatchExcluded] = useState(0)
   // 默认 false：不再主动排除近期有往来的客户 —— 排除会专挑冷线索，反而放大同质化
   const [aiSkipRecent, setAiSkipRecent] = useState(false)
+  /** 近期发过自动排除的天数（批量发跟进/AI回复共用口径；模块顶层 helper 通过参数接收此值） */
+  const [recentSendDays, setRecentSendDays] = useState(() => {
+    try { return parseInt(localStorage.getItem('evan:recent-send-days') || '2') || 2 } catch { return 2 }
+  })
+  const changeRecentSendDays = (v: number) => {
+    const n = parseInt(String(v)) || 2
+    setRecentSendDays(n)
+    try { localStorage.setItem('evan:recent-send-days', String(n)) } catch {}
+  }
   const [aiOutboxMails, setAiOutboxMails] = useState<Set<string>>(new Set())
   /** C：发出后自动移出入队时的手动板块（默认关，勾选才移） */
   const [batchAutoLeave, setBatchAutoLeave] = useState(false)
@@ -894,9 +902,9 @@ export default function FollowUpsPage() {
     let targets = picked
     let excluded = 0
     if(sk){
-      const obm = await outboxRecentEmails()
+      const obm = await outboxRecentEmails(recentSendDays)
       targets = picked.filter(c=>{
-        if(customerSentRecent(c)) return false
+        if(customerSentRecent(c, recentSendDays)) return false
         const e = customerEmailOf(c)
         if(e && obm.has(e)) return false
         return true
@@ -923,7 +931,7 @@ export default function FollowUpsPage() {
       setBatchAttPolicy('optional')
       setIntellectNote('未找到历史附件，已改为「无附件也发」（否则会全部跳过、待发箱为空）')
     }
-  }, [catFiltered, selectedIds, applyBatchTpl, batchSkipRecent, batchAttachStrategy])
+  }, [catFiltered, selectedIds, applyBatchTpl, batchSkipRecent, batchAttachStrategy, recentSendDays])
 
 const handleBatchAiTpl = useCallback(async () => {
     if(!batchTargets.length) return
@@ -1193,16 +1201,16 @@ const handleBatchAiTpl = useCallback(async () => {
   const aiReplyTargets = useCallback(() => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
     let t = customers.filter(c=> ids.includes(c.id) && c.email)
-    if(aiSkipRecent) t = t.filter(c=> !customerSentRecent(c) && !aiOutboxMails.has(customerEmailOf(c)))
+    if(aiSkipRecent) t = t.filter(c=> !customerSentRecent(c, recentSendDays) && !aiOutboxMails.has(customerEmailOf(c)))
     return t
-  }, [customers, selectedIds, boardSelected, aiSkipRecent, aiOutboxMails])
+  }, [customers, selectedIds, boardSelected, aiSkipRecent, aiOutboxMails, recentSendDays])
   const openAiReplyModal = useCallback(async () => {
     const ids = [...new Set([...selectedIds, ...boardSelected])]
     const picked = customers.filter(c=> ids.includes(c.id) && c.email)
     if(!picked.length) return alert('请先勾选客户（雷达或跟进表）')
-    setAiOutboxMails(await outboxRecentEmails())
+    setAiOutboxMails(await outboxRecentEmails(recentSendDays))
     setShowAiReplyModal(true)
-  }, [customers, selectedIds, boardSelected])
+  }, [customers, selectedIds, boardSelected, recentSendDays])
   /** 第一步：逐个 AI 生成（上下文+自定义提示词），进审稿列表 */
   const handleAiReplyGenerate = useCallback(async () => {
     const targets = aiReplyTargets()
@@ -2717,7 +2725,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 <label className="flex items-center gap-2 cursor-pointer" title="近期发过（或待发中）的客户自动排除。注意：排除后名单偏向冷线索，个性化程度会下降">
                   <input type="checkbox" checked={aiSkipRecent} onChange={e=> setAiSkipRecent(e.target.checked)}/>
                   近期发过自动排除
-                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> setRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
+                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> changeRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
                 </label>
                 {(()=>{ const total = customers.filter(c=> (selectedIds.has(c.id)||boardSelected.has(c.id)) && c.email).length; const ex = total - aiReplyTargets().length; return ex>0 ? <span>已排除 {ex} 人</span> : null })()}
               </div>
@@ -2864,7 +2872,7 @@ const handleBatchAiTpl = useCallback(async () => {
                 <label className="flex items-center gap-2 cursor-pointer" title="近期发过（或待发中）的客户自动排除，关掉可重进恢复">
                   <input type="checkbox" checked={batchSkipRecent} onChange={e=>{ const v = e.target.checked; setBatchSkipRecent(v); if(!batchSending) void openBatchModal(v) }}/>
                   近期发过自动排除
-                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> setRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
+                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> changeRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
                 </label>
                 {batchExcluded>0 && <span>已排除 {batchExcluded} 人</span>}
               </div>
