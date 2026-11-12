@@ -41,9 +41,11 @@ function PresetNameInput({ onSave, onCancel }: { onSave: (n: string)=>void; onCa
   )
 }
 
-/** 2天内发过自动排除：lastSentAt/lastFollowAt + 待发箱（排队中/2天内发出） */
-const RECENT_SEND_DAYS = 2
-const recentSendCut = () => Date.now() - RECENT_SEND_DAYS * 86400000
+/** 近期发过自动排除：lastSentAt/lastFollowAt + 待发箱（排队中/天数内发出） */
+const [recentSendDays, setRecentSendDays] = useState(() => {
+  try { return parseInt(localStorage.getItem('evan:recent-send-days') || '2') || 2 } catch { return 2 }
+})
+const recentSendCut = () => Date.now() - recentSendDays * 86400000
 function customerSentRecent(c: any): boolean {
   for (const v of [c?.lastSentAt, c?.lastFollowAt]) {
     const t = new Date(String(v || '')).getTime()
@@ -170,8 +172,11 @@ export default function FollowUpsPage() {
   const [attachMode, setAttachMode] = useState<'file'|'inline'|'both'>('file')
   const [showPreview, setShowPreview] = useState(false)
   const [batchCustAtts, setBatchCustAtts] = useState<Record<string, any[]>>({})
-  const [batchAutoAtt, setBatchAutoAtt] = useState(true)
-  /** 批量附件策略：require=无最新附件则跳过该客户；optional=可无附件 */
+  /** 附件策略：none=不发送附件；latest=附带客户历史最新附件；custom=自定义图片（本地/图片库） */
+  const [batchAttachStrategy, setBatchAttachStrategy] = useState<'none'|'latest'|'custom'>(() => {
+    try { return localStorage.getItem('evan:batch-attach-strategy') as 'none'|'latest'|'custom' || 'custom' } catch { return 'custom' }
+  })
+  /** 批量附件策略：require=无最新附件则跳过该客户；optional=可无附件（仅 latest 模式下有效） */
   const [batchAttPolicy, setBatchAttPolicy] = useState<'require'|'optional'>('optional')
   /** 定时发送 */
   const [batchScheduleMode, setBatchScheduleMode] = useState<'now'|'at'>('now')
@@ -667,7 +672,7 @@ export default function FollowUpsPage() {
       const c = sendTarget
       const product = c.portrait?.products?.[0] || 'Challenge Coin'
       const note = String((c as any).notes || '').trim()
-      const prompt = `你是Maxemblem的外贸业务员Evan，给客户写一封英文跟进邮件。只返回邮件正文，不要解释。\n客户：${c.contactName || c.title}（${c.email}，${c.company || '公司未知'}）\n等级：${c.level || 'C'}${c.isKey ? '（重点客户）' : ''}，阶段：${c.stage || 'lead'}，复购${c.repurchaseCount || 0}次\n产品：${product}\n客户画像：${c.aiSummary || '无'}${note ? `\n人工备注（最高优先级，邮件必须遵循）：${note}` : ''}\n要求：简短亲切，提一下产品，结尾问一句是否需要报价或样品，落款Evan。`
+      const prompt = `你是Maxemblem的外贸业务员Evan，给客户写一封英文跟进邮件。只返回邮件正文，不要解释。\n客户：${c.contactName || c.title}（${c.email}，${c.company || '公司未知'}）\n等级：${c.level || 'C'}${c.isKey ? '（重点客户）' : ''}，阶段：${c.stage || 'lead'}，复购${c.repurchaseCount || 0}次\n产品：${product}\n客户画像：${c.aiSummary || '无'}${note ? `\n人工备注（最高优先级，邮件必须遵循）：${note}` : ''}\n要求：简短亲切，提一下产品，结尾问一句是否需要报价或样品，落款固定为两行：先写 "Best regards,"，换行后下一行单独写 "Evan"。`
       const draft = await chatOnce(prompt)
       if (draft && !draft.startsWith('⚠️')) {
         setSendBody(draft.trim())
@@ -914,11 +919,11 @@ export default function FollowUpsPage() {
     }))
     setBatchCustAtts(attMap)
     const withAtt = Object.values(attMap).filter(a=> a && a.length).length
-    if(withAtt === 0){
+    if(batchAttachStrategy === 'latest' && withAtt === 0){
       setBatchAttPolicy('optional')
       setIntellectNote('未找到历史附件，已改为「无附件也发」（否则会全部跳过、待发箱为空）')
     }
-  }, [catFiltered, selectedIds, applyBatchTpl, batchSkipRecent])
+  }, [catFiltered, selectedIds, applyBatchTpl, batchSkipRecent, batchAttachStrategy])
 
 const handleBatchAiTpl = useCallback(async () => {
     if(!batchTargets.length) return
@@ -927,7 +932,7 @@ const handleBatchAiTpl = useCallback(async () => {
       const c = batchTargets[0]
       const product = ((c.portrait as any)?.products?.[0]) || 'Challenge Coin'
       const note = String((c as any).notes || '').trim()
-      const prompt = `你是Maxemblem外贸业务员Evan。写一封简短英文跟进邮件主题+正文，适合群发给类似客户。只返回两行：第一行Subject:，第二行Body:。\n客户示例：${c.contactName||c.title}（${product}），阶段${c.stage||'lead'}。${note ? `\n人工备注（最高优先级，须遵循）：${note}` : ''}\n语气友好，问是否需要报价或样品，落款Evan。`
+      const prompt = `你是Maxemblem外贸业务员Evan。写一封简短英文跟进邮件主题+正文，适合群发给类似客户。只返回两行：第一行Subject:，第二行Body:。\n客户示例：${c.contactName||c.title}（${product}），阶段${c.stage||'lead'}。${note ? `\n人工备注（最高优先级，须遵循）：${note}` : ''}\n语气友好，问是否需要报价或样品，落款固定为两行：先写 "Best regards,"，换行后下一行单独写 "Evan"。`
       const out = await chatOnce(prompt)
       const sIdx = out.indexOf('Subject:')
       const bIdx = out.indexOf('Body:')
@@ -999,7 +1004,9 @@ const handleBatchAiTpl = useCallback(async () => {
       try{
         const custList = batchCustAtts[c.id] || []
         const latestAtt = custList[0] || null
-        if(batchAutoAtt && batchAttPolicy === 'require' && !latestAtt){
+
+        // latest 模式：无附件且 require → 跳过
+        if(batchAttachStrategy === 'latest' && batchAttPolicy === 'require' && !latestAtt){
           skipped++
           setBatchProgress({ done: i+1, total: list2.length, errors })
           if(i < list2.length-1) await new Promise(r=> setTimeout(r, 200))
@@ -1025,28 +1032,35 @@ const handleBatchAiTpl = useCallback(async () => {
         const idem = `b${dayKey.replace(/-/g,'')}-${String(c.id).replace(/-/g,'').slice(0,12)}-${String(subj).replace(/\s+/g,'').slice(0,24)}`
         if(enqueuedKeys.has(idem)){ skipped++; continue }
         enqueuedKeys.add(idem)
-        const isImg = !!latestAtt && (String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||''))
         let html = textToHtml(body)
         const atts: any[] = []
-        if(batchAutoAtt && latestAtt){
+
+        // 策略：latest → 附带客户历史最新附件
+        if(batchAttachStrategy === 'latest' && latestAtt){
+          const isImg = String(latestAtt.mime||'').toLowerCase().startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(latestAtt.filename||'')
           const cid = 'att0'
           atts.push({ filename: latestAtt.filename, path: latestAtt.path, contentType: latestAtt.mime, ...(isImg ? { cid } : {}) })
           if(isImg){
             html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+latestAtt.filename+'" style="max-width:360px;border-radius:6px"/></p>'
           }
         }
-        // 自定义图片：每封都带同一批；cid 用 cimgN 避免与历史附件 att0 冲突
-        const selImgs = batchImgLib.filter(im=> batchImgSel.has(im.id))
-        selImgs.forEach((im, idx)=>{
-          const cid = 'cimg'+idx
-          if(batchImgMode === 'file'){
-            atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime })
-          }else{
-            // inline / both：附件带 cid（服务端自动转 inline，不会重复显示为附件），正文嵌图
-            atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime, cid })
-            html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+im.name+'" style="max-width:360px;border-radius:6px"/></p>'
-          }
-        })
+
+        // 策略：custom → 自定义图片（本地/图片库）；cid 用 cimgN 避免与历史附件 att0 冲突
+        if(batchAttachStrategy === 'custom'){
+          const selImgs = batchImgLib.filter(im=> batchImgSel.has(im.id))
+          selImgs.forEach((im, idx)=>{
+            const cid = 'cimg'+idx
+            if(batchImgMode === 'file'){
+              atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime })
+            }else{
+              // inline / both：附件带 cid（服务端自动转 inline，不会重复显示为附件），正文嵌图
+              atts.push({ filename: im.name, contentBase64: im.b64, contentType: im.mime, cid })
+              html += '<p style="margin:8px 0"><img src="cid:'+cid+'" alt="'+im.name+'" style="max-width:360px;border-radius:6px"/></p>'
+            }
+          })
+        }
+
+        // 策略：none → 不添加任何附件，保持 html 原样
         const enq = await enqueueMail(acc.id, c.email || '', subj, body, idem, false, {
           html,
           sendAt,
@@ -1105,7 +1119,7 @@ const handleBatchAiTpl = useCallback(async () => {
       alert('批量入队失败\n' + errList.slice(0,3).join('\n') + '\n\n请把此弹窗全文发给开发排查。')
     }
     await load()
-  }, [batchTargets, batchSubject, batchBody, load, batchAutoAtt, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates])
+  }, [batchTargets, batchSubject, batchBody, load, batchAttachStrategy, batchAttPolicy, batchScheduleMode, batchScheduleAt, batchCustAtts, batchSending, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates])
 
   const TIER_BADGE: Record<string, {label:string; cls:string}> = {
     high: { label:'高意向', cls:'bg-red-50 text-red-600' },
@@ -1146,7 +1160,6 @@ const handleBatchAiTpl = useCallback(async () => {
   const [aiReplyGenBusy, setAiReplyGenBusy] = useState(false)
   const [aiReplySendBusy, setAiReplySendBusy] = useState(false)
   const [aiReplyProgress, setAiReplyProgress] = useState({ done: 0, total: 0 })
-  const [aiReplyUseImgs, setAiReplyUseImgs] = useState(true)
   /** 深度分析（两阶段：先分析客户状态/策略，再写信）—— 慢且费额度，但策略级差异化 */
   const [aiReplyDeep, setAiReplyDeep] = useState(true)
   /** AI提示词预设库：可新增/编辑/删除，勾选组合使用（localStorage） */
@@ -1268,7 +1281,7 @@ const handleBatchAiTpl = useCallback(async () => {
       sendAt = t.toISOString()
     }
     const { textToHtml } = await import('../utils/mailHtml')
-    const selImgs = (aiReplyUseImgs ? batchImgLib.filter(im=> batchImgSel.has(im.id)) : [])
+    const selImgs = (batchAttachStrategy === 'custom' ? batchImgLib.filter(im=> batchImgSel.has(im.id)) : [])
     const { getCustomerBuckets } = await import('../services/manualBuckets')
     setAiReplySendBusy(true)
     setAiReplyProgress({ done: 0, total: list2.length })
@@ -1328,7 +1341,7 @@ const handleBatchAiTpl = useCallback(async () => {
     }finally{
       setAiReplySendBusy(false)
     }
-  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, aiReplyUseImgs, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates, load, loadSequences])
+  }, [aiReplyList, customers, batchScheduleMode, batchScheduleAt, batchAttachStrategy, batchImgLib, batchImgSel, batchImgMode, batchAutoLeave, seqTemplates, load, loadSequences])
 
   /** 批量生成 AI 草稿：只写入列表供审阅/复制，不入队、不发送 */
   const handleBatchAiDrafts = useCallback(async () => {
@@ -2701,9 +2714,10 @@ const handleBatchAiTpl = useCallback(async () => {
                   <input type="checkbox" checked={aiReplyDeep} onChange={e=> setAiReplyDeep(e.target.checked)}/>
                   深度分析（两阶段，慢/费额度）
                 </label>
-                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除。注意：排除后名单偏向冷线索，个性化程度会下降">
+                <label className="flex items-center gap-2 cursor-pointer" title="近期发过（或待发中）的客户自动排除。注意：排除后名单偏向冷线索，个性化程度会下降">
                   <input type="checkbox" checked={aiSkipRecent} onChange={e=> setAiSkipRecent(e.target.checked)}/>
-                  2天内发过自动排除
+                  近期发过自动排除
+                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> setRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
                 </label>
                 {(()=>{ const total = customers.filter(c=> (selectedIds.has(c.id)||boardSelected.has(c.id)) && c.email).length; const ex = total - aiReplyTargets().length; return ex>0 ? <span>已排除 {ex} 人</span> : null })()}
               </div>
@@ -2751,10 +2765,28 @@ const handleBatchAiTpl = useCallback(async () => {
                 {batchScheduleMode==='at' && (
                   <input type="datetime-local" value={batchScheduleAt} onChange={e=> setBatchScheduleAt(e.target.value)} className="px-2 py-1 border rounded text-xs"/>
                 )}
-                <label className="flex items-center gap-1" title="与批量发跟进共用图片库（去批量发跟进弹窗上传/勾选）">
-                  <input type="checkbox" checked={aiReplyUseImgs} onChange={e=> setAiReplyUseImgs(e.target.checked)}/>
-                  附图{batchImgSel.size?` ${batchImgSel.size} 张（${batchImgMode==='file'?'仅附件':batchImgMode==='inline'?'仅正文':'附件+正文'}）`:'（图片库未选）'}
-                </label>
+                <div className="border rounded-lg p-2 bg-gray-50/60 mt-2">
+                  <div className="text-[11px] text-gray-600 mb-2">📎 附件策略</div>
+                  <div className="grid grid-cols-1 gap-1">
+                    <label className="flex items-center gap-2 p-1.5 border rounded hover:bg-blue-50 cursor-pointer">
+                      <input type="radio" name="attach" checked={batchAttachStrategy === 'none'} onChange={() => setBatchAttachStrategy('none')} className="accent-blue-600"/>
+                      <span className="text-xs text-gray-700">不发送附件</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-1.5 border rounded hover:bg-blue-50 cursor-pointer">
+                      <input type="radio" name="attach" checked={batchAttachStrategy === 'custom'} onChange={() => setBatchAttachStrategy('custom')} className="accent-blue-600"/>
+                      <div>
+                        <span className="text-xs font-medium text-gray-700">自定义图片（共用图片库）</span>
+                        {batchAttachStrategy === 'custom' && batchImgSel.size > 0 && (
+                          <div className="flex gap-1 mt-1 text-[10px] text-gray-500">
+                            {([['file','仅附件'],['inline','仅正文'],['both','同时']] as const).map(([k,l]) => (
+                              <label key={k} className="flex items-center gap-0.5"><input type="radio" name="cimgMode" checked={batchImgMode === k} onChange={() => setBatchImgMode(k)} className="accent-blue-600"/>{l}</label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  </div>
+                </div>
                 <label className="flex items-center gap-1" title="发出成功后自动移出入队时的手动板块；不勾则只关跟进、不动板块">
                   <input type="checkbox" checked={batchAutoLeave} onChange={e=> setBatchAutoLeave(e.target.checked)}/>
                   发出后移出板块
@@ -2829,9 +2861,10 @@ const handleBatchAiTpl = useCallback(async () => {
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <div className="text-[11px] text-gray-400">今日配额 {getTodaySendCount()}/{BATCH_SEND.dailyLimit} · 间隔 5 秒入队 · 发出由「待发」队列完成</div>
               <div className="flex items-center gap-2 text-[11px] text-gray-500">
-                <label className="flex items-center gap-1 cursor-pointer" title="2天内发过（或待发中）的客户自动排除，关掉可重进恢复">
+                <label className="flex items-center gap-2 cursor-pointer" title="近期发过（或待发中）的客户自动排除，关掉可重进恢复">
                   <input type="checkbox" checked={batchSkipRecent} onChange={e=>{ const v = e.target.checked; setBatchSkipRecent(v); if(!batchSending) void openBatchModal(v) }}/>
-                  2天内发过自动排除
+                  近期发过自动排除
+                  <input type="number" min="1" max="30" value={recentSendDays} onChange={e=> setRecentSendDays(parseInt(e.target.value) || 2)} className="w-10 px-1 py-0.5 border rounded text-[10px]"/> 天
                 </label>
                 {batchExcluded>0 && <span>已排除 {batchExcluded} 人</span>}
               </div>
@@ -2874,22 +2907,31 @@ const handleBatchAiTpl = useCallback(async () => {
                 <button onClick={()=> setShowTplMgr(v=>!v)} className="px-2 py-1.5 border rounded-lg text-xs text-gray-600 hover:bg-gray-50" title="自存模板：新增/编辑/删除，选择应用">
                   📋 模板{batchTplLib.length?` ${batchTplLib.length}`:''}
                 </button>
-                <label className="flex items-center gap-1 text-[11px] text-gray-600">
-                  <input type="checkbox" checked={batchAutoAtt} onChange={e=> setBatchAutoAtt(e.target.checked)}/>
-                  附带最新附件
-                </label>
-                {batchAutoAtt && (
-                  <>
-                    <label className="flex items-center gap-1 text-[11px] text-gray-600">
-                      <input type="radio" name="attPolicy" checked={batchAttPolicy==='require'} onChange={()=> setBatchAttPolicy('require')}/>
-                      无附件不发
+                <div className="border rounded-lg p-2 bg-gray-50/60 mt-2">
+                  <div className="text-[11px] text-gray-600 mb-2">📎 附件策略</div>
+                  <div className="grid grid-cols-1 gap-1">
+                    <label className="flex items-center gap-2 p-1.5 border rounded hover:bg-blue-50 cursor-pointer">
+                      <input type="radio" name="attach" checked={batchAttachStrategy === 'none'} onChange={() => setBatchAttachStrategy('none')} className="accent-blue-600"/>
+                      <span className="text-xs text-gray-700">不发送附件</span>
                     </label>
-                    <label className="flex items-center gap-1 text-[11px] text-gray-600">
-                      <input type="radio" name="attPolicy" checked={batchAttPolicy==='optional'} onChange={()=> setBatchAttPolicy('optional')}/>
-                      无附件也发
+                    <label className="flex items-center gap-2 p-1.5 border rounded hover:bg-blue-50 cursor-pointer">
+                      <input type="radio" name="attach" checked={batchAttachStrategy === 'latest'} onChange={() => setBatchAttachStrategy('latest')} className="accent-blue-600"/>
+                      <div>
+                        <span className="text-xs font-medium text-gray-700">附带最新附件（客户历史）</span>
+                        {batchAttachStrategy === 'latest' && (
+                          <div className="flex gap-1 mt-1 text-[10px] text-gray-500">
+                            <label><input type="radio" name="attPolicy" checked={batchAttPolicy === 'require'} onChange={() => setBatchAttPolicy('require')} className="accent-blue-600"/> 无附件不发</label>
+                            <label><input type="radio" name="attPolicy" checked={batchAttPolicy === 'optional'} onChange={() => setBatchAttPolicy('optional')} className="accent-blue-600"/> 无附件也发</label>
+                          </div>
+                        )}
+                      </div>
                     </label>
-                  </>
-                )}
+                    <label className="flex items-center gap-2 p-1.5 border rounded hover:bg-blue-50 cursor-pointer">
+                      <input type="radio" name="attach" checked={batchAttachStrategy === 'custom'} onChange={() => setBatchAttachStrategy('custom')} className="accent-blue-600"/>
+                      <span className="text-xs text-gray-700">自定义图片（本地上传/图片库，见下方）</span>
+                    </label>
+                  </div>
+                </div>
                 <label className="flex items-center gap-1 text-[11px] text-gray-600">
                   <input type="radio" name="sch" checked={batchScheduleMode==='now'} onChange={()=> setBatchScheduleMode('now')}/>
                   立即
@@ -2950,58 +2992,60 @@ const handleBatchAiTpl = useCallback(async () => {
                   )}
                 </div>
               )}
-              {/* 自定义图片：图片库多选，每封都带 */}
-              <div className="border rounded-lg p-2 bg-gray-50/60">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[11px] text-gray-600">🖼️ 自定义图片{batchImgSel.size?` · 已选 ${batchImgSel.size}`:''}</span>
-                  <label className="px-2 py-1 border rounded-lg text-[11px] bg-white cursor-pointer hover:bg-blue-50 text-blue-600">
-                    {batchImgBusy ? '压缩中…' : '+ 上传图片'}
-                    <input type="file" accept="image/*" multiple className="hidden" disabled={batchImgBusy} onChange={async e=>{
-                      const files = Array.from(e.target.files||[]).filter(f=> String(f.type||'').startsWith('image/'))
-                      e.target.value = ''
-                      if(!files.length) return
-                      if(batchImgLib.length + files.length > 8) return alert('图片库最多 8 张，请先删除旧图')
-                      setBatchImgBusy(true)
-                      try{
-                        const news: Array<{id:string;name:string;mime:string;b64:string}> = []
-                        for(const f of files){
-                          if(f.size > 10*1024*1024) throw new Error(`「${f.name}」超过 10MB，请先压缩`)
-                          const c = await compressImageFile(f)
-                          news.push({ id: 'img-'+Date.now()+'-'+Math.random().toString(36).slice(2,7), ...c })
-                        }
-                        saveBatchImgLib([...batchImgLib, ...news])
-                        setBatchImgSel(prev=>{ const n = new Set(prev); news.forEach(x=> n.add(x.id)); return n })
-                      }catch(err:any){ alert('图片处理失败：'+String(err?.message||err).slice(0,120)) }
-                      finally{ setBatchImgBusy(false) }
-                    }}/>
-                  </label>
-                  {(batchImgSel.size>0) && (
-                    <>
-                      {([['file','仅附件'],['inline','仅正文'],['both','同时']] as const).map(([k,l])=>(
-                        <label key={k} className="flex items-center gap-1 text-[11px] text-gray-600">
-                          <input type="radio" name="cimgMode" checked={batchImgMode===k} onChange={()=> setBatchImgMode(k)}/>
-                          {l}
-                        </label>
+              {/* 自定义图片：仅在附件策略选“自定义图片”时显示 */}
+              {batchAttachStrategy === 'custom' && (
+                <div className="border rounded-lg p-2 bg-gray-50/60 mt-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] text-gray-600">🖼️ 自定义图片{batchImgSel.size?` · 已选 ${batchImgSel.size}`:''}</span>
+                    <label className="px-2 py-1 border rounded-lg text-[11px] bg-white cursor-pointer hover:bg-blue-50 text-blue-600">
+                      {batchImgBusy ? '压缩中…' : '+ 上传图片'}
+                      <input type="file" accept="image/*" multiple className="hidden" disabled={batchImgBusy} onChange={async e=>{
+                        const files = Array.from(e.target.files||[]).filter(f=> String(f.type||'').startsWith('image/'))
+                        e.target.value = ''
+                        if(!files.length) return
+                        if(batchImgLib.length + files.length > 8) return alert('图片库最多 8 张，请先删除旧图')
+                        setBatchImgBusy(true)
+                        try{
+                          const news: Array<{id:string;name:string;mime:string;b64:string}> = []
+                          for(const f of files){
+                            if(f.size > 10*1024*1024) throw new Error(`「${f.name}」超过 10MB，请先压缩`)
+                            const c = await compressImageFile(f)
+                            news.push({ id: 'img-'+Date.now()+'-'+Math.random().toString(36).slice(2,7), ...c })
+                          }
+                          saveBatchImgLib([...batchImgLib, ...news])
+                          setBatchImgSel(prev=>{ const n = new Set(prev); news.forEach(x=> n.add(x.id)); return n })
+                        }catch(err:any){ alert('图片处理失败：'+String(err?.message||err).slice(0,120)) }
+                        finally{ setBatchImgBusy(false) }
+                      }}/>
+                    </label>
+                    {(batchImgSel.size>0) && (
+                      <>
+                        {([['file','仅附件'],['inline','仅正文'],['both','同时']] as const).map(([k,l])=>(
+                          <label key={k} className="flex items-center gap-1 text-[11px] text-gray-600">
+                            <input type="radio" name="cimgMode" checked={batchImgMode===k} onChange={()=> setBatchImgMode(k)}/>
+                            {l}
+                          </label>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                  {batchImgLib.length>0 ? (
+                    <div className="flex gap-2 mt-2 flex-wrap">
+                      {batchImgLib.map(im=>(
+                        <div key={im.id} className={`relative border rounded-lg overflow-hidden ${batchImgSel.has(im.id)?'border-blue-500 ring-1 ring-blue-300':'border-gray-200 opacity-70'}`}>
+                          <img src={`data:${im.mime};base64,${im.b64}`} alt={im.name} title={im.name}
+                            onClick={()=> setBatchImgSel(prev=>{ const n=new Set(prev); if(n.has(im.id)) n.delete(im.id); else n.add(im.id); return n })}
+                            className="w-16 h-16 object-cover cursor-pointer"/>
+                          <button title="删除" onClick={()=>{ saveBatchImgLib(batchImgLib.filter(x=> x.id!==im.id)); setBatchImgSel(prev=>{ const n=new Set(prev); n.delete(im.id); return n }) }}
+                            className="absolute top-0 right-0 px-1 text-[10px] bg-black/50 text-white rounded-bl">×</button>
+                        </div>
                       ))}
-                    </>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-gray-400 mt-1">未上传。上传后勾选，每封邮件都会带上（正文嵌图用 cid，附件走 base64，无需服务器改动）。</div>
                   )}
                 </div>
-                {batchImgLib.length>0 ? (
-                  <div className="flex gap-2 mt-2 flex-wrap">
-                    {batchImgLib.map(im=>(
-                      <div key={im.id} className={`relative border rounded-lg overflow-hidden ${batchImgSel.has(im.id)?'border-blue-500 ring-1 ring-blue-300':'border-gray-200 opacity-70'}`}>
-                        <img src={`data:${im.mime};base64,${im.b64}`} alt={im.name} title={im.name}
-                          onClick={()=> setBatchImgSel(prev=>{ const n=new Set(prev); if(n.has(im.id)) n.delete(im.id); else n.add(im.id); return n })}
-                          className="w-16 h-16 object-cover cursor-pointer"/>
-                        <button title="删除" onClick={()=>{ saveBatchImgLib(batchImgLib.filter(x=> x.id!==im.id)); setBatchImgSel(prev=>{ const n=new Set(prev); n.delete(im.id); return n }) }}
-                          className="absolute top-0 right-0 px-1 text-[10px] bg-black/50 text-white rounded-bl">×</button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-gray-400 mt-1">未上传。上传后勾选，每封邮件都会带上（正文嵌图用 cid，附件走 base64，无需服务器改动）。</div>
-                )}
-              </div>
+              )}
               <input value={batchSubject} onChange={e=> setBatchSubject(e.target.value)} placeholder="主题" className="w-full px-3 py-2 border rounded-lg text-sm"/>
               <textarea value={batchBody} onChange={e=> setBatchBody(e.target.value)} rows={8} placeholder="正文" className="w-full px-3 py-2 border rounded-lg text-sm resize-y font-mono"/>
               <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">
