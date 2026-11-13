@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "npm run test:core && npm run test:search && npm run test:terms && npm run test:relation && npm run test:graph && npm run test:memory && npm run test:context && npm run test:agents && npm run test:workflow && npm run test:integrations && npm run test:business && npm run test:system && npm run test:vault",
+    "test": "npm run test:core && npm run test:search && npm run test:terms && npm run test:relation && npm run test:graph && npm run test:memory && npm run test:context && npm run test:agents && npm run test:workflow && npm run test:integrations && npm run test:business && npm run test:system && npm run test:vault && npm run test:ai-follow",
     "test:core": "tsx test-core.ts",
     "test:search": "tsx test-search.ts",
     "test:terms": "tsx test-terms.ts",
@@ -20,7 +20,8 @@
     "test:integrations": "tsx test-integrations.ts",
     "test:business": "tsx test-business.ts",
     "test:system": "tsx test-system.ts",
-    "test:vault": "tsx test-vault.ts"
+    "test:vault": "tsx test-vault.ts",
+    "test:ai-follow": "tsx test-ai-follow.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

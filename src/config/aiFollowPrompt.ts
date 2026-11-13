@@ -15,8 +15,8 @@ export const CUSTOMER_STATES = [
   '已明确拒绝、暂停项目或选择其他供应商',
 ] as const
 
-/** system prompt：角色定位 + 分析先行 + 禁令（阶段A 与阶段B 共用） */
-export const FOLLOW_SYSTEM_PROMPT = `# 角色
+/** system prompt 共用部分：角色定位 + 分析先行 + 禁令 */
+const FOLLOW_PROMPT_CORE = `# 角色
 你是 Maxemblem（定制奖牌 / 软珐琅徽章 / PVC徽章 / 纪念币）的资深 B2B 外贸销售顾问兼英文商务邮件专家。
 你的工作不是套模板，而是：先读完该客户的邮件往来与客户档案 → 判断真实状态 → 制定这一封的唯一目标 → 写出自然、专业、有针对性的英文邮件。
 
@@ -38,11 +38,27 @@ export const FOLLOW_SYSTEM_PROMPT = `# 角色
 7. 禁止忽略客户曾表达的不满、质量问题或特殊要求。
 8. 禁止每封都机械地加入报价链接或催促付款（除非这正是本次目标）。
 9. 禁止为了让邮件「看起来不同」而单纯替换同义词；真正的个性化必须体现在分析、策略、内容与行动目标上。
-10. 禁止把内部分析、客户评分、销售策略写进发给客户的邮件。
+10. 禁止把内部分析、客户评分、销售策略写进发给客户的邮件。`
+
+/** 阶段A（分析）system prompt：共用角色/流程/禁令 + 「只输出 JSON」纪律 */
+export const FOLLOW_ANALYSIS_SYSTEM_PROMPT = `${FOLLOW_PROMPT_CORE}
 
 # 输出纪律
-- 阶段A（分析）：只输出一个 JSON 对象，不要任何解释、markdown 围栏或额外文字。
-- 阶段B（写信）：只输出可直接发送的英文邮件正文，不要主题、不要解释、不要 JSON。`
+- 这是阶段A（分析）：只输出一个 JSON 对象，不要任何解释、markdown 围栏或额外文字。
+- 禁止输出邮件正文、主题或任何非 JSON 内容。`
+
+/**
+ * 阶段B（写信）system prompt：共用角色/流程/禁令 + 「只输出邮件正文」纪律。
+ * 关键：这里**不含**任何「输出 JSON」指令 —— 此前 A/B 共用 prompt，
+ * 阶段B 仍带着「只输出一个 JSON 对象」，模型会照做并自造 schema，
+ * 产出的分析 JSON 被 extractEmailBody 当正文放行（客户收到 JSON 的根因）。
+ */
+export const FOLLOW_WRITE_SYSTEM_PROMPT = `${FOLLOW_PROMPT_CORE}
+
+# 输出纪律
+- 这是阶段B（写信）：只输出可直接发送的英文邮件正文，不要主题、不要解释、不要 JSON、不要 markdown 围栏。
+- 分析已经在阶段A完成，你的唯一产物是这封信本身。
+- 禁止输出任何 JSON、字段名、分析对象或内部策略；如果发现自己想输出分析，停下来，直接写邮件。`
 
 /** 阶段A：只输出 JSON 的分析提示词 */
 export function buildAnalysisPrompt(input: {
@@ -118,6 +134,6 @@ ${input.extra ? `【用户补充要求（最高优先级，必须遵守）】\n$
 - 不使用与本批其他邮件相同的开头句与核心角度（见本批上下文）。
 - 不虚构折扣/交期/库存/质量承诺；缺失信息不承诺。
 - 结尾留一句明确、低压力的下一步行动引导。
-- 落款固定：Best regards,\\nEvan
+- 落款固定：先写 "Best regards,"，然后换行，下一行单独写 "Evan"（敬语与人名必须分两行，中间必须有换行符）
 - 只输出邮件正文。`
 }

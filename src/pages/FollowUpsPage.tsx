@@ -9,6 +9,7 @@ import { STAGE_LABELS, EVENTS, emitEvent } from '../utils/emailHelpers'
 import { chatOnce } from '../services/aiChat'
 import { runIntellectBatch, BATCH_SEND, getTodaySendCount, bumpTodaySendCount } from '../services/customerIntellect'
 import { textToHtml, normalizeReplySubject } from '../utils/mailHtml'
+import { looksLikeEmail } from '../utils/mailShape'
 import { MANUAL_BUCKETS, loadManualBuckets, loadManualBucketsAsync, removeManualBuckets, removeManualBucket, type ManualBucket } from '../services/manualBuckets'
 import { applyBuckets, applyCustomerTags, isInBucket, countBuckets } from '../services/bucketOps'
 import { runFollowBoardSync, setCustomerFollowMode, setCustomerSalesStage, followModeOf, salesStageOf, daysNoFollow, countFollowsSinceReply, generateAiFollowReply, customerAddrs, computeMailTimes, isBoardNoiseEmail, businessCreatedAt, bestFollowStepFromMails, quoteStatusOf, quoteStatusClass, detectQuoteFromText, matchSendStep, type FollowMode, type SalesStage } from '../services/followProfile'
@@ -1163,7 +1164,7 @@ const handleBatchAiTpl = useCallback(async () => {
     try{ return localStorage.getItem(AI_REPLY_PROMPT_KEY) || '' }catch{ return '' }
   })
   const [showAiReplyModal, setShowAiReplyModal] = useState(false)
-  const [aiReplyList, setAiReplyList] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; mid?: string; references?: string; threaded: boolean; checked: boolean; dupSim?: number; dupWith?: string }>>([])
+  const [aiReplyList, setAiReplyList] = useState<Array<{ id: string; email: string; name: string; subject: string; body: string; mid?: string; references?: string; threaded: boolean; checked: boolean; dupSim?: number; dupWith?: string; warn?: string }>>([])
   const [showAiReplyReview, setShowAiReplyReview] = useState(false)
   const [aiReplyGenBusy, setAiReplyGenBusy] = useState(false)
   const [aiReplySendBusy, setAiReplySendBusy] = useState(false)
@@ -1246,7 +1247,9 @@ const handleBatchAiTpl = useCallback(async () => {
           const th = await findLatestThreadHeaders(c.email||'').catch(()=>({ found:false, messageId:'', references:'', subject:'' } as any))
           const mid = th.found && th.messageId ? th.messageId : undefined
           const subj = (th.found && th.subject) ? normalizeReplySubject(th.subject) : gen.subject
-          out.push({ id: c.id, email: c.email||'', name: label, subject: subj, body: gen.body, mid, references: mid ? (th.references || mid) : undefined, threaded: !!mid, checked: true, dupSim: gen.dupSim, dupWith: gen.dupWith })
+          // 信件形态守卫：不像信的默认不勾选 + 标注提示，避免 JSON/说明文字被一键入队发出
+          const okMail = looksLikeEmail(gen.body)
+          out.push({ id: c.id, email: c.email||'', name: label, subject: subj, body: gen.body, mid, references: mid ? (th.references || mid) : undefined, threaded: !!mid, checked: okMail, dupSim: gen.dupSim, dupWith: gen.dupWith, warn: okMail ? undefined : '⚠️非邮件格式，请人工改写' })
           prior.push({ opening: gen.body.split(/\n/).find(l=>l.trim()) || '', strategy: gen.analysis?.strategy || gen.analysis?.state || '' })
           priorBodies.push({ name: label, body: gen.body })
         }catch(e:any){
@@ -1267,7 +1270,11 @@ const handleBatchAiTpl = useCallback(async () => {
   }, [aiReplyTargets, aiReplyFinalPrompt, aiReplyDeep, customers, selectedIds, boardSelected])
   /** 第二步：审稿确认后入队（定时/图片/线程/配额与批量发跟进一致，走待发箱） */
   const handleAiReplyEnqueue = useCallback(async () => {
-    const rows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
+    const checkedRows = aiReplyList.filter(x=> x.checked && x.body && !x.subject.startsWith('(生成失败)'))
+    const blocked = checkedRows.filter(x=> x.warn)
+    const rows = checkedRows.filter(x=> !x.warn)
+    if(blocked.length && !rows.length) return alert(`有 ${blocked.length} 封生成结果不像邮件（已标注 ⚠️），已拦截入队。请先人工改写正文，改好后该标注会自动消失。`)
+    if(blocked.length && !confirm(`⚠️ ${blocked.length} 封不像邮件（分析JSON/说明文字），已拦截不入队；其余 ${rows.length} 封继续。继续？`)) return
     if(!rows.length) return alert('请至少勾选一封可发送的邮件')
     const used = getTodaySendCount()
     if(used >= BATCH_SEND.dailyLimit) return alert('今日批量已达上限 '+BATCH_SEND.dailyLimit+' 封，请明天再发')
@@ -2825,6 +2832,9 @@ const handleBatchAiTpl = useCallback(async () => {
                     <input type="checkbox" checked={r.checked} onChange={()=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, checked: !x.checked} : x))}/>
                     <span className="font-medium truncate">{r.name}</span>
                     <span className="text-gray-400 truncate flex-1">{r.email}</span>
+                    {r.warn && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 shrink-0" title="生成结果不像一封信（可能是分析 JSON 或说明文字），已默认不勾选；请人工改写后再勾选入队">{r.warn}</span>
+                    )}
                     {dup.sim > 0.55 && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0" title={`与「${dup.with}」的正文高度相似，建议换角度改写`}>
                         相似 {Math.round(dup.sim*100)}%
@@ -2837,7 +2847,7 @@ const handleBatchAiTpl = useCallback(async () => {
                   </div>
                   <input value={r.subject} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, subject: e.target.value} : x))}
                     className="w-full px-2 py-1 border rounded text-xs mb-1" placeholder="主题"/>
-                  <textarea value={r.body} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, body: e.target.value} : x))}
+                  <textarea value={r.body} onChange={e=> setAiReplyList(prev=> prev.map((x,i)=> i===idx ? {...x, body: e.target.value, warn: looksLikeEmail(e.target.value) ? undefined : x.warn} : x))}
                     rows={4} className="w-full px-2 py-1 border rounded text-xs resize-y font-mono" placeholder="正文"/>
                 </div>
                 )
