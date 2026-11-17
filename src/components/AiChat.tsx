@@ -2,7 +2,7 @@
 // 消息列表 + 输入框 + 流式输出 + 会话管理
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Plus, Trash2, Settings, Loader2, Bot, User, ChevronDown } from 'lucide-react'
+import { Send, Plus, Trash2, Settings, Loader2, Bot, User, ChevronDown, Eye, EyeOff } from 'lucide-react'
 import {
   getAiSettings, setAiSettings,
   getChatSessions, createChatSession, appendMessage, deleteChatSession,
@@ -10,6 +10,11 @@ import {
 } from '../config/aiProviders'
 import { streamChat, testProxy } from '../services/aiChat'
 import { db } from '../db'
+import {
+  extractMailHits, mailHasBody, mailsForAddress,
+  buildPartsForAddress, buildEmailCtx, buildSystemPrompt, buildMailLoadNote,
+  type MailCtxStat,
+} from '../utils/chatMailContext'
 
 export default function AiChat() {
   const [sessions, setSessions] = useState<ChatSession[]>(() => getChatSessions())
@@ -27,6 +32,9 @@ export default function AiChat() {
   const [proxyTest, setProxyTest] = useState('')
   const [lastMailCustomer, setLastMailCustomer] = useState<{ id: string; email: string; reply: string } | null>(null)
   const [mailLoadNote, setMailLoadNote] = useState('')
+  // P2：查看实际发给模型的 system 消息（上下文组装是否生效一眼可见）
+  const [showContext, setShowContext] = useState(false)
+  const [lastSysContext, setLastSysContext] = useState('')
   const writeMailToCustomer = async () => {
     if (!lastMailCustomer) return
     try {
@@ -94,61 +102,52 @@ export default function AiChat() {
     // 若消息里含邮箱 → 自动读取该客户邮件上下文供 AI 阅读/提炼
     let emailCtx = ''
     let linkedCustomerId = ''
-    let loadedMailCount = 0
-    const mailHits = [...new Set((text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).map(x=> x.toLowerCase()))]
+    const mailHits = extractMailHits(text)
+    const mailErrors: string[] = []
+    let mailStat: MailCtxStat = { total: 0, withBody: 0, missingBody: 0 }
     if (mailHits.length) {
       try {
         const allC = await db.customers.toArray() as any[]
         let allM = await db.emails.toArray() as any[]
-        // 本地没有则搜服务器库
+        const { searchDbMailsAll, fetchDbMail } = await import('../repositories/emailRepository')
+        // 本地没有信、或本地只有空壳信封（text/html 全空）→ 搜服务端库补齐；失败必须留痕，不再静默
         for (const em of mailHits.slice(0, 3)) {
-          const localHit = allM.some(m=> String(m.from||'').toLowerCase().includes(em) || String(m.to||'').toLowerCase().includes(em))
+          const localHit = mailsForAddress(allM, em, 50).some(mailHasBody)
           if (!localHit) {
             try {
-              const { searchDbMailsAll } = await import('../repositories/emailRepository')
               const remote = await searchDbMailsAll(em, 20)
               if (remote?.length) allM = [...allM, ...remote]
-            } catch { /* ignore */ }
+            } catch (e: any) {
+              mailErrors.push(`远端搜索失败：${String(e?.message || e).slice(0, 60)}`)
+            }
           }
         }
-        const parts: string[] = []
+        const allParts: string[] = []
         for (const em of mailHits.slice(0, 3)) {
-          const c = allC.find(x=> String(x.email||'').toLowerCase()===em || (x.extraEmails||[]).some((e:string)=> String(e).toLowerCase()===em))
-          if (c) {
-            linkedCustomerId = c.id
-            parts.push(`【客户档案】${c.contactName||c.title||''} ${c.email} 公司${c.company||'—'} 等级${c.level||'C'} 阶段${c.stage||''} 复购${c.repurchaseCount||0} 备注${c.notes||''} 画像摘要${c.aiSummary||''}`)
-          } else {
-            parts.push(`【客户邮箱】${em}（暂无详细建档）`)
-          }
-          let mails = allM.filter(m=>{
-            const from = String(m.from||'').toLowerCase()
-            const to = String(m.to||'').toLowerCase()
-            return from.includes(em) || to.includes(em)
-          }).sort((a,b)=> String(b.date||'').localeCompare(String(a.date||''))).slice(0, 10)
-          // 正文为空时再取一次
+          const c = allC.find(x => String(x.email || '').toLowerCase() === em || (x.extraEmails || []).some((v: string) => String(v).toLowerCase() === em))
+          const mails = mailsForAddress(allM, em, 10)
+          // 正文为空时向服务端逐封补
           for (const m of mails) {
             if (!m.text && m.uid) {
               try {
-                const { fetchDbMail } = await import('../repositories/emailRepository')
-                const body = await fetchDbMail(m.accountId, m.uid, m.imapFolder || m.folder)
+                const body = await fetchDbMail(String(m.accountId || ''), m.uid, m.imapFolder || m.folder)
                 if (body?.text) m.text = body.text
-              } catch { /* ignore */ }
+              } catch (e: any) {
+                mailErrors.push(`取正文失败(uid ${m.uid})：${String(e?.message || e).slice(0, 60)}`)
+              }
             }
           }
-          for (const m of mails) {
-            const who = /evan@maxemblem/i.test(String(m.from||'')) ? '我方' : '客户'
-            const body = String(m.text || m.html || '').replace(/<[^>]+>/g, ' ').slice(0, 900)
-            parts.push(`[${m.date}] ${who} 主题：${m.subject || '(无)'}\n${body || '(无正文)'}`)
-            loadedMailCount++
-          }
-          if (!mails.length) {
-            parts.push(`（未找到 ${em} 的邮件正文。请到邮件中心点「拉邮件」同步后再问；或粘贴邮件内容。）`)
+          const r = buildPartsForAddress(em, c ?? null, mails)
+          allParts.push(...r.parts)
+          if (r.linkedCustomerId) linkedCustomerId = r.linkedCustomerId
+          mailStat = {
+            total: mailStat.total + r.stat.total,
+            withBody: mailStat.withBody + r.stat.withBody,
+            missingBody: mailStat.missingBody + r.stat.missingBody,
           }
         }
-        emailCtx = '\n\n【系统已读取并提供以下真实邮件/客户数据 — 你必须基于这些内容分析】\n' + parts.join('\n\n---\n\n').slice(0, 16000)
-        setMailLoadNote(loadedMailCount > 0
-          ? `已读取 ${loadedMailCount} 封邮件，AI 可基于正文分析`
-          : `未找到 ${mailHits[0]} 的邮件正文，请先在邮件中心「拉邮件」或直接粘贴邮件`)
+        emailCtx = buildEmailCtx(allParts)
+        setMailLoadNote(buildMailLoadNote({ hits: mailHits, stat: mailStat, errors: mailErrors }))
       } catch (e: any) {
         setMailLoadNote('读取邮件失败：' + String(e?.message || e).slice(0, 80))
       }
@@ -158,9 +157,10 @@ export default function AiChat() {
     const session = getChatSessions().find(s => s.id === activeId)
     const history = session?.messages.map(m => ({ role: m.role, content: m.content })) ?? []
     const baseSys = settings.systemPrompt || '你是 Evan OS 的 AI 助手。'
-    const sys = emailCtx
-      ? baseSys + '\n\n【重要】用户提供的客户邮件与档案已经在上下文中。你必须阅读、提炼、总结这些邮件内容来回答。严禁回答「无法访问邮件/系统/数据库」。若数据不足，请说明缺哪封邮件，而不是说自己没有权限。'
-      : baseSys
+    // P0 关键：邮件/客户数据必须真正拼进 system 消息
+    //（旧 bug：emailCtx 只被当布尔值，数据造好却被丢弃 → 模型被告知"数据已在上下文"却什么都没有）
+    const sys = buildSystemPrompt(baseSys, emailCtx)
+    setLastSysContext(sys)
     history.unshift({ role: 'system', content: sys })
 
     const assistantMsg: ChatMessage = { id: Date.now().toString() + 'a', role: 'assistant', content: '', timestamp: Date.now() }
@@ -278,6 +278,11 @@ export default function AiChat() {
           <button onClick={handleNew}
             className="flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
             <Plus size={12} /> 新对话
+          </button>
+          <button onClick={() => setShowContext(v => !v)}
+            title="查看实际发给模型的 system 消息（含注入的邮件上下文）"
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors ${showContext ? 'text-blue-600 bg-blue-50' : 'text-gray-500 hover:text-blue-600 hover:bg-blue-50'}`}>
+            {showContext ? <EyeOff size={12} /> : <Eye size={12} />} 上下文
           </button>
           <button onClick={() => setShowSettings(!showSettings)}
             className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
@@ -400,6 +405,17 @@ export default function AiChat() {
           </div>
         )}
 
+        {/* P2：查看实际发给模型的 system 消息（含注入的邮件/客户上下文） */}
+        {showContext && (
+          <div className="border-b border-gray-200 bg-gray-900 shrink-0">
+            <div className="flex items-center gap-2 px-4 py-1.5 text-[11px] text-gray-300">
+              <span className="flex-1 truncate">实际发给模型的 system 消息 · {lastSysContext.length} 字{lastSysContext.includes('【系统已读取并提供以下真实邮件') ? ' · 已注入邮件/客户数据 ✅' : ' · 本次无邮件注入'}</span>
+              <button onClick={() => setShowContext(false)} className="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <pre className="px-4 pb-3 pt-1 max-h-[40vh] overflow-auto text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">{lastSysContext || '（发送一条消息后，这里会显示实际注入的上下文）'}</pre>
+          </div>
+        )}
+
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && (
@@ -454,6 +470,7 @@ export default function AiChat() {
         {mailLoadNote && (
           <div className="px-3 py-1.5 bg-blue-50 border-t border-blue-100 text-[11px] text-blue-800 flex items-center gap-2 shrink-0">
             <span className="flex-1">📧 {mailLoadNote}</span>
+            <button onClick={()=> setShowContext(true)} className="px-1.5 py-0.5 text-[10px] border border-blue-200 rounded text-blue-600 hover:bg-blue-100">查看注入上下文</button>
             <button onClick={()=> setMailLoadNote('')} className="text-blue-500">✕</button>
           </div>
         )}
