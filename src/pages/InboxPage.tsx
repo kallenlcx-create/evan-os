@@ -1722,7 +1722,7 @@ export default function InboxPage(){
             <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
               <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Send size={12}/> AI推荐回复</div>
               <div className="text-[11px] bg-white rounded p-2 border">
-                Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product||'our products'}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm?<br/>Best regards, Evan
+                Hi {customer?.contactName||'there'},<br/>Thanks for your inquiry about {selected?.product||'our products'}. Our best price for {selected?.qty||500} pcs is $680, lead time 12 days. Could you confirm?<br/>Best regards,<br/>Evan
               </div>
               <div className="flex gap-1 mt-2">
                 <button onClick={async()=>{
@@ -1730,7 +1730,7 @@ export default function InboxPage(){
                   if(!c && selected){ c=await ensureCustomer(selected.from, selected.from); setCustomer(c) }
                   if(!c) return
                   if(!c||!selected) return
-                  const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards, Evan`
+                  const draft=`Hi ${c.contactName||c.title},\n\nThanks for your inquiry. Our best price for ${selected.qty||500} pcs is $680, lead time 12 days.\n\nBest regards,\nEvan`
                   const { uid } = await import('../repositories/result')
                   await db.emails.put({ id: uid(), accountId: selected.accountId, folder:'drafts', from: `Evan <evan@maxemblem.com>`, to: c.email||selected.from, subject:`Re: ${selected.subject}`, text: draft, html:'', date: new Date().toISOString(), isRead:false, hasAttachment:false, customerId: c.id, status:'待处理' } as any)
                   setFolder('drafts'); setSearchMode(false)
@@ -1746,7 +1746,7 @@ export default function InboxPage(){
                     const hist = thread.slice(-10).map(e=> `[${e.date}] ${e.folder==='sent'?'我':'客'}: ${(e.text||'').slice(0,300)}`).join('\n')
                     const amounts = (hist.match(/\$\s*[\d,]+/g)||[]).slice(0,5).join(' ')
                     const cNote = String((c as any)?.notes || '').trim()
-                    const prompt = `你是Maxemblem外贸业务员Evan，给下面这位客户写一封专属英文回复邮件（不是模板，必须结合他的背景和往来记录）。只返回正文，落款Evan。\n客户：${c?.contactName||c?.title}（${c?.email}，${c?.company||'公司未知'}），等级${c?.level||'C'}${c?.isKey?'重点':''}，阶段${c?.stage||''}，复购${c?.repurchaseCount||0}次\n画像：${c?.aiSummary||'无'}，常购：${(c?.portrait as any)?.products?.join('/')||'未知'}，出现过的金额：${amounts||'无'}${cNote?`\n人工备注（最高优先级，必须遵循）：${cNote}`:''}\n最近往来：\n${hist}\n当前这封：${selected.subject}\n${(selected.text||'').slice(0,1500)}`
+                    const prompt = `你是Maxemblem外贸业务员Evan，给下面这位客户写一封专属英文回复邮件（不是模板，必须结合他的背景和往来记录）。只返回正文，落款固定为两行：先写 "Best regards,"，换行后下一行单独写 "Evan"。\n客户：${c?.contactName||c?.title}（${c?.email}，${c?.company||'公司未知'}），等级${c?.level||'C'}${c?.isKey?'重点':''}，阶段${c?.stage||''}，复购${c?.repurchaseCount||0}次\n画像：${c?.aiSummary||'无'}，常购：${(c?.portrait as any)?.products?.join('/')||'未知'}，出现过的金额：${amounts||'无'}${cNote?`\n人工备注（最高优先级，必须遵循）：${cNote}`:''}\n最近往来：\n${hist}\n当前这封：${selected.subject}\n${(selected.text||'').slice(0,1500)}`
                     const { chatOnce } = await import('../services/aiChat')
                     const draft = await chatOnce(prompt)
                     if(!draft || draft.startsWith('⚠️')){ alert(draft||'AI 生成失败'); return }

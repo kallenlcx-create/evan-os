@@ -101,7 +101,7 @@ export default function CampaignsPage() {
   const handleAiTemplate = useCallback(async (occasion: string) => {
     setAiTplLoading(true)
     try{
-      const r = await chatOnce(`你是Maxemblem外贸营销文案。写一封英文营销邮件，场合：${occasion}。要求：主题行单独第一行以Subject:开头，正文简短有行动召唤，变量用{{first_name}} {{company}} {{product}}，落款Evan。只返回主题+正文。`)
+      const r = await chatOnce(`你是Maxemblem外贸营销文案。写一封英文营销邮件，场合：${occasion}。要求：主题行单独第一行以Subject:开头，正文简短有行动召唤，变量用{{first_name}} {{company}} {{product}}，落款固定为两行：先写 "Best regards,"，换行后下一行单独写 "Evan"。只返回主题+正文。`)
       if(!r || r.startsWith('⚠️')) return alert(r || 'AI 生成失败，请检查 AI 设置')
       const lines = r.trim().split('\n')
       let subj = '', body = r.trim()

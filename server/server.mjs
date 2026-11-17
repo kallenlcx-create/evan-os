@@ -370,6 +370,29 @@ async function init() {
     dbReady=false
     console.log('[sync-server] MySQL 未连接，使用内存+文件模式（邮件IMAP正常）')
     console.log('[sync-server] DB目标:', dbCfg.user + '@' + dbCfg.host + '/' + dbCfg.database, '错误:', String(e.message||e).slice(0,160))
+    // === MySQL 自动恢复：每 10 秒重试，直到连接成功并切回 mysql 模式 ===
+    if (globalThis.__evanMysqlRecoveryTimer) clearInterval(globalThis.__evanMysqlRecoveryTimer)
+    let recovering = false
+    globalThis.__evanMysqlRecoveryTimer = setInterval(async () => {
+      if (recovering) return
+      recovering = true
+      try {
+        await pool.query('SELECT 1 AS ping')
+        try { await init() } catch {}
+        if (!dbReady) dbReady = true
+        clearInterval(globalThis.__evanMysqlRecoveryTimer)
+        globalThis.__evanMysqlRecoveryTimer = null
+        console.log('[sync-server] MySQL 已自动恢复，切回 mysql 模式')
+      } catch {
+        // MySQL 仍不可用，继续等待
+      } finally {
+        recovering = false
+      }
+    }, 10000)
+    // 立即尝试一次（不等待首个 10 秒）
+    setTimeout(async () => {
+      try { await pool.query('SELECT 1 AS ping'); await init() } catch {}
+    }, 1000)
   }
 }
 
